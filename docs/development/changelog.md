@@ -8,40 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- MkDocs documentation infrastructure
-- Material theme for documentation
-- API reference generation
-- Comprehensive user guides
 
 ### Changed
-- Updated project structure for better organization
 
 ### Fixed
-- Various bug fixes and improvements
 
-## [0.1.0] - 2023-XX-XX
+## [0.1.0] - 2025-XX-XX
 
 ### Added
+
 - Initial release of Soft Robot Models in jaX (SoRoMoX)
-- N-link pendulum implementation
-- Planar Piecewise Constant Strain (PCS) continuum robot
-- Planar Handed Shearing Auxetics (HSA) robot
-- Symbolic derivation capabilities with SymPy
-- JAX-based numerical implementations
-- Comprehensive example suite
-- Testing framework with pytest
-- CI/CD pipeline with GitHub Actions
 
 ### Features
-- Fast, parallelizable, and differentiable simulations
-- Multiple integration methods (explicit, autodiff, symbolic)
-- Parameter sensitivity analysis
-- Visualization and animation tools
-- Extensible architecture for new robot types
+
+- Fast, parallelizable, and differentiable soft robot models implemented in JAX
+- Implemented systems:
+  - N-link pendulum
+  - Planar Piecewise Constant Strain (PCS) continuum soft robot
+  - General/3D Piecewise Constant Strain (PCS) continuum soft robot
+  - Planar Handed Shearing Auxetics (HSA) robot
 
 ---
 
 ## Version History
 
 - **v0.1.0**: Initial release with core functionality
-- **Future**: Planned additions include 3D robot models, additional soft robot types, and enhanced visualization tools
+<!-- - **Future**: Planned additions include 3D robot models, additional soft robot types, and enhanced visualization tools -->

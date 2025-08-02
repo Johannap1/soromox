@@ -130,13 +130,84 @@ make docs-build-strict
 make docs-deploy
 ```
 
-## See also
+## Version Management and Releases
 
-You might also be interested in the following repositories:
- - The [`jax-spcs-kinematics`](https://github.com/tud-phi/jax-spcs-kinematics) repository contains an implementation
- of the Selective Piecewise Constant Strain (SPCS) kinematics in JAX. We have shown in our paper that this kinematic 
-model is suitable for representing the shape of HSA rods.
- - The [`HSA-PyElastica`](https://github.com/tud-phi/HSA-PyElastica) repository contains a plugin for PyElastica
-for the simulation of HSA robots.
- - The [`hsa-planar-control`](https://github.com/tud-phi/hsa-planar-control) repository contains JAX and ROS2 implementations
- of model-based control algorithms for planar HSA robots.
+This project includes automated version management and release creation tools. The version bump system updates version information across all relevant files and can automatically create GitHub releases.
+
+### Version Bumping
+
+You can bump the version using the following Makefile targets:
+
+```bash
+# Increment patch version (0.1.0 -> 0.1.1) - for bug fixes
+make bump-patch
+
+# Increment minor version (0.1.0 -> 0.2.0) - for new features
+make bump-minor
+
+# Increment major version (0.1.0 -> 1.0.0) - for breaking changes
+make bump-major
+
+# Set a specific version
+make bump-version VERSION=0.2.0
+```
+
+### Automated Releases
+
+To create a complete release with automatic GitHub release creation:
+
+```bash
+# Create a patch release with GitHub release
+make release-patch
+
+# Create a minor release with GitHub release
+make release-minor
+
+# Create a major release with GitHub release
+make release-major
+
+# Create a specific version release
+make release VERSION=1.0.0
+```
+
+### Preview Changes (Dry Run)
+
+Before making any changes, you can preview what would be updated using the dry run mode:
+
+```bash
+# Preview a patch version bump without making changes
+conda run -n jsrm python bump_version.py --patch --dry-run
+
+# Preview a minor version bump
+conda run -n jsrm python bump_version.py --minor --dry-run
+
+# Preview a specific version
+conda run -n jsrm python bump_version.py 0.2.0 --dry-run
+```
+
+The dry run mode will show you:
+- Current version
+- New version that would be set
+- List of files that would be modified
+- No actual changes are made to any files
+
+### What Gets Updated
+
+The version bump process automatically updates:
+- `pyproject.toml` - Main project version
+- `CITATION.cff` - GitHub citation file version
+- `docs/development/changelog.md` - Adds new version entry with current date
+- `src/soromox.egg-info/PKG-INFO` - Package metadata (if exists)
+
+### Automated Release Process
+
+When you use the `release-*` commands, the following happens automatically:
+1. Version numbers are updated in all relevant files
+2. Changes are committed to git
+3. A version tag (e.g., `v0.1.1`) is created
+4. Changes and tags are pushed to GitHub
+5. GitHub Actions creates a release with changelog content
+6. The package is published to PyPI
+
+For more detailed information, see `VERSION_BUMP_README.md`.
+

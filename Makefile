@@ -1,5 +1,5 @@
 #* Variables
-PYTHON := python3
+PYTHON := conda run -n jsrm python
 PYTHONPATH := `pwd`
 #* Formatters
 .PHONY: format
@@ -73,6 +73,49 @@ docs-deploy:
 
 .PHONY: cleanup
 cleanup: pycache-remove dsstore-remove ipynbcheckpoints-remove pytestcache-remove
+
+#* Version management
+.PHONY: bump-patch
+bump-patch:
+	$(PYTHON) bump_version.py --patch --yes
+
+.PHONY: bump-minor
+bump-minor:
+	$(PYTHON) bump_version.py --minor --yes
+
+.PHONY: bump-major
+bump-major:
+	$(PYTHON) bump_version.py --major --yes
+
+.PHONY: bump-version
+bump-version:
+	@echo "Usage: make bump-version VERSION=x.y.z"
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Example: make bump-version VERSION=0.2.0"; \
+		exit 1; \
+	fi
+	$(PYTHON) bump_version.py $(VERSION) --yes
+
+.PHONY: release-patch
+release-patch:
+	$(PYTHON) bump_version.py --patch --yes --create-tag --push
+
+.PHONY: release-minor
+release-minor:
+	$(PYTHON) bump_version.py --minor --yes --create-tag --push
+
+.PHONY: release-major
+release-major:
+	$(PYTHON) bump_version.py --major --yes --create-tag --push
+
+.PHONY: release
+release:
+	@echo "Usage: make release VERSION=x.y.z"
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Example: make release VERSION=0.2.0"; \
+		exit 1; \
+	fi
+	$(PYTHON) bump_version.py $(VERSION) --yes --create-tag --push
 
 all: format-codestyle cleanup test
 
