@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "soromox"
+abstract: "Kinematic and dynamic models of continuum and articulated soft robots implemented in JAX."
+authors:
+  - family-names: "Stölzle"
+    given-names: "Maximilian"
+    email: "maximilian@stoelzle.ch"
+  - family-names: "Gribonval"
+    given-names: "Solange"
+    email: "solange.gribonval@polytechnique.edu"
+  - family-names: "Feliu Talegón"
+    given-names: "Daniel"
+    email: "D.FeliuTalegon@tudelft.nl"
+  - family-names: "Della Santina"
+    given-names: "Cosimo"
+    email: "C.DellaSantina@tudelft.nl"
+repository-code: "https://github.com/tud-phi/soromox"
+url: "https://github.com/tud-phi/soromox"
+license: MIT
+version: "0.1.0"
+keywords:
+  - "JAX"
+  - "Soft Robotics" 
+  - "Kinematics"
+  - "Dynamics"
+  - "Continuum Robots"
+  - "Articulated Robots"
