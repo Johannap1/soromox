@@ -1,7 +1,7 @@
 # 📦 Installation
 
 <div class="doc-summary">
-  <strong>Get started with JSRM in minutes!</strong> Choose from multiple installation methods to get JAX Soft Robot Modelling running on your system.
+  <strong>Get started with SoRoMoX in minutes!</strong> Choose from multiple installation methods to get Soft Robot Models in jaX (SoRoMoX) running on your system.
 </div>
 
 ---
@@ -19,22 +19,22 @@
 
 === "🐍 PyPI (Recommended)"
 
-    The easiest way to install JSRM is from PyPI:
+    The easiest way to install SoRoMoX is from PyPI:
 
     ```bash
-    pip install jsrm
+    pip install soromox
     ```
 
     !!! success "Ready to go!"
-        This installs the core JSRM package with all essential dependencies.
+        This installs the core SoRoMoX package with all essential dependencies.
 
 === "🔨 From Source"
 
     For development or to get the latest features:
 
     ```bash
-    git clone https://github.com/tud-phi/jax-soft-robot-modelling.git
-    cd jax-soft-robot-modelling
+    git clone https://github.com/tud-phi/soromox.git
+    cd soromox
     pip install -e .
     ```
 
@@ -46,8 +46,8 @@
     Use our pre-built Docker container:
 
     ```bash
-    docker pull ghcr.io/tud-phi/jax-soft-robot-modelling:latest
-    docker run -it --rm ghcr.io/tud-phi/jax-soft-robot-modelling:latest
+    docker pull ghcr.io/tud-phi/soromox:latest
+    docker run -it --rm ghcr.io/tud-phi/soromox:latest
     ```
 
 ---
@@ -59,7 +59,7 @@
 To run all examples and tutorials:
 
 ```bash
-pip install jsrm[examples]
+pip install soromox[examples]
 ```
 
 **Includes:**
@@ -72,10 +72,10 @@ pip install jsrm[examples]
 
 ### 🛠️ Development Dependencies
 
-For contributing to JSRM:
+For contributing to SoRoMoX:
 
 ```bash
-pip install jsrm[dev]
+pip install soromox[dev]
 ```
 
 **Includes:**
@@ -91,7 +91,7 @@ pip install jsrm[dev]
 To build documentation locally:
 
 ```bash
-pip install jsrm[docs]
+pip install soromox[docs]
 ```
 
 **Includes:**
@@ -105,7 +105,7 @@ pip install jsrm[docs]
 Get everything at once:
 
 ```bash
-pip install jsrm[all]
+pip install soromox[all]
 ```
 
 ---
@@ -119,7 +119,7 @@ pip install jsrm[all]
     source 01-configure-env-vars.sh
     ```
 
-    This ensures JSRM can find all necessary configuration files and paths.
+    This ensures SoRoMoX can find all necessary configuration files and paths.
 
 ---
 
@@ -131,7 +131,7 @@ Test your installation with this quick verification script:
 
     ```python
     import jax.numpy as jnp
-    from jsrm.systems import planar_pcs_num
+    from soromox.systems import planar_pcs_num
 
     # Create a simple 1-segment PCS robot
     num_segments = 1
@@ -143,7 +143,7 @@ Test your installation with this quick verification script:
         strain_selector
     )
 
-    print("🎉 JSRM installation successful!")
+    print("🎉 SoRoMoX installation successful!")
     ```
 
 === "🚀 Advanced Test"
@@ -151,8 +151,8 @@ Test your installation with this quick verification script:
     ```python
     import jax
     import jax.numpy as jnp
-    from jsrm.systems.planar_pcs import PlanarPCS
-    from jsrm.parameters import Params
+    from soromox.systems.planar_pcs import PlanarPCS
+    from soromox.parameters import Params
 
     # Test JAX compilation and differentiation
     @jax.jit
@@ -224,6 +224,6 @@ Test your installation with this quick verification script:
 !!! info "Need assistance?"
 
     - 📚 **Documentation**: Check our [API Reference](api/systems.md)
-    - 💬 **Discussions**: Join our [GitHub Discussions](https://github.com/tud-phi/jax-soft-robot-modelling/discussions)  
-    - 🐛 **Issues**: Report bugs on [GitHub Issues](https://github.com/tud-phi/jax-soft-robot-modelling/issues)
+    - 💬 **Discussions**: Join our [GitHub Discussions](https://github.com/tud-phi/soromox/discussions)  
+    - 🐛 **Issues**: Report bugs on [GitHub Issues](https://github.com/tud-phi/soromox/issues)
     - 📧 **Email**: Contact us at `m.stolzle@tudelft.nl`

@@ -1,6 +1,6 @@
 import jax
 
-from jsrm.systems.pcs import PCS
+from soromox.systems.pcs import PCS
 import jax.numpy as jnp
 
 from typing import Callable

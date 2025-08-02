@@ -10,7 +10,7 @@
 # There are some restrictions on what makes a valid project name
 # specification here:
 # https://packaging.python.org/specifications/core-metadata/#name
-name = "jsrm"  # Required
+name = "soromox"  # Required
 
 # Versions should comply with PEP 440:
 # https://www.python.org/dev/peps/pep-0440/
@@ -169,9 +169,9 @@ docs = [
 # maintainers, and where to support the project financially. The key is
 # what's used to render the link text on PyPI.
 [project.urls]  # Optional
-"Homepage" = "https://github.com/tud-phi/jax-soft-robot-modelling"
-"Bug Reports" = "https://github.com/tud-phi/jax-soft-robot-modelling/issues"
-"Source" = "https://github.com/tud-phi/jax-soft-robot-modelling"
+"Homepage" = "https://github.com/tud-phi/soromox"
+"Bug Reports" = "https://github.com/tud-phi/soromox/issues"
+"Source" = "https://github.com/tud-phi/soromox"
 
 # The following would provide a command line executable called `sample`
 # which executes the function `main` from this package when invoked.
@@ -181,7 +181,7 @@ docs = [
 # This is configuration specific to the `setuptools` build backend.
 # If you are using a different build backend, you will need to change this.
 [tool.setuptools]
-# packages = ["jsrm"]
+# packages = ["soromox"]
 include-package-data = false
 [tool.setuptools.packages.find]
 where = ["src"]  # list of folders that contain the packages (["."] by default)
@@ -189,7 +189,7 @@ where = ["src"]  # list of folders that contain the packages (["."] by default)
 # If there are data files included in your packages that need to be
 # installed, specify them here.
 [tool.setuptools.package-data]
-jsrm = ["symbolic_expressions/*.dill"]
+soromox = ["symbolic_expressions/*.dill"]
 
 [build-system]
 # These are the assumed default build requirements from pip:

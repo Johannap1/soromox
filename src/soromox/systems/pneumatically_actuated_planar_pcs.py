@@ -1,7 +1,7 @@
 __all__ = ["factory", "stiffness_fn"]
 from jax import Array, vmap
 import jax.numpy as jnp
-from jsrm.math_utils import blk_diag
+from soromox.math_utils import blk_diag
 import numpy as onp
 from typing import Callable, Dict, Optional, Tuple, Union
 

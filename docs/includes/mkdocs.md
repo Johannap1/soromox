@@ -9,4 +9,4 @@
 *[GPU]: Graphics Processing Unit
 *[TPU]: Tensor Processing Unit
 *[CPU]: Central Processing Unit
-*[JSRM]: JAX Soft Robot Modelling
+*[SoRoMoX]: Soft Robot Models in jaX

@@ -1,10 +1,10 @@
-site_name: 🤖 JAX Soft Robot Modelling
+site_name: 🤖 Soft Robot Models in jaX (SoRoMoX)
 site_description: High-performance kinematic and dynamic models of continuum and articulated soft robots using JAX
 site_author: Maximilian Stölzle, Solange Gribonval
-site_url: https://tud-phi.github.io/jax-soft-robot-modelling
+site_url: https://tud-phi.github.io/soromox
 
-repo_name: tud-phi/jax-soft-robot-modelling
-repo_url: https://github.com/tud-phi/jax-soft-robot-modelling
+repo_name: tud-phi/soromox
+repo_url: https://github.com/tud-phi/soromox
 edit_uri: edit/main/docs/
 
 copyright: Copyright &copy; 2020-2025 Physical Intelligence (PhI) Lab @ TU Delft
@@ -182,10 +182,10 @@ extra:
     provider: mike
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/tud-phi/jax-soft-robot-modelling
+      link: https://github.com/tud-phi/soromox
       name: View on GitHub
     - icon: fontawesome/brands/python
-      link: https://pypi.org/project/jsrm/
+      link: https://pypi.org/project/soromox/
       name: View on PyPI
     - icon: fontawesome/solid/paper-plane
       link: mailto:m.stolzle@tudelft.nl
@@ -205,7 +205,7 @@ extra:
           data: 0
           note: >- 
             Thanks for your feedback! Help us improve this page by
-            <a href="https://github.com/tud-phi/jax-soft-robot-modelling/issues/new/?title=[Feedback]+{title}+-+{url}" target="_blank" rel="noopener">telling us what you need</a>.
+            <a href="https://github.com/tud-phi/soromox/issues/new/?title=[Feedback]+{title}+-+{url}" target="_blank" rel="noopener">telling us what you need</a>.
 
 watch:
-  - src/jsrm
+  - src/soromox

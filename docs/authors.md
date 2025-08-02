@@ -17,7 +17,7 @@ Physical Intelligence (PhI) Lab, TU Delft
 - [:fontawesome-brands-linkedin: LinkedIn](https://linkedin.com/in/maximilian-stoelzle)
 - [:fontawesome-solid-graduation-cap: Google Scholar](https://scholar.google.com/citations?user=yHmOzBsAAAAJ&hl=de)
 
-Maximilian is the primary developer and maintainer of the JAX Soft Robot Modelling library. His research focuses on modeling, control, and learning for continuum and soft robotic systems.
+Maximilian is the primary developer and maintainer of the Soft Robot Models in jaX (SoRoMoX) library. His research focuses on modeling, control, and learning for continuum and soft robotic systems.
 
 ---
 

@@ -4,21 +4,21 @@ import jax
 jax.config.update("jax_enable_x64", True)  # double precision
 from jax import Array, jit, random
 from jax import numpy as jnp
-import jsrm
+import soromox
 from pathlib import Path
 import sympy as sp
 from typing import Tuple
 
-from jsrm.parameters.hsa_params import PARAMS_FPU_CONTROL as params
-from jsrm.systems import planar_hsa
-from jsrm.systems.utils import substitute_params_into_all_symbolic_expressions
+from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL as params
+from soromox.systems import planar_hsa
+from soromox.systems.utils import substitute_params_into_all_symbolic_expressions
 
 num_segments = 1
 num_rods_per_segment = 2
 
 # filepath to symbolic expressions
 sym_exp_filepath = (
-    Path(jsrm.__file__).parent
+    Path(soromox.__file__).parent
     / "symbolic_expressions"
     / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
 )

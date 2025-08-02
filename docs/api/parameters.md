@@ -8,7 +8,7 @@ This module provides functions for handling robot parameters, including validati
 
 ## API Reference
 
-::: jsrm.parameters
+::: soromox.parameters
     options:
       show_root_heading: true
       show_source: false

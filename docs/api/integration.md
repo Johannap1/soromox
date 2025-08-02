@@ -8,7 +8,7 @@ This module provides various integration schemes including Gauss-Legendre quadra
 
 ## API Reference
 
-::: jsrm.integration
+::: soromox.integration
     options:
       show_root_heading: true
       show_source: false

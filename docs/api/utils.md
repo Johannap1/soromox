@@ -1,10 +1,10 @@
 # Utils API
 
-This module contains utility functions and helper modules used throughout JSRM.
+This module contains utility functions and helper modules used throughout SoRoMoX.
 
 ## Overview
 
-JSRM provides various utility modules that support the core robot system implementations. These utilities handle mathematical operations, numerical integration, parameter management, visualization, and symbolic computations.
+SoRoMoX provides various utility modules that support the core robot system implementations. These utilities handle mathematical operations, numerical integration, parameter management, visualization, and symbolic computations.
 
 ## Available Utilities
 

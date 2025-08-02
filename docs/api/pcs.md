@@ -8,7 +8,7 @@ This module contains the fundamental PCS implementation that serves as the found
 
 ## API Reference
 
-::: jsrm.systems.pcs
+::: soromox.systems.pcs
     options:
       show_root_heading: true
       show_source: false

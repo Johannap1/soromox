@@ -9,17 +9,17 @@ from pathlib import Path
 import scipy as sp
 from typing import Callable, Dict, Tuple
 
-import jsrm
-from jsrm.parameters.hsa_params import PARAMS_FPU_CONTROL
-from jsrm.systems import planar_hsa
-from jsrm.utils.numerical_jacobian import approx_derivative
+import soromox
+from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL
+from soromox.systems import planar_hsa
+from soromox.utils.numerical_jacobian import approx_derivative
 
 num_segments = 1
 num_rods_per_segment = 2
 
 # filepath to symbolic expressions
 sym_exp_filepath = (
-    Path(jsrm.__file__).parent
+    Path(soromox.__file__).parent
     / "symbolic_expressions"
     / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
 )

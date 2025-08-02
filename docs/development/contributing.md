@@ -1,14 +1,14 @@
 # Contributing
 
-Thank you for your interest in contributing to JAX Soft Robot Modelling! This guide will help you get started.
+Thank you for your interest in contributing to Soft Robot Models in jaX (SoRoMoX)! This guide will help you get started.
 
 ## Development Setup
 
 ### 1. Fork and Clone
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/jax-soft-robot-modelling.git
-cd jax-soft-robot-modelling
+git clone https://github.com/YOUR_USERNAME/soromox.git
+cd soromox
 ```
 
 ### 2. Install Development Dependencies
@@ -55,7 +55,7 @@ pytest
 pytest tests/test_planar_pcs_num.py
 
 # Run with coverage
-pytest --cov=jsrm
+pytest --cov=soromox
 ```
 
 ### 4. Format Code
@@ -96,10 +96,10 @@ Use conventional commit messages:
 
 ### 1. System Structure
 
-Create a new module in `src/jsrm/systems/`:
+Create a new module in `src/soromox/systems/`:
 
 ```
-src/jsrm/systems/your_robot/
+src/soromox/systems/your_robot/
 ├── __init__.py
 ├── symbolic_derivation.py
 ├── numerical_implementation.py
@@ -197,7 +197,7 @@ def forward_kinematics(params: Dict, q: Array) -> Array:
 ```python
 import pytest
 import jax.numpy as jnp
-from jsrm.systems import your_system
+from soromox.systems import your_system
 
 class TestYourSystem:
     def setup_method(self):
@@ -269,4 +269,4 @@ git push origin feature/your-feature-name
 - Check existing documentation and examples
 - Ask questions in the community
 
-Thank you for contributing to JSRM!
+Thank you for contributing to SoRoMoX!

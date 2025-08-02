@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2023-XX-XX
 
 ### Added
-- Initial release of JAX Soft Robot Modelling
+- Initial release of Soft Robot Models in jaX (SoRoMoX)
 - N-link pendulum implementation
 - Planar Piecewise Constant Strain (PCS) continuum robot
 - Planar Handed Shearing Auxetics (HSA) robot

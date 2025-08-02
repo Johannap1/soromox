@@ -1,7 +1,7 @@
-# 🤖 JAX Soft Robot Modelling
+# 🤖 Soft Robot Models in jaX (SoRoMoX)
 
 <div class="doc-summary">
-  <strong>Welcome to JAX Soft Robot Modelling (JSRM)!</strong> A cutting-edge library for fast, parallelizable, and differentiable simulations of soft robots using JAX and symbolic mathematics.
+  <strong>Welcome to Soft Robot Models in jaX (SoRoMoX)!</strong> A cutting-edge library for fast, parallelizable, and differentiable simulations of soft robots using JAX and symbolic mathematics.
 </div>
 
 ---
@@ -92,15 +92,15 @@ Get up and running in minutes:
 === "Installation"
 
     ```bash
-    pip install jsrm
+    pip install soromox
     ```
 
 === "Basic Usage"
 
     ```python
     import jax.numpy as jnp
-    from jsrm.systems import PlanarPCS
-    
+    from soromox.systems import PlanarPCS
+
     # Create a planar PCS robot
     robot = PlanarPCS(num_segments=3, params=params)
     
@@ -130,7 +130,7 @@ Get up and running in minutes:
 <div class="feature-grid">
   <div class="feature-card">
     <h3><span class="icon">📦</span> [Installation Guide](installation.md)</h3>
-    <p>Get JSRM installed and configured on your system</p>
+    <p>Get SoRoMoX installed and configured on your system</p>
   </div>
   
   <div class="feature-card">
@@ -176,4 +176,4 @@ We welcome contributions! Please see our [Contributing Guide](development/contri
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.txt](https://github.com/tud-phi/jax-soft-robot-modelling/blob/main/LICENSE.txt) file for details.
+This project is licensed under the MIT License - see the [LICENSE.txt](https://github.com/tud-phi/soromox/blob/main/LICENSE.txt) file for details.

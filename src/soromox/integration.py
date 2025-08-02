@@ -1,7 +1,7 @@
 from jax import Array
 from typing import Callable, Dict
 
-from jsrm.systems import euler_lagrangian
+from soromox.systems import euler_lagrangian
 
 
 def ode_factory(

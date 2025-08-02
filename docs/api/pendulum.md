@@ -8,7 +8,7 @@ The pendulum system implements classical rigid-body dynamics for articulated rob
 
 ## API Reference
 
-::: jsrm.systems.pendulum
+::: soromox.systems.pendulum
     options:
       show_root_heading: true
       show_source: false

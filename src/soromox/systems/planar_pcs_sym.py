@@ -11,7 +11,7 @@ from .utils import (
     compute_strain_basis,
     compute_planar_stiffness_matrix,
 )
-from jsrm.math_utils import blk_diag
+from soromox.math_utils import blk_diag
 
 
 def factory(

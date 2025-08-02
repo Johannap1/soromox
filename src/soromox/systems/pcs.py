@@ -11,11 +11,11 @@ from .utils import (
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
-from jsrm.math_utils import (
+from soromox.math_utils import (
     blk_diag,
     compute_weighted_sums,
 )
-import jsrm.utils.lie_algebra as lie
+import soromox.utils.lie_algebra as lie
 
 from diffrax import (
     diffeqsolve,

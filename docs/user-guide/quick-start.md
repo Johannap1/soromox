@@ -1,7 +1,7 @@
 # 🚀 Quick Start
 
 <div class="doc-summary">
-  <strong>Get up and running with JSRM in minutes!</strong> This hands-on guide walks you through your first soft robot simulation with step-by-step examples.
+  <strong>Get up and running with SoRoMoX in minutes!</strong> This hands-on guide walks you through your first soft robot simulation with step-by-step examples.
 </div>
 
 ---
@@ -15,7 +15,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     ```python
     import jax.numpy as jnp
     import matplotlib.pyplot as plt
-    from jsrm.systems import pendulum
+    from soromox.systems import pendulum
     import diffrax
 
     # Define parameters for a double pendulum
@@ -113,7 +113,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     ```
 
 !!! success "🎉 Congratulations!"
-    You've just simulated your first robot with JSRM! The pendulum exhibits chaotic motion due to its nonlinear dynamics.
+    You've just simulated your first robot with SoRoMoX! The pendulum exhibits chaotic motion due to its nonlinear dynamics.
 
 ---
 
@@ -121,7 +121,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
 
 ### 🏭 Factory Pattern
 
-JSRM uses an elegant factory pattern to create system functions:
+SoRoMoX uses an elegant factory pattern to create system functions:
 
 ```python title="System Creation"
 ode_fn, forward_kinematics, jacobian_fn, _ = system.factory(parameters)
@@ -174,8 +174,8 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
 === "🌊 Continuum Robot"
 
     ```python
-    from jsrm.systems.planar_pcs import PlanarPCS
-    from jsrm.parameters import Params
+    from soromox.systems.planar_pcs import PlanarPCS
+    from soromox.parameters import Params
 
     # Create a 3-segment soft robot
     num_segments = 3
@@ -279,7 +279,7 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
   
   <div class="feature-card">
     <h3><span class="icon">🤝</span> [Contributing](../development/contributing.md)</h3>
-    <p>Learn how to contribute to the JSRM project</p>
+    <p>Learn how to contribute to the SoRoMoX project</p>
   </div>
   
   <div class="feature-card">

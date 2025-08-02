@@ -9,14 +9,14 @@ import numpy as onp
 from pathlib import Path
 from typing import Callable, Dict
 
-import jsrm
-from jsrm import ode_factory
-from jsrm.systems import pendulum
+import soromox
+from soromox import ode_factory
+from soromox.systems import pendulum
 
 num_links = 2
 
 sym_exp_filepath = (
-    Path(jsrm.__file__).parent
+    Path(soromox.__file__).parent
     / "symbolic_expressions"
     / f"pendulum_nl-{num_links}.dill"
 )

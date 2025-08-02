@@ -8,7 +8,7 @@ HSA robots exhibit unique mechanical properties due to their auxetic structure, 
 
 ## API Reference
 
-::: jsrm.systems.planar_hsa
+::: soromox.systems.planar_hsa
     options:
       show_root_heading: true
       show_source: false

@@ -3,13 +3,13 @@ import jax
 jax.config.update("jax_enable_x64", True)  # double precision
 from jax import Array
 from jax import numpy as jnp
-import jsrm
+import soromox
 from functools import partial
 from numpy.testing import assert_allclose
 from pathlib import Path
 
-from jsrm.systems import euler_lagrangian, planar_pcs_sym
-from jsrm.utils.tolerance import Tolerance
+from soromox.systems import euler_lagrangian, planar_pcs_sym
+from soromox.utils.tolerance import Tolerance
 
 
 def constant_strain_inverse_kinematics_fn(params, xi_eq, chi, s) -> Array:
@@ -40,7 +40,7 @@ def constant_strain_inverse_kinematics_fn(params, xi_eq, chi, s) -> Array:
 
 def test_planar_cs():
     sym_exp_filepath = (
-        Path(jsrm.__file__).parent / "symbolic_expressions" / "planar_pcs_ns-1.dill"
+        Path(soromox.__file__).parent / "symbolic_expressions" / "planar_pcs_ns-1.dill"
     )
     params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]

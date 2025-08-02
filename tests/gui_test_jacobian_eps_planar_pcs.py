@@ -6,9 +6,9 @@ from matplotlib import rc
 
 rc("animation", html="html5")
 
-from jsrm.systems import planar_pcs_num, planar_pcs_sym
+from soromox.systems import planar_pcs_num, planar_pcs_sym
 from pathlib import Path
-import jsrm
+import soromox
 from tqdm import tqdm
 from matplotlib.animation import FFMpegWriter
 
@@ -37,7 +37,7 @@ strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
 def get_jacobian_fn(jacobian_type):
     if jacobian_type == "symbolic":
         sym_exp_filepath = (
-            Path(jsrm.__file__).parent
+            Path(soromox.__file__).parent
             / "symbolic_expressions"
             / f"planar_pcs_ns-{num_segments}.dill"
         )

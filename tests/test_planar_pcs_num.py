@@ -3,13 +3,13 @@ import jax
 jax.config.update("jax_enable_x64", True)  # double precision
 from jax import Array
 from jax import numpy as jnp
-import jsrm
+import soromox
 from functools import partial
 from numpy.testing import assert_allclose
 from pathlib import Path
 
-from jsrm.systems import planar_pcs_num, euler_lagrangian
-from jsrm.utils.tolerance import Tolerance
+from soromox.systems import planar_pcs_num, euler_lagrangian
+from soromox.utils.tolerance import Tolerance
 
 from typing import Optional, Literal
 

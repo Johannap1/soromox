@@ -8,7 +8,7 @@ This module contains functions for symbolic derivation of robot kinematics and d
 
 ## API Reference
 
-::: jsrm.symbolic_derivation
+::: soromox.symbolic_derivation
     options:
       show_root_heading: true
       show_source: false

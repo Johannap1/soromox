@@ -8,7 +8,7 @@ This module provides tools for visualizing robot configurations, trajectories, a
 
 ## API Reference
 
-::: jsrm.rendering
+::: soromox.rendering
     options:
       show_root_heading: true
       show_source: false

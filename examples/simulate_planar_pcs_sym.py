@@ -11,15 +11,15 @@ import numpy as onp
 from pathlib import Path
 from typing import Callable, Dict
 
-import jsrm
-from jsrm import ode_factory
-from jsrm.systems import planar_pcs_sym
+import soromox
+from soromox import ode_factory
+from soromox.systems import planar_pcs_sym
 
 num_segments = 1
 
 # filepath to symbolic expressions
 sym_exp_filepath = (
-    Path(jsrm.__file__).parent
+    Path(soromox.__file__).parent
     / "symbolic_expressions"
     / f"planar_pcs_ns-{num_segments}.dill"
 )

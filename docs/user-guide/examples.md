@@ -1,6 +1,6 @@
 # Examples
 
-This page provides an overview of the example scripts included with JSRM.
+This page provides an overview of the example scripts included with SoRoMoX.
 
 ## Available Examples
 
@@ -155,7 +155,7 @@ Investigates:
 
 ### Common Issues
 
-1. **Import errors**: Ensure JSRM is installed with `pip install -e .`
+1. **Import errors**: Ensure SoRoMoX is installed with `pip install -e .`
 2. **Missing dependencies**: Install examples group with `pip install -e ".[examples]"`
 3. **Environment variables**: Always run `source 01-configure-env-vars.sh`
 
@@ -182,7 +182,7 @@ New Example: Description of what this example demonstrates
 """
 
 import jax.numpy as jnp
-from jsrm.systems import your_system
+from soromox.systems import your_system
 
 # Parameters
 params = {

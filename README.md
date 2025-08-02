@@ -1,11 +1,11 @@
-# JAX Soft Robot Modelling
+# Soft Robot Models in jaX (SoRoMoX)
 
-[![Test](https://github.com/tud-phi/jax-soft-robot-modeling/actions/workflows/test.yml/badge.svg)](https://github.com/tud-phi/jax-soft-robot-modeling/actions/workflows/test.yml)
-[![Documentation](https://github.com/tud-phi/jax-soft-robot-modeling/actions/workflows/docs.yml/badge.svg)](https://github.com/tud-phi/jax-soft-robot-modeling/actions/workflows/docs.yml)
-[![PyPI version](https://badge.fury.io/py/jsrm.svg)](https://badge.fury.io/py/jsrm)
+[![Test](https://github.com/tud-phi/soromox/actions/workflows/test.yml/badge.svg)](https://github.com/tud-phi/soromox/actions/workflows/test.yml)
+[![Documentation](https://github.com/tud-phi/soromox/actions/workflows/docs.yml/badge.svg)](https://github.com/tud-phi/soromox/actions/workflows/docs.yml)
+[![PyPI version](https://badge.fury.io/py/soromox.svg)](https://badge.fury.io/py/soromox)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/github/license/tud-phi/jax-soft-robot-modeling.svg)](https://github.com/tud-phi/jax-soft-robot-modeling/blob/main/LICENSE.txt)
-[![Docs](https://img.shields.io/badge/docs-live-brightgreen.svg)](https://tud-phi.github.io/jax-soft-robot-modelling)
+[![License](https://img.shields.io/github/license/tud-phi/soromox.svg)](https://github.com/tud-phi/soromox/blob/main/LICENSE.txt)
+[![Docs](https://img.shields.io/badge/docs-live-brightgreen.svg)](https://tud-phi.github.io/soromox)
 
 This repository contains symbolic derivations of the kinematics and dynamics of various soft robots using Sympy.
 The symbolic expressions are then implemented in JAX and can be used for fast, parallelizable, and differentiable simulations.
@@ -41,7 +41,7 @@ Please use the following citation if you use our software in your (scientific) w
 The plugin can be installed from PyPI:
 
 ```bash
-pip install jsrm
+pip install soromox
 ```
 
 or locally from the source code:
@@ -77,7 +77,7 @@ python examples/simulate_pendulum.py
 
 ## Documentation
 
-The full documentation is available at: https://tud-phi.github.io/jax-soft-robot-modelling
+The full documentation is available at: https://tud-phi.github.io/soromox
 
 ### Building Documentation Locally
 
@@ -91,7 +91,7 @@ pip install -e ".[docs]"
 mkdocs serve
 
 # OR using conda environment
-conda run --live-stream --name jsrm mkdocs serve
+conda run --live-stream --name soromox mkdocs serve
 ```
 
 The documentation will be available at `http://127.0.0.1:8000`.
@@ -103,15 +103,15 @@ The documentation will be available at `http://127.0.0.1:8000`.
 mkdocs build
 
 # OR using conda environment
-conda run --live-stream --name jsrm mkdocs build
+conda run --live-stream --name soromox mkdocs build
 
 # Build with strict mode (for CI/development)
 mkdocs build --strict
-# OR: conda run --live-stream --name jsrm mkdocs build --strict
+# OR: conda run --live-stream --name soromox mkdocs build --strict
 
 # Deploy to GitHub Pages (maintainers only)
 mkdocs gh-deploy
-# OR: conda run --live-stream --name jsrm mkdocs gh-deploy
+# OR: conda run --live-stream --name soromox mkdocs gh-deploy
 ```
 
 You can also use the Makefile targets:

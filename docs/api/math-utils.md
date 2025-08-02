@@ -1,6 +1,6 @@
 # Math Utilities
 
-Mathematical utility functions used throughout JSRM for various computations.
+Mathematical utility functions used throughout SoRoMoX for various computations.
 
 ## Overview
 
@@ -8,7 +8,7 @@ This module provides core mathematical operations including linear algebra utili
 
 ## API Reference
 
-::: jsrm.math_utils
+::: soromox.math_utils
     options:
       show_root_heading: true
       show_source: false

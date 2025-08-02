@@ -10,17 +10,17 @@ import numpy as onp
 from pathlib import Path
 from typing import Callable, Dict
 
-import jsrm
-from jsrm.parameters.hsa_params import PARAMS_FPU_CONTROL, PARAMS_FPU_HYSTERESIS_CONTROL
-from jsrm.rendering.planar_hsa.opencv_renderer import draw_robot, animate_robot
-from jsrm.systems import planar_hsa
+import soromox
+from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL, PARAMS_FPU_HYSTERESIS_CONTROL
+from soromox.rendering.planar_hsa.opencv_renderer import draw_robot, animate_robot
+from soromox.systems import planar_hsa
 
 num_segments = 1
 num_rods_per_segment = 2
 
 # filepath to symbolic expressions
 sym_exp_filepath = (
-    Path(jsrm.__file__).parent
+    Path(soromox.__file__).parent
     / "symbolic_expressions"
     / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
 )

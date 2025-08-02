@@ -1,10 +1,10 @@
 # Systems API
 
-This module contains the main system implementations for different robot types in JSRM.
+This module contains the main system implementations for different robot types in SoRoMoX.
 
 ## Overview
 
-JSRM provides implementations for various robot systems, from classical rigid-body pendulums to advanced soft continuum robots. Each system includes:
+SoRoMoX provides implementations for various robot systems, from classical rigid-body pendulums to advanced soft continuum robots. Each system includes:
 
 - **Forward Kinematics**: Computing end-effector positions and orientations
 - **Jacobians**: Computing velocity relationships and sensitivities  
@@ -76,7 +76,7 @@ Handed Shearing Auxetics (HSA) soft robots with unique mechanical properties.
 All systems follow a consistent factory pattern for initialization:
 
 ```python
-from jsrm.systems import system_module
+from soromox.systems import system_module
 
 # Initialize system with parameters
 ode_fn, forward_kinematics, jacobian_fn, auxiliary_fns = system_module.factory(

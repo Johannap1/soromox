@@ -1,4 +1,4 @@
-/* Custom styling for JAX Soft Robot Modelling documentation */
+/* Custom styling for Soft Robot Models in jaX (SoRoMoX) documentation */
 
 :root {
   /* Custom color palette */
@@ -189,7 +189,7 @@
 
 /* Enhanced method signatures - hierarchical styling with blue/purple background */
 /* Class headers (h4) - larger and more prominent */
-h2[id^="jsrm"], h3[id^="jsrm"], h4[id^="jsrm"] {
+h2[id^="soromox"], h3[id^="soromox"], h4[id^="soromox"] {
   background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
   color: white !important;
   padding: 1.2rem 1.5rem;
@@ -203,7 +203,7 @@ h2[id^="jsrm"], h3[id^="jsrm"], h4[id^="jsrm"] {
 }
 
 /* Method headers (h5) - smaller than class headers */
-h5[id^="jsrm"] {
+h5[id^="soromox"] {
   background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
   color: white !important;
   padding: 0.8rem 1rem;
@@ -246,7 +246,7 @@ h5[id^="jsrm"] {
 }
 
 /* Icons for class headers (larger) */
-h2[id^="jsrm"]:before, h3[id^="jsrm"]:before, h4[id^="jsrm"]:before {
+h2[id^="soromox"]:before, h3[id^="soromox"]:before, h4[id^="soromox"]:before {
   content: "🏗️";
   position: absolute;
   right: 1.2rem;
@@ -257,7 +257,7 @@ h2[id^="jsrm"]:before, h3[id^="jsrm"]:before, h4[id^="jsrm"]:before {
 }
 
 /* Icons for method headers (smaller) */
-h5[id^="jsrm"]:before {
+h5[id^="soromox"]:before {
   content: "🔧";
   position: absolute;
   right: 1rem;
@@ -268,7 +268,7 @@ h5[id^="jsrm"]:before {
 }
 
 /* Code styling for class headers */
-h2[id^="jsrm"] code, h3[id^="jsrm"] code, h4[id^="jsrm"] code {
+h2[id^="soromox"] code, h3[id^="soromox"] code, h4[id^="soromox"] code {
   background: rgba(255, 255, 255, 0.15) !important;
   color: white !important;
   padding: 0.4rem 0.8rem;
@@ -278,7 +278,7 @@ h2[id^="jsrm"] code, h3[id^="jsrm"] code, h4[id^="jsrm"] code {
 }
 
 /* Code styling for method headers */
-h5[id^="jsrm"] code {
+h5[id^="soromox"] code {
   background: rgba(255, 255, 255, 0.15) !important;
   color: white !important;
   padding: 0.3rem 0.6rem;
@@ -287,7 +287,7 @@ h5[id^="jsrm"] code {
   font-weight: 600 !important;
 }
 
-h2[id^="jsrm"] a, h3[id^="jsrm"] a, h4[id^="jsrm"] a {
+h2[id^="soromox"] a, h3[id^="soromox"] a, h4[id^="soromox"] a {
   color: white !important;
   text-decoration: none !important;
 }

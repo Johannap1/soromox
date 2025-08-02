@@ -8,7 +8,7 @@ This module contains symbolic derivations of the PCS model equations, based on t
 
 ## API Reference
 
-::: jsrm.systems.planar_pcs_sym
+::: soromox.systems.planar_pcs_sym
     options:
       show_root_heading: true
       show_source: false
