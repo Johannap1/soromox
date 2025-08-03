@@ -158,10 +158,10 @@ Get up and running in minutes:
     ### Software Citation
 
     ```bibtex
-    @software{soromox2023,
-      title = {soromox},
+    @software{soromox2025,
+      title = {SoRoMoX: Soft Robot Models in JAX},
       author = {Stölzle, Maximilian and Gribonval, Solange and {Feliu Talegón}, Daniel and {Della Santina}, Cosimo},
-      year = {2023},
+      year = {2025},
       url = {https://github.com/tud-phi/soromox},
       version = {0.1.0},
       abstract = {Kinematic and dynamic models of continuum and articulated soft robots implemented in JAX.}

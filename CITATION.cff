@@ -24,6 +24,7 @@ repository-code: "https://github.com/tud-phi/soromox"
 url: "https://github.com/tud-phi/soromox"
 license: MIT
 version: "0.1.0"
+date-released: "2025-09-01"
 keywords:
   - "JAX"
   - "Soft Robotics" 

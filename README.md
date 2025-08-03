@@ -25,7 +25,7 @@ Please use the following citation if you use our software in your (scientific) w
 
 ```bibtex
 @software{soromox2025,
-  title = {soromox},
+  title = {SoRoMoX: Soft Robot Models in JAX},
   author = {Stölzle, Maximilian and Gribonval, Solange and {Feliu Talegón}, Daniel and {Della Santina}, Cosimo},
   year = {2025},
   url = {https://github.com/tud-phi/soromox},
