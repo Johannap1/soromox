@@ -169,7 +169,7 @@ class PlanarPCS(eqx.Module):
         xi_star: Optional[Array] = None,
         stiffness_fn: Optional[Callable] = None,
         actuation_mapping_fn: Optional[Callable] = None,
-    ) -> "PlanarPCS":
+    ):
         """
         Initialize the PlanarPCS class.
 
