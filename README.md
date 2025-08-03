@@ -71,22 +71,16 @@ pip install -e ".[examples]"
 
 ## Usage
 
-Always first source all necessary environment variables when opening a new terminal:
-
-```bash
-source 01-configure-env-vars.sh
-```
-
-Then, we can symbolically derive the pendulum kinematics and dynamics:
-
-```bash
-python examples/derive_pendulum.py
-```
-
-Finally, we can simulate the pendulum
+Simply, call one of the example scripts to simulate a system. For example, to simulate the N-link pendulum:
 
 ```bash
 python examples/simulate_pendulum.py
+```
+
+or to simulate the planar PCS robot:
+
+```bash
+python examples/simulate_planar_pcs.py
 ```
 
 ## Documentation
