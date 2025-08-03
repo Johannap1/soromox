@@ -85,7 +85,7 @@ python examples/simulate_planar_pcs.py
 
 ## Documentation
 
-The full documentation is available at: https://tud-phi.github.io/soromox
+The full documentation is available at: <https://tud-phi.github.io/soromox>
 
 ### Building Documentation Locally
 
