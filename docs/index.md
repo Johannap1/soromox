@@ -153,9 +153,24 @@ Get up and running in minutes:
 
 ## 📄 Citation
 
-This simulator is part of the publication **"An Experimental Study of Model-based Control for Planar Handed Shearing Auxetics Robots"** presented at the *18th International Symposium on Experimental Robotics*.
-
 !!! quote "If you use our software in your research, please cite:"
+
+    ### Software Citation
+
+    ```bibtex
+    @software{soromox2023,
+      title = {soromox},
+      author = {Stölzle, Maximilian and Gribonval, Solange and {Feliu Talegón}, Daniel and {Della Santina}, Cosimo},
+      year = {2023},
+      url = {https://github.com/tud-phi/soromox},
+      version = {0.1.0},
+      abstract = {Kinematic and dynamic models of continuum and articulated soft robots implemented in JAX.}
+    }
+    ```
+
+    ### Planar HSA Model Citation
+
+    The model of the kinematics and dynamics of the planar HSA robot are part of the publication **"An Experimental Study of Model-based Control for Planar Handed Shearing Auxetics Robots"** presented at the *18th International Symposium on Experimental Robotics*.
 
     ```bibtex
     @inproceedings{stolzle2023experimental,

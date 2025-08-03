@@ -20,7 +20,7 @@ def extract_version_changelog(changelog_path: Path, version: str) -> Optional[st
     
     content = changelog_path.read_text()
     
-    # Pattern to match version headers like ## [0.1.0] - 2023-XX-XX
+    # Pattern to match version headers like ## [0.1.0] - 2025-XX-XX
     version_pattern = rf"^## \[{re.escape(version)}\].*$"
     next_version_pattern = r"^## \[.*\].*$"
     

@@ -19,11 +19,24 @@ We are happy to receive contributions for other soft robots and/or other setting
 
 ## Citation
 
-This simulator is part of the publication **An Experimental Study of Model-based Control
-for Planar Handed Shearing Auxetics Robots** presented at the _18th International Symposium on Experimental Robotics_. 
-You can find the publication online in the Springer Proceedings on Advanced Robotics (SPAR): https://doi.org/10.1007/978-3-031-63596-0_14
-
 Please use the following citation if you use our software in your (scientific) work:
+
+### Software Citation
+
+```bibtex
+@software{soromox2025,
+  title = {soromox},
+  author = {Stölzle, Maximilian and Gribonval, Solange and {Feliu Talegón}, Daniel and {Della Santina}, Cosimo},
+  year = {2025},
+  url = {https://github.com/tud-phi/soromox},
+  version = {0.1.0},
+  abstract = {Kinematic and dynamic models of continuum and articulated soft robots implemented in JAX.}
+}
+```
+
+### Planar HSA Model Citation
+
+The model of the kinematics and dynamics of the planar HSA robot are part of the publication **"An Experimental Study of Model-based Control for Planar Handed Shearing Auxetics Robots"** presented at the *18th International Symposium on Experimental Robotics*.
 
 ```bibtex
 @inproceedings{stolzle2023experimental,
@@ -71,6 +84,7 @@ python examples/derive_pendulum.py
 ```
 
 Finally, we can simulate the pendulum
+
 ```bash
 python examples/simulate_pendulum.py
 ```

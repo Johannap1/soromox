@@ -95,7 +95,7 @@ def update_changelog(file_path: Path, new_version: str, old_version: str) -> Non
             f"## [{old_version}] - TBD",
             f"## [{new_version}] - {today}"
         ).replace(
-            f"## [{old_version}] - 2023-XX-XX",
+            f"## [{old_version}] - 2025-XX-XX",
             f"## [{new_version}] - {today}"
         )
     else:

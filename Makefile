@@ -1,5 +1,5 @@
 #* Variables
-PYTHON := conda run -n jsrm python
+PYTHON := python3
 PYTHONPATH := `pwd`
 #* Formatters
 .PHONY: format
