@@ -146,12 +146,12 @@ class PlanarPCS(eqx.Module):
 
     global_eps: float = jnp.finfo(jnp.float64).eps
 
-    stiffness_fn: Callable = eqx.static_field()
-    actuation_mapping_fn: Callable = eqx.static_field()
+    stiffness_fn: Callable = eqx.field(static=True)
+    actuation_mapping_fn: Callable = eqx.field(static=True)
 
-    num_segments: int = eqx.static_field()
-    num_gauss_points: int = eqx.static_field()  #
-    num_strains: int = eqx.static_field()  # Number of strains (3 * num_segments)
+    num_segments: int = eqx.field(static=True)
+    num_gauss_points: int = eqx.field(static=True)  #
+    num_strains: int = eqx.field(static=True)  # Number of strains (3 * num_segments)
 
     xi_star: Array  # Rest configuration strain
     B_xi: Array  # Strain basis matrix
