@@ -1,8 +1,12 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: "soromox"
+title: "SoRoMoX: Soft Robot Models in JAX"
 abstract: "Kinematic and dynamic models of continuum and articulated soft robots implemented in JAX."
+identifiers:
+  - type: other
+    value: "soromox2025"
+    description: "The preferred citation key for this software"
 authors:
   - family-names: "Stölzle"
     given-names: "Maximilian"

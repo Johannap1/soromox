@@ -7,15 +7,15 @@
 [![License](https://img.shields.io/github/license/tud-phi/soromox.svg)](https://github.com/tud-phi/soromox/blob/main/LICENSE.txt)
 [![Docs](https://img.shields.io/badge/docs-live-brightgreen.svg)](https://tud-phi.github.io/soromox)
 
-This repository contains symbolic derivations of the kinematics and dynamics of various soft robots using Sympy.
-The symbolic expressions are then implemented in JAX and can be used for fast, parallelizable, and differentiable simulations.
-So far, we have focused on planar settings and implemented the following soft robots:
+We provide implementations of several popular and expressive soft robot models in JAX for fast, parallelizable, and differentiable simulations. Specifically, we focus on strain-based models that are suitable for modeling slender structures like soft robots (i.e., robots with a large length compared to their diameter often referred to as Cosserat rods).
+So far, we have implemented the following systems:
 
 - [N-link pendulum](examples/simulate_pendulum.py)
+- [General/3D Piecewise Constant Strain (PCS) continuum soft robot](examples/simulate_pcs.py)
 - [Planar Piecewise Constant Strain (PCS) continuum soft robot](examples/simulate_planar_pcs.py)
 - [Planar Handed Shearing Auxetics (HSA) robot](examples/simulate_planar_hsa.py)
 
-We are happy to receive contributions for other soft robots and/or other settings (e.g., 3D).
+We are happy to receive contributions for other soft robot models. See the [Contributing Guide](development/contributing.md) for more details.
 
 ## Citation
 
