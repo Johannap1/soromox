@@ -149,7 +149,7 @@ if __name__ == "__main__":
         "p0": jnp.array(
             [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         ),  # Initial position and orientation
-        "l": 1e-1 * jnp.ones((num_segments,)),
+        "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
         "g": jnp.array([0.0, 0.0, -9.81]),  # Gravity vector [m/s^2]
@@ -161,7 +161,7 @@ if __name__ == "__main__":
             jnp.repeat(
                 jnp.array([[1e0, 1e0, 1e0, 1e3, 1e3, 1e3]]), num_segments, axis=0
             )
-            * params["l"][:, None]
+            * params["L"][:, None]
         ).flatten()
     )
 

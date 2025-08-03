@@ -173,7 +173,7 @@ class PCS(eqx.Module):
         xi_star: Optional[Array] = None,
         stiffness_fn: Optional[Callable] = None,
         actuation_mapping_fn: Optional[Callable] = None,
-    ) -> "PCS":
+    ):
         """
         Initialize the PCS class.
 
@@ -189,7 +189,7 @@ class PCS(eqx.Module):
                             θ (thêta) : Rotation around X' axis (movable axis after first rotation)
                             φ (phi) : Rotation about the Z' axis (movable axis after the first two rotations)
                         [x0, y0, z0] : Position of the robot in the inertial frame
-                - "l": Length of each segment [m]
+                - "L": Length of each segment [m]
                 - "r": Radius of each segment [m]
                 - "rho": Density of each segment [kg/m^3]
                 - "g": Gravitational acceleration vector [m/s^2]
@@ -207,7 +207,7 @@ class PCS(eqx.Module):
             stiffness_fn (Optional[Callable], optional):
                 Function to compute the stiffness matrix.
                 Defaults to :
-                    l_i * diag( E_i * Ib_i,       # bending X
+                    L_i * diag( E_i * Ib_i,       # bending X
                                 E_i * Ib_i,       # bending Y
                                 G_i * J_i,        # torsion Z
                                 4/3 * A_i * G_i,  # shear X
@@ -235,108 +235,7 @@ class PCS(eqx.Module):
 
         # ================================================================
         # Robot parameters
-
-        # Initial position and orientation angle
-        try:
-            p0 = params["p0"]
-        except KeyError:
-            raise KeyError("Parameter 'p0' is required in params dictionary.")
-        # if not (isinstance(p0, (float, int, jnp.ndarray))):
-        #     raise TypeError(
-        #         f"p0 must be a float, int, or an array, got {type(th0).__name__}"
-        #     )
-        p0 = jnp.asarray(p0, dtype=jnp.float64)
-        self.g0 = lie.exp_SE3(p0)
-
-        # Gravitational acceleration vector
-        try:
-            g = params["g"]
-        except KeyError:
-            raise KeyError("Parameter 'g' is required in params dictionary.")
-        if not (isinstance(g, (list, jnp.ndarray))):
-            raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
-        g = jnp.asarray(g, dtype=jnp.float64)
-        if g.size != 3:
-            raise ValueError(f"g must be a vector of shape (3,), got {g.size}")
-        self.g = jnp.concatenate(
-            [jnp.zeros(3), g]
-        )  # Add zeros for the orientation angles
-
-        # Lengths of the segments
-        try:
-            L = params["l"]
-        except KeyError:
-            raise KeyError("Parameter 'l' is required in params dictionary.")
-        if not (isinstance(L, (list, jnp.ndarray))):
-            raise TypeError(f"l must be a list or an array, got {type(L).__name__}")
-        L = jnp.asarray(L, dtype=jnp.float64)
-        if L.shape != (num_segments,):
-            raise ValueError(f"l must have shape ({num_segments},), got {L.shape}")
-        self.L = L
-
-        L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
-        self.L_cum = L_cum
-
-        # Radius of the segments
-        try:
-            r = params["r"]
-        except KeyError:
-            raise KeyError("Parameter 'r' is required in params dictionary.")
-        if not (isinstance(r, (list, jnp.ndarray))):
-            raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
-        r = jnp.asarray(r, dtype=jnp.float64)
-        if r.shape != (num_segments,):
-            raise ValueError(f"r must have shape ({num_segments},), got {r.shape}")
-        self.r = r
-
-        # Densities of the segments
-        try:
-            rho = params["rho"]
-        except KeyError:
-            raise KeyError("Parameter 'rho' is required in params dictionary.")
-        if not (isinstance(rho, (list, jnp.ndarray))):
-            raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
-        rho = jnp.asarray(rho, dtype=jnp.float64)
-        if rho.shape != (num_segments,):
-            raise ValueError(f"rho must have shape ({num_segments},), got {rho.shape}")
-        self.rho = rho
-
-        # Elastic modulus of the segments
-        try:
-            E = params["E"]
-        except KeyError:
-            raise KeyError("Parameter 'E' is required in params dictionary.")
-        if not (isinstance(E, (list, jnp.ndarray))):
-            raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
-        E = jnp.asarray(E, dtype=jnp.float64)
-        if E.shape != (num_segments,):
-            raise ValueError(f"E must have shape ({num_segments},), got {E.shape}")
-        self.E = E
-
-        # Shear modulus of the segments
-        try:
-            G = params["G"]
-        except KeyError:
-            raise KeyError("Parameter 'G' is required in params dictionary.")
-        if not (isinstance(G, (list, jnp.ndarray))):
-            raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
-        G = jnp.asarray(G, dtype=jnp.float64)
-        if G.shape != (num_segments,):
-            raise ValueError(f"G must have shape ({num_segments},), got {G.shape}")
-        self.G = G
-
-        # Damping matrix of the robot
-        try:
-            D = params["D"]
-        except KeyError:
-            raise KeyError("Parameter 'D' is required in params dictionary.")
-        if not (isinstance(D, (list, jnp.ndarray))):
-            raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
-        D = jnp.asarray(D, dtype=jnp.float64)
-        expected_D_shape = (num_strains, num_strains)
-        if D.shape != expected_D_shape:
-            raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
-        self.D = D
+        self.set_params(params)
 
         # ================================================================
         # Order of Gauss-Legendre quadrature
@@ -441,6 +340,128 @@ class PCS(eqx.Module):
                     f"actuation_mapping_fn must be a callable, got {type(actuation_mapping_fn).__name__}"
                 )
         self.actuation_mapping_fn = actuation_mapping_fn
+
+    def set_params(self, params: Dict[str, Array]) -> None:
+        """
+        Set the robot parameters from a dictionary.
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "p0": Initial orientation angle and position in the inertial frame [rad, m]
+                    [ψ, θ, φ, x0, y0, z0]
+                        where [ψ, θ, φ] are the Euler angles in the ZXZ convention:
+                            ψ (psi) : Rotation around Z axis (fixed axis)
+                            θ (thêta) : Rotation around X' axis (movable axis after first rotation)
+                            φ (phi) : Rotation about the Z' axis (movable axis after the first two rotations)
+                        [x0, y0, z0] : Position of the robot in the inertial frame
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+        """
+        # Initial position and orientation angle
+        try:
+            p0 = params["p0"]
+        except KeyError:
+            raise KeyError("Parameter 'p0' is required in params dictionary.")
+        # if not (isinstance(p0, (float, int, jnp.ndarray))):
+        #     raise TypeError(
+        #         f"p0 must be a float, int, or an array, got {type(th0).__name__}"
+        #     )
+        p0 = jnp.asarray(p0, dtype=jnp.float64)
+        self.g0 = lie.exp_SE3(p0)
+
+        # Gravitational acceleration vector
+        try:
+            g = params["g"]
+        except KeyError:
+            raise KeyError("Parameter 'g' is required in params dictionary.")
+        if not (isinstance(g, (list, jnp.ndarray))):
+            raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
+        g = jnp.asarray(g, dtype=jnp.float64)
+        if g.size != 3:
+            raise ValueError(f"g must be a vector of shape (3,), got {g.size}")
+        self.g = jnp.concatenate(
+            [jnp.zeros(3), g]
+        )  # Add zeros for the orientation angles
+
+        # Lengths of the segments
+        try:
+            L = params["L"]
+        except KeyError:
+            raise KeyError("Parameter 'L' is required in params dictionary.")
+        if not (isinstance(L, (list, jnp.ndarray))):
+            raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
+        L = jnp.asarray(L, dtype=jnp.float64)
+        if L.shape != (self.num_segments,):
+            raise ValueError(f"L must have shape ({self.num_segments},), got {L.shape}")
+        self.L = L
+
+        L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
+        self.L_cum = L_cum
+
+        # Radius of the segments
+        try:
+            r = params["r"]
+        except KeyError:
+            raise KeyError("Parameter 'r' is required in params dictionary.")
+        if not (isinstance(r, (list, jnp.ndarray))):
+            raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
+        r = jnp.asarray(r, dtype=jnp.float64)
+        if r.shape != (self.num_segments,):
+            raise ValueError(f"r must have shape ({self.num_segments},), got {r.shape}")
+        self.r = r
+
+        # Densities of the segments
+        try:
+            rho = params["rho"]
+        except KeyError:
+            raise KeyError("Parameter 'rho' is required in params dictionary.")
+        if not (isinstance(rho, (list, jnp.ndarray))):
+            raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
+        rho = jnp.asarray(rho, dtype=jnp.float64)
+        if rho.shape != (self.num_segments,):
+            raise ValueError(f"rho must have shape ({self.num_segments},), got {rho.shape}")
+        self.rho = rho
+
+        # Elastic modulus of the segments
+        try:
+            E = params["E"]
+        except KeyError:
+            raise KeyError("Parameter 'E' is required in params dictionary.")
+        if not (isinstance(E, (list, jnp.ndarray))):
+            raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
+        E = jnp.asarray(E, dtype=jnp.float64)
+        if E.shape != (self.num_segments,):
+            raise ValueError(f"E must have shape ({self.num_segments},), got {E.shape}")
+        self.E = E
+
+        # Shear modulus of the segments
+        try:
+            G = params["G"]
+        except KeyError:
+            raise KeyError("Parameter 'G' is required in params dictionary.")
+        if not (isinstance(G, (list, jnp.ndarray))):
+            raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
+        G = jnp.asarray(G, dtype=jnp.float64)
+        if G.shape != (self.num_segments,):
+            raise ValueError(f"G must have shape ({self.num_segments},), got {G.shape}")
+        self.G = G
+
+        # Damping matrix of the robot
+        try:
+            D = params["D"]
+        except KeyError:
+            raise KeyError("Parameter 'D' is required in params dictionary.")
+        if not (isinstance(D, (list, jnp.ndarray))):
+            raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
+        D = jnp.asarray(D, dtype=jnp.float64)
+        expected_D_shape = (self.num_strains, self.num_strains)
+        if D.shape != expected_D_shape:
+            raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
+        self.D = D
 
     def classify_segment(
         self,
