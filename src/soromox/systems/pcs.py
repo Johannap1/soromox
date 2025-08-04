@@ -1,9 +1,9 @@
+import equinox as eqx
 from jax import Array, lax, vmap
 from jax import numpy as jnp
-
+import numpy as onp
 from typing import Callable, Dict, Tuple, Optional
 
-import equinox as eqx
 
 from .utils import (
     compute_strain_basis,
@@ -1011,18 +1011,18 @@ class PCS(eqx.Module):
 
         return C
 
-    def _gravitational_full_vector(
+    def _gravitational_force_full(
         self,
         q: Array,
     ) -> Array:
         """
-        Compute the full gravitational vector of the robot.
+        Compute the full gravitational force acting on the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
 
         Returns:
-            G (Array): Full gravitational vector of shape (num_strains,).
+            G (Array): Full gravitational force of shape (num_strains,).
         """
 
         def G_i(i):
@@ -1062,20 +1062,20 @@ class PCS(eqx.Module):
         return G_full
 
     @eqx.filter_jit
-    def gravitational_vector(
+    def gravitational_force(
         self,
         q: Array,
     ) -> Array:
         """
-        Compute the gravitational vector of the robot.
+        Compute the gravitational force acting on the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
 
         Returns:
-            G (Array): Gravitational vector of shape (num_active_strains,).
+            G (Array): Gravitational force of shape (num_active_strains,).
         """
-        G_full = self._gravitational_full_vector(q)
+        G_full = self._gravitational_force_full(q)
 
         G = self.B_xi.T @ G_full
 
@@ -1125,6 +1125,22 @@ class PCS(eqx.Module):
         K = self._stiffness(formulate_in_strain_space=False)
 
         return K
+    
+    @eqx.filter_jit
+    def elastic_force(self, q: Array) -> Array:
+        """
+        Compute the elastic forces of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            tau_el (Array): Elastic forces of shape (num_active_strains,).
+        """
+        K = self.stiffness_matrix()
+        tau_el = K @ q
+
+        return tau_el
 
     def _damping_full_matrix(
         self,
@@ -1173,60 +1189,28 @@ class PCS(eqx.Module):
         return A
 
     @eqx.filter_jit
-    def actuation_mapping(
+    def actuation_force(
         self,
         q: Array,
         u: Array,
     ) -> Array:
         """
-        Compute the actuation mapping of the robot.
+        Compute the actuation force acting on the soft robot of the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
             u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
-            alpha (Array): Actuation mapping of shape (num_active_strains, ).
+            tau_u (Array): Actuation force of shape (num_active_strains, ).
         """
         # evaluate the actuation matrix
         A = self.actuation_matrix(q)
 
-        # compute the actuation mapping
-        alpha = A @ u
+        # compute the actuation force
+        tau_u = A @ u
 
-        return alpha
-
-    @eqx.filter_jit
-    def dynamical_matrices(
-        self,
-        q: Array,
-        qd: Array,
-        u: Array,
-    ) -> Tuple[Array, Array, Array, Array, Array, Array]:
-        """
-        Compute the dynamical matrices of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            u (Array): actuation/control input of shape (num_actuators,).
-
-        Returns:
-            B (Array): Inertia matrix of shape (num_active_strains, num_active_strains).
-            C (Array): Coriolis matrix of shape (num_active_strains, num_active_strains).
-            G (Array): Gravitational vector of shape (num_active_strains,).
-            K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
-            D (Array): Damping matrix of shape (num_active_strains, num_active_strains).
-            alpha (Array): Actuation mapping of shape (num_active_strains, ).
-        """
-        B = self.inertia_matrix(q)
-        C = self.coriolis_matrix(q, qd)
-        G = self.gravitational_vector(q)
-        K = self.stiffness_matrix()
-        D = self.damping_matrix()
-        alpha = self.actuation_mapping(q, u)
-
-        return B, C, G, K, D, alpha
+        return tau_u
 
     @eqx.filter_jit
     def kinetic_energy(
@@ -1377,7 +1361,7 @@ class PCS(eqx.Module):
         _, s_local = self.classify_segment(s)
 
         # make operational_space_selector a boolean array
-        operational_space_selector = jnp.array(operational_space_selector, dtype=bool)
+        operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
         J, J_d = self.jacobian_and_derivative_bodyframe(q, qd, s_local)
@@ -1441,10 +1425,16 @@ class PCS(eqx.Module):
         if tau_ext is None:
             tau_ext = jnp.zeros((q.shape[-1], ))
 
-        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, u)
+        # evaluate the dynamical matrices
+        B = self.inertia_matrix(q)
+        C = self.coriolis_matrix(q, qd)
+        G = self.gravitational_force(q)
+        D = self.damping_matrix()
+        tau_el = self.elastic_force(q)
+        tau_u = self.actuation_force(q, u)
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
-        qdd = B_inv @ (alpha + tau_ext - C @ qd - G - K @ q - D @ qd)  # Compute the acceleration
+        qdd = B_inv @ (tau_u + tau_ext - C @ qd - G - tau_el - D @ qd)  # Compute the acceleration
 
         y_d = jnp.concatenate([qd, qdd])
 
