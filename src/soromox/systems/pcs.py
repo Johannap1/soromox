@@ -807,11 +807,11 @@ class PCS(eqx.Module):
             s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
-            J_local (Array): Jacobian of the forward kinematics at point s in the body frame, shape (6, num_active_strains)
+            J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
         """
-        J_local = self.jacobian_inertialframe(q, s)
+        J_global = self.jacobian_inertialframe(q, s)
 
-        return J_local
+        return J_global
 
     def jacobian_and_derivative(
         self,
@@ -820,7 +820,7 @@ class PCS(eqx.Module):
         s: Array,
     ) -> Tuple[Array, Array]:
         """
-        Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot in the body frame.
+        Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot in the inertial frame.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
@@ -828,12 +828,12 @@ class PCS(eqx.Module):
             s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
-            J_local (Array): Jacobian of the forward kinematics at point s in the body frame, shape (6, num_active_strains)
-            J_d_local (Array): Time-derivative of the Jacobian at point s in the body frame, shape (6, num_active_strains)
+            J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
+            J_d_global (Array): Time-derivative of the Jacobian at point s in the inertial frame, shape (6, num_active_strains)
         """
-        J_local, J_d_local = self.jacobian_and_derivative_bodyframe(q, qd, s)
+        J_global, J_d_global = self.jacobian_and_derivative_inertialframe(q, qd, s)
 
-        return J_local, J_d_local
+        return J_global, J_d_global
 
     # ==========================================
     # Useful functions for the system
