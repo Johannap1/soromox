@@ -27,6 +27,9 @@ from diffrax import (
     AbstractSolver,
 )
 
+# Function to compute the stiffness matrix for all segments
+compute_stiffness_matrix_for_all_segments_fn = vmap(compute_planar_stiffness_matrix)
+
 
 class PlanarPCS(eqx.Module):
     """
@@ -40,6 +43,8 @@ class PlanarPCS(eqx.Module):
     ----------
     num_segments : int
         Number of segments (constant strain sections) along the robot.
+    num_actuators : int
+        Number of actuators (control inputs) for the robot.
     th0 : Array
         Initial orientation angle of the robot in radians.
     g : Array
@@ -60,65 +65,6 @@ class PlanarPCS(eqx.Module):
         Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
     Xs, Ws : Array
         Gauss-Legendre quadrature nodes and weights for numerical integration.
-    stiffness_fn : Callable
-        Function to compute the full stiffness matrix.
-    actuation_mapping_fn : Callable
-        Function to map actuation torques into strain space.
-
-    Methods:
-    -------
-    strain(q: Array) -> Array:
-        Computes the strain vector from generalized coordinates.
-    forward_kinematics(q: Array, s: Array) -> Array:
-        Computes the forward kinematics at a point s along the robot.
-    jacobian(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (global frame).
-    jacobian_and_derivative(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (global frame).
-    dynamical_matrix(q: Array, qd: Array, actuation_args: Tuple[Array]) -> Array:
-        Computes the dynamical matrix for the system.
-    resolve_upon_time(q0: Array, qd0: Array, actuation_args: Tuple[Array], t0: float, t1: float, dt: float, skip_steps: int, solver: AbstractSolver, max_steps: Optional[int] = None) -> Tuple[Array, Array, Array]:
-        Simulates the robot dynamics over time using the specified solver.
-    forward_dynamics(t: float, y: Array, actuation_args: Optional[Tuple]) -> Array:
-        Computes the forward dynamics of the system at a given time t.
-
-    kinetic_energy(q: Array, qd: Array) -> float:
-        Computes the kinetic energy of the system.
-    elastic_energy(q: Array) -> float:
-        Computes the elastic potential energy of the system.
-    gravitational_energy(q: Array) -> float:
-        Computes the gravitational potential energy of the system.
-    potential_energy(q: Array) -> float:
-        Computes the total potential energy (elastic + gravitational) of the system.
-    total_energy(q: Array, qd: Array) -> float:
-        Computes the total energy (kinetic + potential) of the system.
-        
-    operational_space_dynamical_matrices(q: Array, qd: Array, s: Array, operational_space_selector: Optional[Tuple]) -> Tuple[Array, Array, Array, Array, Array]:
-        Computes the operational space dynamical matrices that define the operational space dynamics of the systems. Can be used, for example, for operational space control.
-    
-    inertia_matrix(q: Array) -> Array:
-        Computes the inertia matrix of the system.
-    coriolis_matrix(q: Array, qd: Array) -> Array:
-        Computes the Coriolis matrix of the system.
-    gravitational_vector(q: Array) -> Array:
-        Computes the gravitational force vector acting on the system.
-    stiffness_matrix() -> Array:
-        Computes the stiffness matrix of the system.
-    damping_matrix() -> Array:
-        Computes the damping matrix of the system.
-    actuation_mapping(q: Array, actuation_args: Tuple[Array]) -> Array:
-        Computes the actuation mapping of the system.
-
-    classify_segment(s: Array) -> Tuple[Array, Array]:
-        Classifies a point along the robot to its corresponding segment and local coordinate.
-    jacobian_bodyframe(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (body frame).
-    jacobian_inertialframe(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (inertial frame).
-    jacobian_and_derivative_bodyframe(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (body frame).
-    jacobian_and_derivative_inertialframe(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (inertial frame).
 
     Notes:
     -----
@@ -146,10 +92,8 @@ class PlanarPCS(eqx.Module):
 
     global_eps: float = jnp.finfo(jnp.float64).eps
 
-    stiffness_fn: Callable = eqx.field(static=True)
-    actuation_mapping_fn: Callable = eqx.field(static=True)
-
     num_segments: int = eqx.field(static=True)
+    num_actuators: int = eqx.field(static=True)  # Number of actuators
     num_gauss_points: int = eqx.field(static=True)  #
     num_strains: int = eqx.field(static=True)  # Number of strains (3 * num_segments)
 
@@ -164,11 +108,10 @@ class PlanarPCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
+        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_star: Optional[Array] = None,
-        stiffness_fn: Optional[Callable] = None,
-        actuation_mapping_fn: Optional[Callable] = None,
     ):
         """
         Initialize the PlanarPCS class.
@@ -179,12 +122,15 @@ class PlanarPCS(eqx.Module):
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters:
                 - "th0": Initial orientation angle [rad]
-                - "l": Length of each segment [m]
+                - "L": Length of each segment [m]
                 - "r": Radius of each segment [m]
                 - "rho": Density of each segment [kg/m^3]
                 - "g": Gravitational acceleration vector [m/s^2]
                 - "E": Elastic modulus of each segment [Pa]
                 - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
+            num_actuators (Optional[int], optional):
+                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -194,18 +140,6 @@ class PlanarPCS(eqx.Module):
             xi_star (Optional[Array], optional):
                 Rest strain of shape (3 * num_segments,).
                 Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local y-axis).
-            stiffness_fn (Optional[Callable], optional):
-                Function to compute the stiffness matrix.
-                Defaults to :
-                    l_i * diag( E_i * Ib_i,       # bending Z
-                                4/3 * A_i * G_i,  # shear X
-                                A_i * E_i,        # axial Y)
-            actuation_mapping_fn (Optional[Callable], optional):
-                Function to compute the actuation mapping.
-                This function needs to take as input:
-                    - q: generalized coordinates of shape (num_active_strains,)
-                    - actuation_args: tuple containing the actuation parameters (e.g. torques (tau,)).
-                Defaults to identity linear mapping. actuation_args = (tau,)
 
         """
         # Number of segments
@@ -222,7 +156,87 @@ class PlanarPCS(eqx.Module):
 
         # ================================================================
         # Robot parameters
+        self._set_params(params)
 
+        # ================================================================
+        # Order of Gauss-Legendre quadrature
+        if not isinstance(order_gauss, int):
+            raise TypeError(
+                f"order_gauss must be an integer, got {type(order_gauss).__name__}"
+            )
+        if order_gauss < 1:
+            raise ValueError(f"param_integration must be at least 1, got {order_gauss}")
+        Xs, Ws, num_gauss_points = gauss_quadrature(order_gauss, a=0.0, b=1.0)
+        self.Xs = Xs
+        self.Ws = Ws
+        self.num_gauss_points = num_gauss_points
+
+        # ================================================================
+        # Strain basis matrix
+        if strain_selector is None:
+            strain_selector = jnp.ones(self.num_strains, dtype=bool)
+        else:
+            if not isinstance(strain_selector, (list, jnp.ndarray)):
+                raise TypeError(
+                    f"strain_selector must be a list or an array, got {type(strain_selector).__name__}"
+                )
+            strain_selector = jnp.asarray(strain_selector)
+            if not jnp.issubdtype(strain_selector.dtype, jnp.bool_):
+                raise TypeError(
+                    f"strain_selector must be a boolean array, got {strain_selector.dtype}"
+                )
+            if strain_selector.size != self.num_strains:
+                raise ValueError(
+                    f"strain_selector must have {self.num_strains} elements, got {strain_selector.size}"
+                )
+            strain_selector = strain_selector.reshape(self.num_strains)
+        self.B_xi = compute_strain_basis(strain_selector)
+
+        self.num_active_strains = jnp.sum(strain_selector)
+
+        # Rest configuration strain
+        if xi_star is None:
+            xi_star = jnp.tile(
+                jnp.array([0.0, 0.0, 1.0], dtype=jnp.float64), (self.num_segments, 1)
+            ).reshape(self.num_strains)
+        else:
+            if not isinstance(xi_star, (list, jnp.ndarray)):
+                raise TypeError(
+                    f"xi_star must be a list or an array, got {type(xi_star).__name__}"
+                )
+            xi_star = jnp.asarray(xi_star)
+            if xi_star.size != self.num_strains:
+                raise ValueError(
+                    f"xi_star must have {self.num_strains} elements, got {xi_star.size}"
+                )
+            xi_star = xi_star.reshape(self.num_strains)
+        self.xi_star = xi_star
+
+        # Number of actuators
+        if num_actuators is None:
+            self.num_actuators = int(self.num_active_strains.item())
+        else:
+            self.num_actuators = num_actuators
+
+    def _set_params(
+        self,
+        params: Dict[str, Array],
+    ) -> None:
+        """
+        Set the parameters of the PCS model.
+
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "th0": Initial orientation angle [rad]
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
+        """
         # Initial orientation angle
         try:
             th0 = params["th0"]
@@ -251,14 +265,14 @@ class PlanarPCS(eqx.Module):
 
         # Lengths of the segments
         try:
-            L = params["l"]
+            L = params["L"]
         except KeyError:
-            raise KeyError("Parameter 'l' is required in params dictionary.")
+            raise KeyError("Parameter 'L' is required in params dictionary.")
         if not (isinstance(L, (list, jnp.ndarray))):
-            raise TypeError(f"l must be a list or an array, got {type(L).__name__}")
+            raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
         L = jnp.asarray(L, dtype=jnp.float64)
-        if L.shape != (num_segments,):
-            raise ValueError(f"l must have shape ({num_segments},), got {L.shape}")
+        if L.shape != (self.num_segments,):
+            raise ValueError(f"L must have shape ({self.num_segments},), got {L.shape}")
         self.L = L
 
         L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
@@ -272,8 +286,8 @@ class PlanarPCS(eqx.Module):
         if not (isinstance(r, (list, jnp.ndarray))):
             raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
         r = jnp.asarray(r, dtype=jnp.float64)
-        if r.shape != (num_segments,):
-            raise ValueError(f"r must have shape ({num_segments},), got {r.shape}")
+        if r.shape != (self.num_segments,):
+            raise ValueError(f"r must have shape ({self.num_segments},), got {r.shape}")
         self.r = r
 
         # Densities of the segments
@@ -284,8 +298,8 @@ class PlanarPCS(eqx.Module):
         if not (isinstance(rho, (list, jnp.ndarray))):
             raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
         rho = jnp.asarray(rho, dtype=jnp.float64)
-        if rho.shape != (num_segments,):
-            raise ValueError(f"rho must have shape ({num_segments},), got {rho.shape}")
+        if rho.shape != (self.num_segments,):
+            raise ValueError(f"rho must have shape ({self.num_segments},), got {rho.shape}")
         self.rho = rho
 
         # Elastic modulus of the segments
@@ -296,8 +310,8 @@ class PlanarPCS(eqx.Module):
         if not (isinstance(E, (list, jnp.ndarray))):
             raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
         E = jnp.asarray(E, dtype=jnp.float64)
-        if E.shape != (num_segments,):
-            raise ValueError(f"E must have shape ({num_segments},), got {E.shape}")
+        if E.shape != (self.num_segments,):
+            raise ValueError(f"E must have shape ({self.num_segments},), got {E.shape}")
         self.E = E
 
         # Shear modulus of the segments
@@ -308,8 +322,8 @@ class PlanarPCS(eqx.Module):
         if not (isinstance(G, (list, jnp.ndarray))):
             raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
         G = jnp.asarray(G, dtype=jnp.float64)
-        if G.shape != (num_segments,):
-            raise ValueError(f"G must have shape ({num_segments},), got {G.shape}")
+        if G.shape != (self.num_segments,):
+            raise ValueError(f"G must have shape ({self.num_segments},), got {G.shape}")
         self.G = G
 
         # Damping matrix of the robot
@@ -320,112 +334,58 @@ class PlanarPCS(eqx.Module):
         if not (isinstance(D, (list, jnp.ndarray))):
             raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
         D = jnp.asarray(D, dtype=jnp.float64)
-        expected_D_shape = (num_strains, num_strains)
+        expected_D_shape = (self.num_strains, self.num_strains)
         if D.shape != expected_D_shape:
             raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
         self.D = D
 
-        # ================================================================
-        # Order of Gauss-Legendre quadrature
-        if not isinstance(order_gauss, int):
-            raise TypeError(
-                f"order_gauss must be an integer, got {type(order_gauss).__name__}"
-            )
-        if order_gauss < 1:
-            raise ValueError(f"param_integration must be at least 1, got {order_gauss}")
-        Xs, Ws, num_gauss_points = gauss_quadrature(order_gauss, a=0.0, b=1.0)
-        self.Xs = Xs
-        self.Ws = Ws
-        self.num_gauss_points = num_gauss_points
+    def update_params(self, params: Dict[str, Array]) -> "PlanarPCS":
+        """
+        Update the parameters of the PCS model.
 
-        # ================================================================
-        # Strain basis matrix
-        if strain_selector is None:
-            strain_selector = jnp.ones(num_strains, dtype=bool)
-        else:
-            if not isinstance(strain_selector, (list, jnp.ndarray)):
-                raise TypeError(
-                    f"strain_selector must be a list or an array, got {type(strain_selector).__name__}"
-                )
-            strain_selector = jnp.asarray(strain_selector)
-            if not jnp.issubdtype(strain_selector.dtype, jnp.bool_):
-                raise TypeError(
-                    f"strain_selector must be a boolean array, got {strain_selector.dtype}"
-                )
-            if strain_selector.size != num_strains:
-                raise ValueError(
-                    f"strain_selector must have {num_strains} elements, got {strain_selector.size}"
-                )
-            strain_selector = strain_selector.reshape(num_strains)
-        self.B_xi = compute_strain_basis(strain_selector)
-
-        self.num_active_strains = jnp.sum(strain_selector)
-
-        # Rest configuration strain
-        if xi_star is None:
-            xi_star = jnp.tile(
-                jnp.array([0.0, 0.0, 1.0], dtype=jnp.float64), (num_segments, 1)
-            ).reshape(num_strains)
-        else:
-            if not isinstance(xi_star, (list, jnp.ndarray)):
-                raise TypeError(
-                    f"xi_star must be a list or an array, got {type(xi_star).__name__}"
-                )
-            xi_star = jnp.asarray(xi_star)
-            if xi_star.size != num_strains:
-                raise ValueError(
-                    f"xi_star must have {num_strains} elements, got {xi_star.size}"
-                )
-            xi_star = xi_star.reshape(num_strains)
-        self.xi_star = xi_star
-
-        # Stiffness function
-        if stiffness_fn is None:
-            compute_stiffness_matrix_for_all_segments_fn = vmap(
-                compute_planar_stiffness_matrix
-            )
-
-            def stiffness_fn(
-                formulate_in_strain_space: bool = False,
-            ) -> Array:
-                L = self.L
-                r = self.r
-                E = self.E
-                G = self.G
-
-                # cross-sectional area and second moment of area
-                A = jnp.pi * r**2
-                Ib = A**2 / (4 * jnp.pi)
-
-                # stiffness matrix of shape (num_segments, 3, 3)
-                S_sms = compute_stiffness_matrix_for_all_segments_fn(L, A, Ib, E, G)
-                # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
-                S = blk_diag(S_sms)
-
-                if not formulate_in_strain_space:
-                    S = self.B_xi.T @ S @ self.B_xi
-
-                return S
-        else:
-            if not callable(stiffness_fn):
-                raise TypeError(
-                    f"stiffness_fn must be a callable, got {type(stiffness_fn).__name__}"
-                )
-        self.stiffness_fn = stiffness_fn
-
-        # Actuation mapping function
-        if actuation_mapping_fn is None:
-
-            def actuation_mapping_fn(q: Array, tau: Array) -> Array:
-                A = self.B_xi.T @ jnp.identity(self.num_strains) @ self.B_xi
-                alpha = A @ tau
-                return alpha
-        else:
-            if not callable(actuation_mapping_fn):
-                raise TypeError(
-                    f"actuation_mapping_fn must be a callable, got {type(actuation_mapping_fn).__name__}"
-                )
-        self.actuation_mapping_fn = actuation_mapping_fn
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "th0": Initial orientation angle [rad]
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
+        """
+        # Apply updates sequentially
+        updated_self = self
+        
+        if "th0" in params:
+            updated_self = eqx.tree_at(lambda m: m.th0, updated_self, jnp.asarray(params["th0"], dtype=jnp.float64))
+        
+        if "g" in params:
+            g = jnp.asarray(params["g"], dtype=jnp.float64)
+            updated_self = eqx.tree_at(lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(1), g]))
+        
+        if "L" in params:
+            L = jnp.asarray(params["L"], dtype=jnp.float64)
+            L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), L]))
+            updated_self = eqx.tree_at(lambda m: (m.L, m.L_cum), updated_self, (L, L_cum))
+        
+        if "r" in params:
+            updated_self = eqx.tree_at(lambda m: m.r, updated_self, jnp.asarray(params["r"], dtype=jnp.float64))
+        
+        if "rho" in params:
+            updated_self = eqx.tree_at(lambda m: m.rho, updated_self, jnp.asarray(params["rho"], dtype=jnp.float64))
+        
+        if "E" in params:
+            updated_self = eqx.tree_at(lambda m: m.E, updated_self, jnp.asarray(params["E"], dtype=jnp.float64))
+        
+        if "G" in params:
+            updated_self = eqx.tree_at(lambda m: m.G, updated_self, jnp.asarray(params["G"], dtype=jnp.float64))
+        
+        if "D" in params:
+            updated_self = eqx.tree_at(lambda m: m.D, updated_self, jnp.asarray(params["D"], dtype=jnp.float64))
+        
+        return updated_self
 
     def classify_segment(
         self,
@@ -491,7 +451,7 @@ class PlanarPCS(eqx.Module):
         )  # Initial configuration [theta, x, y]
 
         # Iteration function
-        def chi_i(chi_prev: Array, i: int) -> Array:
+        def chi_i(chi_prev: Array, i: int) -> Tuple[Array, Array]:
             th_prev = chi_prev[0]
             p_prev = chi_prev[1:]
 
@@ -1094,6 +1054,23 @@ class PlanarPCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
+    
+    def _stiffness(
+        self, formulate_in_strain_space: bool = False,
+    ) -> Array:
+        # cross-sectional area and second moment of area
+        A = jnp.pi * self.r**2
+        Ib = A**2 / (4 * jnp.pi)
+
+        # stiffness matrix of shape (num_segments, 3, 3)
+        S_sms = compute_stiffness_matrix_for_all_segments_fn(self.L, A, Ib, self.E, self.G)
+        # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
+        S = blk_diag(S_sms)
+
+        if not formulate_in_strain_space:
+            S = self.B_xi.T @ S @ self.B_xi
+
+        return S
 
     def _stiffness_full_matrix(
         self,
@@ -1104,7 +1081,7 @@ class PlanarPCS(eqx.Module):
         Returns:
             K_full (Array): Full stiffness matrix of shape (num_strains, num_strains).
         """
-        K_full = self.stiffness_fn(formulate_in_strain_space=True)
+        K_full = self._stiffness(formulate_in_strain_space=True)
 
         return K_full
 
@@ -1117,7 +1094,7 @@ class PlanarPCS(eqx.Module):
         Returns:
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
         """
-        K = self.stiffness_fn()
+        K = self._stiffness(formulate_in_strain_space=False)
 
         return K
 
@@ -1151,23 +1128,40 @@ class PlanarPCS(eqx.Module):
         D = self.B_xi.T @ D_full @ self.B_xi
 
         return D
+    
+    def actuation_matrix(self, q: Array) -> Array:
+        """
+        Compute the actuation matrix of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            A (Array): Actuation matrix of shape (num_active_strains, num_actuators).
+        """
+        A = jnp.identity(self.num_actuators)
+        return A
 
     def actuation_mapping(
         self,
         q: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Array:
         """
         Compute the actuation mapping of the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
-        alpha = self.actuation_mapping_fn(q, *actuation_args)
+        # evaluate the actuation matrix
+        A = self.actuation_matrix(q)
+
+        # compute the actuation mapping
+        alpha = A @ u
 
         return alpha
 
@@ -1175,7 +1169,7 @@ class PlanarPCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Tuple[Array, Array, Array, Array, Array, Array]:
         """
         Compute the dynamical matrices of the robot.
@@ -1183,7 +1177,7 @@ class PlanarPCS(eqx.Module):
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
             qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
             B (Array): Inertia matrix of shape (num_active_strains, num_active_strains).
@@ -1191,14 +1185,14 @@ class PlanarPCS(eqx.Module):
             G (Array): Gravitational vector of shape (num_active_strains,).
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
             D (Array): Damping matrix of shape (num_active_strains, num_active_strains).
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
         B = self.inertia_matrix(q)
         C = self.coriolis_matrix(q, qd)
         G = self.gravitational_vector(q)
         K = self.stiffness_matrix()
         D = self.damping_matrix()
-        alpha = self.actuation_mapping(q, actuation_args)
+        alpha = self.actuation_mapping(q, u)
 
         return B, C, G, K, D, alpha
 
@@ -1206,7 +1200,7 @@ class PlanarPCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the kinetic energy of the robot.
 
@@ -1225,7 +1219,7 @@ class PlanarPCS(eqx.Module):
     def elastic_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the elastic energy of the robot.
 
@@ -1243,7 +1237,7 @@ class PlanarPCS(eqx.Module):
     def gravitational_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the gravitational energy of the robot.
 
@@ -1282,7 +1276,7 @@ class PlanarPCS(eqx.Module):
     def potential_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the potential energy of the robot.
 
@@ -1301,7 +1295,7 @@ class PlanarPCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the total energy of the robot, which is the sum of kinetic and potential energy.
 
@@ -1390,15 +1384,29 @@ class PlanarPCS(eqx.Module):
         Returns:
             y_d: Time derivative of the state vector.
         """
+        # Split the state vector into configuration and velocity
+        q, qd = jnp.split(y, 2)
 
-        q, qd = jnp.split(
-            y, 2
-        )  # Split the state vector into configuration and velocity
+        # split the actuation arguments if provided
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u = actuation_args[0]
+            tau_ext = None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+        
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((q.shape[-1], ))
 
-        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, actuation_args)
+        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, u)
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
-        qdd = B_inv @ (-C @ qd - G - K @ q - D @ qd + alpha)  # Compute the acceleration
+        qdd = B_inv @ (alpha + tau_ext - C @ qd - G - K @ q - D @ qd)  # Compute the acceleration
 
         y_d = jnp.concatenate([qd, qdd])
 
@@ -1408,7 +1416,8 @@ class PlanarPCS(eqx.Module):
         self,
         q0: Array,
         qd0: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Optional[Array] = None,
+        tau_ext: Optional[Array] = None,
         t0: Optional[float] = 0.0,
         t1: Optional[float] = 10.0,
         dt: Optional[float] = 1e-4,
@@ -1423,8 +1432,9 @@ class PlanarPCS(eqx.Module):
         Args:
             q0 (Array): Initial configuration (strains).
             qd0 (Array): Initial velocity (strains).
-            actuation_args (Tuple, optional): Additional arguments for the actuation function.
+            u (Array, optional): Actuation/control input.
                 Default is None (no actuation).
+            tau_ext (Array, optional): External forces/torques applied to the system.
             t0 (float, optionnal): Initial time.
                 Default is 0.0.
             t1 (float, optionnal): Final time.
@@ -1447,6 +1457,10 @@ class PlanarPCS(eqx.Module):
             qds (Array): Velocity (strains) at the saved time points.
         """
         y0 = jnp.concatenate([q0, qd0])  # Initial state vector
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((q0.shape[-1], ))
 
         term = ODETerm(self.forward_dynamics)
 
@@ -1460,7 +1474,7 @@ class PlanarPCS(eqx.Module):
             t1=t[-1],
             dt0=dt,
             y0=y0,
-            args=actuation_args,
+            args=(u, tau_ext),
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=max_steps,

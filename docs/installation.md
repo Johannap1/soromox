@@ -4,6 +4,17 @@
   <strong>Get started with SoRoMoX in minutes!</strong> Choose from multiple installation methods to get Soft Robot Models in jaX (SoRoMoX) running on your system.
 </div>
 
+!!! warning "📢 Migration from JSRM"
+    
+    If you're migrating from the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling), please note that SoRoMoX introduces breaking changes:
+    
+    - **Package Name**: `import jsrm` → `import soromox`
+    - **Architecture**: Functional approach → Object-oriented Equinox dataclasses
+    - **Performance**: Symbolic derivations → Numerical implementations
+    - **New Features**: Support for General/3D PCS and GVS systems
+    
+    See the [User Guide](user-guide/quick-start.md) for migration examples.
+
 ---
 
 ## 🔧 Requirements

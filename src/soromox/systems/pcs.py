@@ -27,6 +27,9 @@ from diffrax import (
     AbstractSolver,
 )
 
+# define a vectorized version of the stiffness matrix computation
+compute_stiffness_matrix_for_all_segments_fn = vmap(compute_spatial_stiffness_matrix)
+
 
 class PCS(eqx.Module):
     """
@@ -40,6 +43,8 @@ class PCS(eqx.Module):
     ----------
     num_segments : int
         Number of segments (constant strain sections) along the robot.
+    num_actuators : int
+        Number of actuators (control inputs) for the robot.
     g0 : Array
         Initial pose of the robot base as an SE(3) transformation matrix.
     g : Array
@@ -60,65 +65,6 @@ class PCS(eqx.Module):
         Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
     Xs, Ws : Array
         Gauss-Legendre quadrature nodes and weights for numerical integration.
-    stiffness_fn : Callable
-        Function to compute the full stiffness matrix.
-    actuation_mapping_fn : Callable
-        Function to map actuation torques into strain space.
-
-    Methods:
-    -------
-    strain(q: Array) -> Array:
-        Computes the strain vector from generalized coordinates.
-    forward_kinematics(q: Array, s: Array) -> Array:
-        Computes the forward kinematics at a point s along the robot.
-    jacobian(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (global frame).
-    jacobian_and_derivative(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (global frame).
-    dynamical_matrix(q: Array, qd: Array, actuation_args: Tuple[Array]) -> Array:
-        Computes the dynamical matrix for the system.
-    resolve_upon_time(q0: Array, qd0: Array, actuation_args: Tuple[Array], t0: float, t1: float, dt: float, skip_steps: int, solver: AbstractSolver, max_steps: Optional[int] = None) -> Tuple[Array, Array, Array]:
-        Simulates the robot dynamics over time using the specified solver.
-    forward_dynamics(t: float, y: Array, actuation_args: Optional[Tuple]) -> Array:
-        Computes the forward dynamics of the system at a given time t.
-
-    kinetic_energy(q: Array, qd: Array) -> float:
-        Computes the kinetic energy of the system.
-    elastic_energy(q: Array) -> float:
-        Computes the elastic potential energy of the system.
-    gravitational_energy(q: Array) -> float:
-        Computes the gravitational potential energy of the system.
-    potential_energy(q: Array) -> float:
-        Computes the total potential energy (elastic + gravitational) of the system.
-    total_energy(q: Array, qd: Array) -> float:
-        Computes the total energy (kinetic + potential) of the system.
-
-    operational_space_dynamical_matrices(q: Array, qd: Array, s: Array, operational_space_selector: Optional[Tuple]) -> Tuple[Array, Array, Array, Array, Array]:
-        # TODO
-
-    inertia_matrix(q: Array) -> Array:
-        Computes the inertia matrix of the system.
-    coriolis_matrix(q: Array, qd: Array) -> Array:
-        Computes the Coriolis matrix of the system.
-    gravitational_vector(q: Array) -> Array:
-        Computes the gravitational force vector acting on the system.
-    stiffness_matrix() -> Array:
-        Computes the stiffness matrix of the system.
-    damping_matrix() -> Array:
-        Computes the damping matrix of the system.
-    actuation_mapping(q: Array, actuation_args: Tuple[Array]) -> Array:
-        Computes the actuation mapping of the system.
-
-    classify_segment(s: Array) -> Tuple[Array, Array]:
-        Classifies a point along the robot to its corresponding segment and local coordinate.
-    jacobian_bodyframe(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (body frame).
-    jacobian_inertialframe(q: Array, s: Array) -> Array:
-        Computes the Jacobian of the forward kinematics at a point s (inertial frame).
-    jacobian_and_derivative_bodyframe(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (body frame).
-    jacobian_and_derivative_inertialframe(q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
-        Computes the Jacobian and its time derivative at a point s (inertial frame).
 
     Notes:
     -----
@@ -149,10 +95,8 @@ class PCS(eqx.Module):
 
     global_eps: float = jnp.finfo(jnp.float64).eps
 
-    stiffness_fn: Callable = eqx.field(static=True)
-    actuation_mapping_fn: Callable = eqx.field(static=True)
-
     num_segments: int = eqx.field(static=True)
+    num_actuators: int = eqx.field(static=True)  # Number of actuators
     num_gauss_points: int = eqx.field(static=True)  #
     num_strains: int = eqx.field(static=True)  # Number of strains (6 * num_segments)
 
@@ -168,12 +112,11 @@ class PCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
+        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_star: Optional[Array] = None,
-        stiffness_fn: Optional[Callable] = None,
-        actuation_mapping_fn: Optional[Callable] = None,
-    ) -> "PCS":
+    ):
         """
         Initialize the PCS class.
 
@@ -189,12 +132,15 @@ class PCS(eqx.Module):
                             θ (thêta) : Rotation around X' axis (movable axis after first rotation)
                             φ (phi) : Rotation about the Z' axis (movable axis after the first two rotations)
                         [x0, y0, z0] : Position of the robot in the inertial frame
-                - "l": Length of each segment [m]
+                - "L": Length of each segment [m]
                 - "r": Radius of each segment [m]
                 - "rho": Density of each segment [kg/m^3]
                 - "g": Gravitational acceleration vector [m/s^2]
                 - "E": Elastic modulus of each segment [Pa]
                 - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
+            num_actuators (Optional[int], optional):
+                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -204,21 +150,6 @@ class PCS(eqx.Module):
             xi_star (Optional[Array], optional):
                 Rest strain of shape (6 * num_segments,).
                 Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local z-axis).
-            stiffness_fn (Optional[Callable], optional):
-                Function to compute the stiffness matrix.
-                Defaults to :
-                    l_i * diag( E_i * Ib_i,       # bending X
-                                E_i * Ib_i,       # bending Y
-                                G_i * J_i,        # torsion Z
-                                4/3 * A_i * G_i,  # shear X
-                                4/3 * A_i * G_i,  # shear Y
-                                A_i * E_i,        # axial Z)
-            actuation_mapping_fn (Optional[Callable], optional):
-                Function to compute the actuation mapping.
-                This function needs to take as input:
-                    - q: generalized coordinates of shape (num_active_strains,)
-                    - actuation_args: tuple containing the actuation parameters (e.g. torques (tau,)).
-                Defaults to identity linear mapping. actuation_args = (tau,)
 
         """
         # Number of segments
@@ -235,108 +166,7 @@ class PCS(eqx.Module):
 
         # ================================================================
         # Robot parameters
-
-        # Initial position and orientation angle
-        try:
-            p0 = params["p0"]
-        except KeyError:
-            raise KeyError("Parameter 'p0' is required in params dictionary.")
-        # if not (isinstance(p0, (float, int, jnp.ndarray))):
-        #     raise TypeError(
-        #         f"p0 must be a float, int, or an array, got {type(th0).__name__}"
-        #     )
-        p0 = jnp.asarray(p0, dtype=jnp.float64)
-        self.g0 = lie.exp_SE3(p0)
-
-        # Gravitational acceleration vector
-        try:
-            g = params["g"]
-        except KeyError:
-            raise KeyError("Parameter 'g' is required in params dictionary.")
-        if not (isinstance(g, (list, jnp.ndarray))):
-            raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
-        g = jnp.asarray(g, dtype=jnp.float64)
-        if g.size != 3:
-            raise ValueError(f"g must be a vector of shape (3,), got {g.size}")
-        self.g = jnp.concatenate(
-            [jnp.zeros(3), g]
-        )  # Add zeros for the orientation angles
-
-        # Lengths of the segments
-        try:
-            L = params["l"]
-        except KeyError:
-            raise KeyError("Parameter 'l' is required in params dictionary.")
-        if not (isinstance(L, (list, jnp.ndarray))):
-            raise TypeError(f"l must be a list or an array, got {type(L).__name__}")
-        L = jnp.asarray(L, dtype=jnp.float64)
-        if L.shape != (num_segments,):
-            raise ValueError(f"l must have shape ({num_segments},), got {L.shape}")
-        self.L = L
-
-        L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
-        self.L_cum = L_cum
-
-        # Radius of the segments
-        try:
-            r = params["r"]
-        except KeyError:
-            raise KeyError("Parameter 'r' is required in params dictionary.")
-        if not (isinstance(r, (list, jnp.ndarray))):
-            raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
-        r = jnp.asarray(r, dtype=jnp.float64)
-        if r.shape != (num_segments,):
-            raise ValueError(f"r must have shape ({num_segments},), got {r.shape}")
-        self.r = r
-
-        # Densities of the segments
-        try:
-            rho = params["rho"]
-        except KeyError:
-            raise KeyError("Parameter 'rho' is required in params dictionary.")
-        if not (isinstance(rho, (list, jnp.ndarray))):
-            raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
-        rho = jnp.asarray(rho, dtype=jnp.float64)
-        if rho.shape != (num_segments,):
-            raise ValueError(f"rho must have shape ({num_segments},), got {rho.shape}")
-        self.rho = rho
-
-        # Elastic modulus of the segments
-        try:
-            E = params["E"]
-        except KeyError:
-            raise KeyError("Parameter 'E' is required in params dictionary.")
-        if not (isinstance(E, (list, jnp.ndarray))):
-            raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
-        E = jnp.asarray(E, dtype=jnp.float64)
-        if E.shape != (num_segments,):
-            raise ValueError(f"E must have shape ({num_segments},), got {E.shape}")
-        self.E = E
-
-        # Shear modulus of the segments
-        try:
-            G = params["G"]
-        except KeyError:
-            raise KeyError("Parameter 'G' is required in params dictionary.")
-        if not (isinstance(G, (list, jnp.ndarray))):
-            raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
-        G = jnp.asarray(G, dtype=jnp.float64)
-        if G.shape != (num_segments,):
-            raise ValueError(f"G must have shape ({num_segments},), got {G.shape}")
-        self.G = G
-
-        # Damping matrix of the robot
-        try:
-            D = params["D"]
-        except KeyError:
-            raise KeyError("Parameter 'D' is required in params dictionary.")
-        if not (isinstance(D, (list, jnp.ndarray))):
-            raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
-        D = jnp.asarray(D, dtype=jnp.float64)
-        expected_D_shape = (num_strains, num_strains)
-        if D.shape != expected_D_shape:
-            raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
-        self.D = D
+        self._set_params(params)
 
         # ================================================================
         # Order of Gauss-Legendre quadrature
@@ -393,54 +223,189 @@ class PCS(eqx.Module):
             xi_star = xi_star.reshape(num_strains)
         self.xi_star = xi_star
 
-        # Stiffness function
-        if stiffness_fn is None:
-            compute_stiffness_matrix_for_all_segments_fn = vmap(
-                compute_spatial_stiffness_matrix
-            )
-
-            def stiffness_fn(
-                formulate_in_strain_space: bool = False,
-            ) -> Array:
-                L = self.L
-                r = self.r
-                E = self.E
-                G = self.G
-
-                # cross-sectional area and second moment of area
-                A = jnp.pi * r**2
-                Ib = A**2 / (4 * jnp.pi)
-                J = jnp.pi * r**4 / 2  # Polar moment of inertia
-
-                # stiffness matrix of shape (num_segments, 6, 6)
-                S_sms = compute_stiffness_matrix_for_all_segments_fn(L, A, Ib, J, E, G)
-                # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
-                S = blk_diag(S_sms)
-
-                if not formulate_in_strain_space:
-                    S = self.B_xi.T @ S @ self.B_xi
-
-                return S
+        # Number of actuators
+        if num_actuators is None:
+            self.num_actuators = int(self.num_active_strains.item())
         else:
-            if not callable(stiffness_fn):
-                raise TypeError(
-                    f"stiffness_fn must be a callable, got {type(stiffness_fn).__name__}"
-                )
-        self.stiffness_fn = stiffness_fn
+            self.num_actuators = num_actuators
 
-        # Actuation mapping function
-        if actuation_mapping_fn is None:
+    def _set_params(self, params: Dict[str, Array]) -> None:
+        """
+        Set the robot parameters from a dictionary.
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "p0": Initial orientation angle and position in the inertial frame [rad, m]
+                    [ψ, θ, φ, x0, y0, z0]
+                        where [ψ, θ, φ] are the Euler angles in the ZXZ convention:
+                            ψ (psi) : Rotation around Z axis (fixed axis)
+                            θ (thêta) : Rotation around X' axis (movable axis after first rotation)
+                            φ (phi) : Rotation about the Z' axis (movable axis after the first two rotations)
+                        [x0, y0, z0] : Position of the robot in the inertial frame
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment [Pa*s]
+        """
+        # Initial position and orientation angle
+        try:
+            p0 = params["p0"]
+        except KeyError:
+            raise KeyError("Parameter 'p0' is required in params dictionary.")
+        # if not (isinstance(p0, (float, int, jnp.ndarray))):
+        #     raise TypeError(
+        #         f"p0 must be a float, int, or an array, got {type(th0).__name__}"
+        #     )
+        p0 = jnp.asarray(p0, dtype=jnp.float64)
+        self.g0 = lie.exp_SE3(p0)
 
-            def actuation_mapping_fn(q: Array, tau: Array) -> Array:
-                A = self.B_xi.T @ jnp.identity(self.num_strains) @ self.B_xi
-                alpha = A @ tau
-                return alpha
-        else:
-            if not callable(actuation_mapping_fn):
-                raise TypeError(
-                    f"actuation_mapping_fn must be a callable, got {type(actuation_mapping_fn).__name__}"
-                )
-        self.actuation_mapping_fn = actuation_mapping_fn
+        # Gravitational acceleration vector
+        try:
+            g = params["g"]
+        except KeyError:
+            raise KeyError("Parameter 'g' is required in params dictionary.")
+        if not (isinstance(g, (list, jnp.ndarray))):
+            raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
+        g = jnp.asarray(g, dtype=jnp.float64)
+        if g.size != 3:
+            raise ValueError(f"g must be a vector of shape (3,), got {g.size}")
+        self.g = jnp.concatenate(
+            [jnp.zeros(3), g]
+        )  # Add zeros for the orientation angles
+
+        # Lengths of the segments
+        try:
+            L = params["L"]
+        except KeyError:
+            raise KeyError("Parameter 'L' is required in params dictionary.")
+        if not (isinstance(L, (list, jnp.ndarray))):
+            raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
+        L = jnp.asarray(L, dtype=jnp.float64)
+        if L.shape != (self.num_segments,):
+            raise ValueError(f"L must have shape ({self.num_segments},), got {L.shape}")
+        self.L = L
+
+        L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
+        self.L_cum = L_cum
+
+        # Radius of the segments
+        try:
+            r = params["r"]
+        except KeyError:
+            raise KeyError("Parameter 'r' is required in params dictionary.")
+        if not (isinstance(r, (list, jnp.ndarray))):
+            raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
+        r = jnp.asarray(r, dtype=jnp.float64)
+        if r.shape != (self.num_segments,):
+            raise ValueError(f"r must have shape ({self.num_segments},), got {r.shape}")
+        self.r = r
+
+        # Densities of the segments
+        try:
+            rho = params["rho"]
+        except KeyError:
+            raise KeyError("Parameter 'rho' is required in params dictionary.")
+        if not (isinstance(rho, (list, jnp.ndarray))):
+            raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
+        rho = jnp.asarray(rho, dtype=jnp.float64)
+        if rho.shape != (self.num_segments,):
+            raise ValueError(f"rho must have shape ({self.num_segments},), got {rho.shape}")
+        self.rho = rho
+
+        # Elastic modulus of the segments
+        try:
+            E = params["E"]
+        except KeyError:
+            raise KeyError("Parameter 'E' is required in params dictionary.")
+        if not (isinstance(E, (list, jnp.ndarray))):
+            raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
+        E = jnp.asarray(E, dtype=jnp.float64)
+        if E.shape != (self.num_segments,):
+            raise ValueError(f"E must have shape ({self.num_segments},), got {E.shape}")
+        self.E = E
+
+        # Shear modulus of the segments
+        try:
+            G = params["G"]
+        except KeyError:
+            raise KeyError("Parameter 'G' is required in params dictionary.")
+        if not (isinstance(G, (list, jnp.ndarray))):
+            raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
+        G = jnp.asarray(G, dtype=jnp.float64)
+        if G.shape != (self.num_segments,):
+            raise ValueError(f"G must have shape ({self.num_segments},), got {G.shape}")
+        self.G = G
+
+        # Damping matrix of the robot
+        try:
+            D = params["D"]
+        except KeyError:
+            raise KeyError("Parameter 'D' is required in params dictionary.")
+        if not (isinstance(D, (list, jnp.ndarray))):
+            raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
+        D = jnp.asarray(D, dtype=jnp.float64)
+        expected_D_shape = (self.num_strains, self.num_strains)
+        if D.shape != expected_D_shape:
+            raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
+        self.D = D
+
+    def update_params(self, params: Dict[str, Array]) -> "PCS":
+        """
+        Update the parameters of the PCS model.
+
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "p0": Initial orientation angle and position in the inertial frame [rad, m]
+                    [ψ, θ, φ, x0, y0, z0]
+                        where [ψ, θ, φ] are the Euler angles in the ZXZ convention:
+                            ψ (psi) : Rotation around Z axis (fixed axis)
+                            θ (thêta) : Rotation around X' axis (movable axis after first rotation)
+                            φ (phi) : Rotation about the Z' axis (movable axis after the first two rotations)
+                        [x0, y0, z0] : Position of the robot in the inertial frame
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment [Pa*s]
+        """
+        # Apply updates sequentially
+        updated_self = self
+        
+        if "p0" in params:
+            p0 = jnp.asarray(params["p0"], dtype=jnp.float64)
+            updated_self = eqx.tree_at(lambda m: m.g0, updated_self, lie.exp_SE3(p0))
+        
+        if "g" in params:
+            g = jnp.asarray(params["g"], dtype=jnp.float64)
+            updated_self = eqx.tree_at(lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(3), g]))
+        
+        if "L" in params:
+            L = jnp.asarray(params["L"], dtype=jnp.float64)
+            L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), L]))
+            updated_self = eqx.tree_at(lambda m: (m.L, m.L_cum), updated_self, (L, L_cum))
+        
+        if "r" in params:
+            updated_self = eqx.tree_at(lambda m: m.r, updated_self, jnp.asarray(params["r"], dtype=jnp.float64))
+        
+        if "rho" in params:
+            updated_self = eqx.tree_at(lambda m: m.rho, updated_self, jnp.asarray(params["rho"], dtype=jnp.float64))
+        
+        if "E" in params:
+            updated_self = eqx.tree_at(lambda m: m.E, updated_self, jnp.asarray(params["E"], dtype=jnp.float64))
+        
+        if "G" in params:
+            updated_self = eqx.tree_at(lambda m: m.G, updated_self, jnp.asarray(params["G"], dtype=jnp.float64))
+        
+        if "D" in params:
+            updated_self = eqx.tree_at(lambda m: m.D, updated_self, jnp.asarray(params["D"], dtype=jnp.float64))
+        
+        return updated_self
 
     def classify_segment(
         self,
@@ -504,7 +469,7 @@ class PCS(eqx.Module):
         # Compute the point coordinate along the segment in the interval [0, l_segment]
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(g_base_i, i_segment):
+        def body_segment_i(g_base_i, i_segment) -> Tuple[Array, Array]:
             length_i = jnp.where(i_segment == segment_idx, s_local, self.L[i_segment])
             xi_i = xi[i_segment]
 
@@ -1103,6 +1068,24 @@ class PCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
+    
+    def _stiffness(
+        self, formulate_in_strain_space: bool = False,
+    ) -> Array:
+        # cross-sectional area and second moment of area
+        A = jnp.pi * self.r**2
+        Ib = A**2 / (4 * jnp.pi)
+        J = jnp.pi * self.r**4 / 2  # Polar moment of inertia
+
+        # stiffness matrix of shape (num_segments, 6, 6)
+        S_sms = compute_stiffness_matrix_for_all_segments_fn(self.L, A, Ib, J, self.E, self.G)
+        # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
+        S = blk_diag(S_sms)
+
+        if not formulate_in_strain_space:
+            S = self.B_xi.T @ S @ self.B_xi
+
+        return S
 
     def _stiffness_full_matrix(
         self,
@@ -1113,7 +1096,7 @@ class PCS(eqx.Module):
         Returns:
             K_full (Array): Full stiffness matrix of shape (num_strains, num_strains).
         """
-        K_full = self.stiffness_fn(formulate_in_strain_space=True)
+        K_full = self._stiffness(formulate_in_strain_space=True)
 
         return K_full
 
@@ -1126,7 +1109,7 @@ class PCS(eqx.Module):
         Returns:
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
         """
-        K = self.stiffness_fn()
+        K = self._stiffness(formulate_in_strain_space=False)
 
         return K
 
@@ -1161,22 +1144,39 @@ class PCS(eqx.Module):
 
         return D
 
+    def actuation_matrix(self, q: Array) -> Array:
+        """
+        Compute the actuation matrix of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            A (Array): Actuation matrix of shape (num_active_strains, num_actuators).
+        """
+        A = self.B_xi.T @ jnp.identity(self.num_strains) @ self.B_xi
+        return A
+
     def actuation_mapping(
         self,
         q: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Array:
         """
         Compute the actuation mapping of the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
-        alpha = self.actuation_mapping_fn(q, *actuation_args)
+        # evaluate the actuation matrix
+        A = self.actuation_matrix(q)
+
+        # compute the actuation mapping
+        alpha = A @ u
 
         return alpha
 
@@ -1184,7 +1184,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Tuple[Array, Array, Array, Array, Array, Array]:
         """
         Compute the dynamical matrices of the robot.
@@ -1192,7 +1192,7 @@ class PCS(eqx.Module):
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
             qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
             B (Array): Inertia matrix of shape (num_active_strains, num_active_strains).
@@ -1200,14 +1200,14 @@ class PCS(eqx.Module):
             G (Array): Gravitational vector of shape (num_active_strains,).
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
             D (Array): Damping matrix of shape (num_active_strains, num_active_strains).
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
         B = self.inertia_matrix(q)
         C = self.coriolis_matrix(q, qd)
         G = self.gravitational_vector(q)
         K = self.stiffness_matrix()
         D = self.damping_matrix()
-        alpha = self.actuation_mapping(q, actuation_args)
+        alpha = self.actuation_mapping(q, u)
 
         return B, C, G, K, D, alpha
 
@@ -1215,7 +1215,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the kinetic energy of the robot.
 
@@ -1234,7 +1234,7 @@ class PCS(eqx.Module):
     def elastic_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the elastic energy of the robot.
 
@@ -1252,7 +1252,7 @@ class PCS(eqx.Module):
     def gravitational_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the gravitational energy of the robot.
 
@@ -1291,7 +1291,7 @@ class PCS(eqx.Module):
     def potential_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the potential energy of the robot.
 
@@ -1310,7 +1310,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the total energy of the robot, which is the sum of kinetic and potential energy.
 
@@ -1399,15 +1399,29 @@ class PCS(eqx.Module):
         Returns:
             y_d: Time derivative of the state vector.
         """
+        # Split the state vector into configuration and velocity
+        q, qd = jnp.split(y, 2)
 
-        q, qd = jnp.split(
-            y, 2
-        )  # Split the state vector into configuration and velocity
+        # split the actuation arguments if provided
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u = actuation_args[0]
+            tau_ext = None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+        
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((q.shape[-1], ))
 
-        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, actuation_args)
+        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, u)
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
-        qdd = B_inv @ (-C @ qd - G - K @ q - D @ qd + alpha)  # Compute the acceleration
+        qdd = B_inv @ (alpha + tau_ext - C @ qd - G - K @ q - D @ qd)  # Compute the acceleration
 
         y_d = jnp.concatenate([qd, qdd])
 
@@ -1417,7 +1431,8 @@ class PCS(eqx.Module):
         self,
         q0: Array,
         qd0: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Optional[Array] = None,
+        tau_ext: Optional[Array] = None,
         t0: Optional[float] = 0.0,
         t1: Optional[float] = 10.0,
         dt: Optional[float] = 1e-4,
@@ -1432,8 +1447,9 @@ class PCS(eqx.Module):
         Args:
             q0 (Array): Initial configuration (strains).
             qd0 (Array): Initial velocity (strains).
-            actuation_args (Tuple, optional): Additional arguments for the actuation function.
+            u (Array, optional): Actuation/control input.
                 Default is None (no actuation).
+            tau_ext (Array, optional): External forces/torques applied to the system.
             t0 (float, optionnal): Initial time.
                 Default is 0.0.
             t1 (float, optionnal): Final time.
@@ -1456,6 +1472,10 @@ class PCS(eqx.Module):
             qds (Array): Velocity (strains) at the saved time points.
         """
         y0 = jnp.concatenate([q0, qd0])  # Initial state vector
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((q0.shape[-1], ))
 
         term = ODETerm(self.forward_dynamics)
 
@@ -1469,7 +1489,7 @@ class PCS(eqx.Module):
             t1=t[-1],
             dt0=dt,
             y0=y0,
-            args=actuation_args,
+            args=(u, tau_ext),
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=max_steps,

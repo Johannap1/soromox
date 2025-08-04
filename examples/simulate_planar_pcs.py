@@ -1,21 +1,17 @@
+from diffrax import Tsit5
+from functools import partial
+from IPython.display import HTML
 import jax
-
-from soromox.systems.planar_pcs import PlanarPCS
 import jax.numpy as jnp
-
-from typing import Callable, Dict
 from jax import Array
-
-import numpy as onp
-
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from IPython.display import HTML
-
-from diffrax import Tsit5
-
-from functools import partial
 from matplotlib.widgets import Slider
+import numpy as onp
+from typing import Callable, Dict
+
+from soromox.systems.planar_pcs import PlanarPCS
+
 
 jax.config.update("jax_enable_x64", True)  # double precision
 jnp.set_printoptions(
@@ -144,7 +140,7 @@ if __name__ == "__main__":
     )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]
-        "l": 1e-1 * jnp.ones((num_segments,)),
+        "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
         "g": jnp.array([0.0, -9.81]),
@@ -154,7 +150,7 @@ if __name__ == "__main__":
     params["D"] = 1e-3 * jnp.diag(
         (
             jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0)
-            * params["l"][:, None]
+            * params["L"][:, None]
         ).flatten()
     )
 
@@ -178,9 +174,7 @@ if __name__ == "__main__":
     qd0 = jnp.zeros_like(q0)
 
     # Actuation parameters
-    tau = jnp.zeros_like(q0)
-    # WARNING: actuation_args need to be a tuple, even if it contains only one element
-    actuation_args = (tau,)
+    u = jnp.zeros_like(q0)
 
     # Simulation time parameters
     t0 = 0.0
@@ -194,7 +188,7 @@ if __name__ == "__main__":
     ts, q_ts, q_d_ts = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
-        actuation_args=actuation_args,
+        u=u,
         t0=t0,
         t1=t1,
         dt=dt,
