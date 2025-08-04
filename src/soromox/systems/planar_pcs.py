@@ -1401,7 +1401,7 @@ class PlanarPCS(eqx.Module):
         if u is None:
             u = jnp.zeros((self.num_actuators, ))
         if tau_ext is None:
-            tau_ext = jnp.zeros((self.num_active_strains, ))
+            tau_ext = jnp.zeros((q.shape[-1], ))
 
         B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, u)
 
@@ -1460,7 +1460,7 @@ class PlanarPCS(eqx.Module):
         if u is None:
             u = jnp.zeros((self.num_actuators, ))
         if tau_ext is None:
-            tau_ext = jnp.zeros((self.num_active_strains, ))
+            tau_ext = jnp.zeros((q0.shape[-1], ))
 
         term = ODETerm(self.forward_dynamics)
 
