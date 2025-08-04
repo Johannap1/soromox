@@ -4,6 +4,14 @@
   <strong>Welcome to Soft Robot Models in jaX (SoRoMoX)!</strong> A cutting-edge library for fast, parallelizable, and differentiable simulations of soft robots using JAX and symbolic mathematics.
 </div>
 
+!!! info "📢 Successor to JSRM"
+    
+    SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). The main improvements include:
+    
+    - **🎯 Extended System Support**: General/3D PCS and GVS systems
+    - **⚡ Numerical Implementation**: Replaced symbolic derivations with numerical implementations for better scalability and significantly reduced JIT compilation times
+    - **🏗️ Object-Oriented Architecture**: Migration from functional to Equinox dataclasses-based design enabling easy extendability and modification of methods (e.g., changing actuation mapping)
+
 ---
 
 ## 🎯 Overview
