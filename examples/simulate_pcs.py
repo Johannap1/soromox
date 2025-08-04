@@ -187,10 +187,7 @@ if __name__ == "__main__":
     qd0 = jnp.zeros_like(q0)
 
     # Actuation parameters
-    tau = jnp.zeros_like(q0)
-    # WARNING: actuation_args need to be a tuple, even if it contains only one element
-    # so (tau, ) is necessary NOT (tau) or tau
-    actuation_args = (tau,)
+    u = jnp.zeros_like(q0)
 
     # Simulation time parameters
     t0 = 0.0
@@ -204,7 +201,7 @@ if __name__ == "__main__":
     ts, q_ts, q_d_ts = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
-        actuation_args=actuation_args,
+        u=u,
         t0=t0,
         t1=t1,
         dt=dt,

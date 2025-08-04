@@ -27,6 +27,9 @@ from diffrax import (
     AbstractSolver,
 )
 
+# define a vectorized version of the stiffness matrix computation
+compute_stiffness_matrix_for_all_segments_fn = vmap(compute_spatial_stiffness_matrix)
+
 
 class PCS(eqx.Module):
     """
@@ -40,6 +43,8 @@ class PCS(eqx.Module):
     ----------
     num_segments : int
         Number of segments (constant strain sections) along the robot.
+    num_actuators : int
+        Number of actuators (control inputs) for the robot.
     g0 : Array
         Initial pose of the robot base as an SE(3) transformation matrix.
     g : Array
@@ -60,10 +65,6 @@ class PCS(eqx.Module):
         Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
     Xs, Ws : Array
         Gauss-Legendre quadrature nodes and weights for numerical integration.
-    stiffness_fn : Callable
-        Function to compute the full stiffness matrix.
-    actuation_mapping_fn : Callable
-        Function to map actuation torques into strain space.
 
     Notes:
     -----
@@ -94,10 +95,8 @@ class PCS(eqx.Module):
 
     global_eps: float = jnp.finfo(jnp.float64).eps
 
-    stiffness_fn: Callable = eqx.field(static=True)
-    actuation_mapping_fn: Callable = eqx.field(static=True)
-
     num_segments: int = eqx.field(static=True)
+    num_actuators: int = eqx.field(static=True)  # Number of actuators
     num_gauss_points: int = eqx.field(static=True)  #
     num_strains: int = eqx.field(static=True)  # Number of strains (6 * num_segments)
 
@@ -113,11 +112,10 @@ class PCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
+        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_star: Optional[Array] = None,
-        stiffness_fn: Optional[Callable] = None,
-        actuation_mapping_fn: Optional[Callable] = None,
     ):
         """
         Initialize the PCS class.
@@ -140,6 +138,8 @@ class PCS(eqx.Module):
                 - "g": Gravitational acceleration vector [m/s^2]
                 - "E": Elastic modulus of each segment [Pa]
                 - "G": Shear modulus of each segment [Pa]
+            num_actuators (Optional[int], optional):
+                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -149,21 +149,6 @@ class PCS(eqx.Module):
             xi_star (Optional[Array], optional):
                 Rest strain of shape (6 * num_segments,).
                 Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local z-axis).
-            stiffness_fn (Optional[Callable], optional):
-                Function to compute the stiffness matrix.
-                Defaults to :
-                    L_i * diag( E_i * Ib_i,       # bending X
-                                E_i * Ib_i,       # bending Y
-                                G_i * J_i,        # torsion Z
-                                4/3 * A_i * G_i,  # shear X
-                                4/3 * A_i * G_i,  # shear Y
-                                A_i * E_i,        # axial Z)
-            actuation_mapping_fn (Optional[Callable], optional):
-                Function to compute the actuation mapping.
-                This function needs to take as input:
-                    - q: generalized coordinates of shape (num_active_strains,)
-                    - actuation_args: tuple containing the actuation parameters (e.g. torques (tau,)).
-                Defaults to identity linear mapping. actuation_args = (tau,)
 
         """
         # Number of segments
@@ -237,54 +222,11 @@ class PCS(eqx.Module):
             xi_star = xi_star.reshape(num_strains)
         self.xi_star = xi_star
 
-        # Stiffness function
-        if stiffness_fn is None:
-            compute_stiffness_matrix_for_all_segments_fn = vmap(
-                compute_spatial_stiffness_matrix
-            )
-
-            def stiffness_fn(
-                formulate_in_strain_space: bool = False,
-            ) -> Array:
-                L = self.L
-                r = self.r
-                E = self.E
-                G = self.G
-
-                # cross-sectional area and second moment of area
-                A = jnp.pi * r**2
-                Ib = A**2 / (4 * jnp.pi)
-                J = jnp.pi * r**4 / 2  # Polar moment of inertia
-
-                # stiffness matrix of shape (num_segments, 6, 6)
-                S_sms = compute_stiffness_matrix_for_all_segments_fn(L, A, Ib, J, E, G)
-                # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
-                S = blk_diag(S_sms)
-
-                if not formulate_in_strain_space:
-                    S = self.B_xi.T @ S @ self.B_xi
-
-                return S
+        # Number of actuators
+        if num_actuators is None:
+            self.num_actuators = int(self.num_active_strains.item())
         else:
-            if not callable(stiffness_fn):
-                raise TypeError(
-                    f"stiffness_fn must be a callable, got {type(stiffness_fn).__name__}"
-                )
-        self.stiffness_fn = stiffness_fn
-
-        # Actuation mapping function
-        if actuation_mapping_fn is None:
-
-            def actuation_mapping_fn(q: Array, tau: Array) -> Array:
-                A = self.B_xi.T @ jnp.identity(self.num_strains) @ self.B_xi
-                alpha = A @ tau
-                return alpha
-        else:
-            if not callable(actuation_mapping_fn):
-                raise TypeError(
-                    f"actuation_mapping_fn must be a callable, got {type(actuation_mapping_fn).__name__}"
-                )
-        self.actuation_mapping_fn = actuation_mapping_fn
+            self.num_actuators = num_actuators
 
     def set_params(self, params: Dict[str, Array]) -> None:
         """
@@ -470,7 +412,7 @@ class PCS(eqx.Module):
         # Compute the point coordinate along the segment in the interval [0, l_segment]
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(g_base_i, i_segment):
+        def body_segment_i(g_base_i, i_segment) -> Tuple[Array, Array]:
             length_i = jnp.where(i_segment == segment_idx, s_local, self.L[i_segment])
             xi_i = xi[i_segment]
 
@@ -1069,6 +1011,24 @@ class PCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
+    
+    def _stiffness(
+        self, formulate_in_strain_space: bool = False,
+    ) -> Array:
+        # cross-sectional area and second moment of area
+        A = jnp.pi * self.r**2
+        Ib = A**2 / (4 * jnp.pi)
+        J = jnp.pi * self.r**4 / 2  # Polar moment of inertia
+
+        # stiffness matrix of shape (num_segments, 6, 6)
+        S_sms = compute_stiffness_matrix_for_all_segments_fn(self.L, A, Ib, J, self.E, self.G)
+        # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
+        S = blk_diag(S_sms)
+
+        if not formulate_in_strain_space:
+            S = self.B_xi.T @ S @ self.B_xi
+
+        return S
 
     def _stiffness_full_matrix(
         self,
@@ -1079,7 +1039,7 @@ class PCS(eqx.Module):
         Returns:
             K_full (Array): Full stiffness matrix of shape (num_strains, num_strains).
         """
-        K_full = self.stiffness_fn(formulate_in_strain_space=True)
+        K_full = self._stiffness(formulate_in_strain_space=True)
 
         return K_full
 
@@ -1092,7 +1052,7 @@ class PCS(eqx.Module):
         Returns:
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
         """
-        K = self.stiffness_fn()
+        K = self._stiffness(formulate_in_strain_space=False)
 
         return K
 
@@ -1127,22 +1087,39 @@ class PCS(eqx.Module):
 
         return D
 
+    def actuation_matrix(self, q: Array) -> Array:
+        """
+        Compute the actuation matrix of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            A (Array): Actuation matrix of shape (num_active_strains, num_actuators).
+        """
+        A = self.B_xi.T @ jnp.identity(self.num_strains) @ self.B_xi
+        return A
+
     def actuation_mapping(
         self,
         q: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Array:
         """
         Compute the actuation mapping of the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
-        alpha = self.actuation_mapping_fn(q, *actuation_args)
+        # evaluate the actuation matrix
+        A = self.actuation_matrix(q)
+
+        # compute the actuation mapping
+        alpha = A @ u
 
         return alpha
 
@@ -1150,7 +1127,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Array,
     ) -> Tuple[Array, Array, Array, Array, Array, Array]:
         """
         Compute the dynamical matrices of the robot.
@@ -1158,7 +1135,7 @@ class PCS(eqx.Module):
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
             qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function, if any.
+            u (Array): actuation/control input of shape (num_actuators,).
 
         Returns:
             B (Array): Inertia matrix of shape (num_active_strains, num_active_strains).
@@ -1166,14 +1143,14 @@ class PCS(eqx.Module):
             G (Array): Gravitational vector of shape (num_active_strains,).
             K (Array): Stiffness matrix of shape (num_active_strains, num_active_strains).
             D (Array): Damping matrix of shape (num_active_strains, num_active_strains).
-            alpha (Array): Actuation mapping of shape (num_active_strains, num_active_strains).
+            alpha (Array): Actuation mapping of shape (num_active_strains, ).
         """
         B = self.inertia_matrix(q)
         C = self.coriolis_matrix(q, qd)
         G = self.gravitational_vector(q)
         K = self.stiffness_matrix()
         D = self.damping_matrix()
-        alpha = self.actuation_mapping(q, actuation_args)
+        alpha = self.actuation_mapping(q, u)
 
         return B, C, G, K, D, alpha
 
@@ -1181,7 +1158,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the kinetic energy of the robot.
 
@@ -1200,7 +1177,7 @@ class PCS(eqx.Module):
     def elastic_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the elastic energy of the robot.
 
@@ -1218,7 +1195,7 @@ class PCS(eqx.Module):
     def gravitational_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the gravitational energy of the robot.
 
@@ -1257,7 +1234,7 @@ class PCS(eqx.Module):
     def potential_energy(
         self,
         q: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the potential energy of the robot.
 
@@ -1276,7 +1253,7 @@ class PCS(eqx.Module):
         self,
         q: Array,
         qd: Array,
-    ) -> float:
+    ) -> Array:
         """
         Compute the total energy of the robot, which is the sum of kinetic and potential energy.
 
@@ -1365,15 +1342,29 @@ class PCS(eqx.Module):
         Returns:
             y_d: Time derivative of the state vector.
         """
+        # Split the state vector into configuration and velocity
+        q, qd = jnp.split(y, 2)
 
-        q, qd = jnp.split(
-            y, 2
-        )  # Split the state vector into configuration and velocity
+        # split the actuation arguments if provided
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u = actuation_args[0]
+            tau_ext = None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+        
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((self.num_active_strains, ))
 
-        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, actuation_args)
+        B, C, G, K, D, alpha = self.dynamical_matrices(q, qd, u)
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
-        qdd = B_inv @ (-C @ qd - G - K @ q - D @ qd + alpha)  # Compute the acceleration
+        qdd = B_inv @ (alpha + tau_ext - C @ qd - G - K @ q - D @ qd)  # Compute the acceleration
 
         y_d = jnp.concatenate([qd, qdd])
 
@@ -1383,7 +1374,8 @@ class PCS(eqx.Module):
         self,
         q0: Array,
         qd0: Array,
-        actuation_args: Optional[Tuple] = None,
+        u: Optional[Array] = None,
+        tau_ext: Optional[Array] = None,
         t0: Optional[float] = 0.0,
         t1: Optional[float] = 10.0,
         dt: Optional[float] = 1e-4,
@@ -1398,8 +1390,9 @@ class PCS(eqx.Module):
         Args:
             q0 (Array): Initial configuration (strains).
             qd0 (Array): Initial velocity (strains).
-            actuation_args (Tuple, optional): Additional arguments for the actuation function.
+            u (Array, optional): Actuation/control input.
                 Default is None (no actuation).
+            tau_ext (Array, optional): External forces/torques applied to the system.
             t0 (float, optionnal): Initial time.
                 Default is 0.0.
             t1 (float, optionnal): Final time.
@@ -1422,6 +1415,10 @@ class PCS(eqx.Module):
             qds (Array): Velocity (strains) at the saved time points.
         """
         y0 = jnp.concatenate([q0, qd0])  # Initial state vector
+        if u is None:
+            u = jnp.zeros((self.num_actuators, ))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((self.num_active_strains, ))
 
         term = ODETerm(self.forward_dynamics)
 
@@ -1435,7 +1432,7 @@ class PCS(eqx.Module):
             t1=t[-1],
             dt0=dt,
             y0=y0,
-            args=actuation_args,
+            args=(u, tau_ext),
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=max_steps,
