@@ -128,6 +128,7 @@ class PlanarPCS(eqx.Module):
                 - "g": Gravitational acceleration vector [m/s^2]
                 - "E": Elastic modulus of each segment [Pa]
                 - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
             num_actuators (Optional[int], optional):
                 Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
@@ -155,7 +156,7 @@ class PlanarPCS(eqx.Module):
 
         # ================================================================
         # Robot parameters
-        self.set_params(params)
+        self._set_params(params)
 
         # ================================================================
         # Order of Gauss-Legendre quadrature
@@ -217,7 +218,7 @@ class PlanarPCS(eqx.Module):
         else:
             self.num_actuators = num_actuators
 
-    def set_params(
+    def _set_params(
         self,
         params: Dict[str, Array],
     ) -> None:
@@ -234,6 +235,7 @@ class PlanarPCS(eqx.Module):
                 - "g": Gravitational acceleration vector [m/s^2]
                 - "E": Elastic modulus of each segment [Pa]
                 - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
         """
         # Initial orientation angle
         try:
@@ -336,6 +338,54 @@ class PlanarPCS(eqx.Module):
         if D.shape != expected_D_shape:
             raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
         self.D = D
+
+    def update_params(self, params: Dict[str, Array]) -> "PlanarPCS":
+        """
+        Update the parameters of the PCS model.
+
+        Args:
+            params (Dict[str, Array]):
+                Dictionary containing the robot parameters:
+                - "th0": Initial orientation angle [rad]
+                - "L": Length of each segment [m]
+                - "r": Radius of each segment [m]
+                - "rho": Density of each segment [kg/m^3]
+                - "g": Gravitational acceleration vector [m/s^2]
+                - "E": Elastic modulus of each segment [Pa]
+                - "G": Shear modulus of each segment [Pa]
+                - "D": Damping matrix of each segment
+        """
+        # Apply updates sequentially
+        updated_self = self
+        
+        if "th0" in params:
+            updated_self = eqx.tree_at(lambda m: m.th0, updated_self, jnp.asarray(params["th0"], dtype=jnp.float64))
+        
+        if "g" in params:
+            g = jnp.asarray(params["g"], dtype=jnp.float64)
+            updated_self = eqx.tree_at(lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(1), g]))
+        
+        if "L" in params:
+            L = jnp.asarray(params["L"], dtype=jnp.float64)
+            L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), L]))
+            updated_self = eqx.tree_at(lambda m: (m.L, m.L_cum), updated_self, (L, L_cum))
+        
+        if "r" in params:
+            updated_self = eqx.tree_at(lambda m: m.r, updated_self, jnp.asarray(params["r"], dtype=jnp.float64))
+        
+        if "rho" in params:
+            updated_self = eqx.tree_at(lambda m: m.rho, updated_self, jnp.asarray(params["rho"], dtype=jnp.float64))
+        
+        if "E" in params:
+            updated_self = eqx.tree_at(lambda m: m.E, updated_self, jnp.asarray(params["E"], dtype=jnp.float64))
+        
+        if "G" in params:
+            updated_self = eqx.tree_at(lambda m: m.G, updated_self, jnp.asarray(params["G"], dtype=jnp.float64))
+        
+        if "D" in params:
+            updated_self = eqx.tree_at(lambda m: m.D, updated_self, jnp.asarray(params["D"], dtype=jnp.float64))
+        
+        return updated_self
 
     def classify_segment(
         self,
