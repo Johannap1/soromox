@@ -800,7 +800,7 @@ class PCS(eqx.Module):
         s: Array,
     ) -> Array:
         """
-        Compute the Jacobian of the forward kinematics at a point s along the robot in the body frame.
+        Compute the Jacobian of the forward kinematics at a point s along the robot in the inertial frame.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
@@ -809,7 +809,7 @@ class PCS(eqx.Module):
         Returns:
             J_local (Array): Jacobian of the forward kinematics at point s in the body frame, shape (6, num_active_strains)
         """
-        J_local = self.jacobian_bodyframe(q, s)
+        J_local = self.jacobian_inertialframe(q, s)
 
         return J_local
 
