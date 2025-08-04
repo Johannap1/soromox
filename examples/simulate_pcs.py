@@ -1,21 +1,17 @@
+from diffrax import Tsit5
+from functools import partial
+
+from IPython.display import HTML
 import jax
+from jax import Array
+import jax.numpy as jnp
+from matplotlib.animation import FuncAnimation
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+import numpy as onp
+from typing import Callable
 
 from soromox.systems.pcs import PCS
-import jax.numpy as jnp
-
-from typing import Callable
-from jax import Array
-
-import numpy as onp
-
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from IPython.display import HTML
-
-from diffrax import Tsit5
-
-from functools import partial
-from matplotlib.widgets import Slider
 
 jax.config.update("jax_enable_x64", True)  # double precision
 jnp.set_printoptions(
