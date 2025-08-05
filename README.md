@@ -194,13 +194,13 @@ Before making any changes, you can preview what would be updated using the dry r
 
 ```bash
 # Preview a patch version bump without making changes
-conda run -n jsrm python bump_version.py --patch --dry-run
+python bump_version.py --patch --dry-run
 
 # Preview a minor version bump
-conda run -n jsrm python bump_version.py --minor --dry-run
+python bump_version.py --minor --dry-run
 
 # Preview a specific version
-conda run -n jsrm python bump_version.py 0.2.0 --dry-run
+python bump_version.py 0.2.0 --dry-run
 ```
 
 The dry run mode will show you:
