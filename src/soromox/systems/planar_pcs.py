@@ -1349,7 +1349,7 @@ class PlanarPCS(eqx.Module):
         operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
-        J, J_d = self.jacobian_and_derivative_bodyframe(q, qd, s_local)
+        J, J_d = self.jacobian_and_derivative_inertialframe(q, qd, s_local)
 
         J = J[operational_space_selector, :]
         J_d = J_d[operational_space_selector, :]
