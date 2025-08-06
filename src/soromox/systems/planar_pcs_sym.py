@@ -17,7 +17,7 @@ from soromox.math_utils import blk_diag
 def factory(
     filepath: Union[str, Path],
     strain_selector: Array = None,
-    xi_eq: Optional[Array] = None,
+    xi_ref: Optional[Array] = None,
     stiffness_fn: Optional[Callable] = None,
     actuation_mapping_fn: Optional[Callable] = None,
     global_eps: float = 1e-6,
@@ -36,7 +36,7 @@ def factory(
         filepath: path to file containing symbolic expressions
         strain_selector: array of shape (n_xi, ) with boolean values indicating which components of the
                 strain are active / non-zero
-        xi_eq: array of shape (3 * num_segments) with the rest strains of the rod
+        xi_ref: array of shape (3 * num_segments) with the reference strains of the rod
         stiffness_fn: function to compute the stiffness matrix of the system. Should have the signature
             stiffness_fn(params: Dict[str, Array], B_xi, formulate_in_strain_space: bool) -> Array
         actuation_mapping_fn: function to compute the actuation matrix that maps the actuation space to the
@@ -82,18 +82,19 @@ def factory(
         assert strain_selector.shape == (n_xi,)
     B_xi = compute_strain_basis(strain_selector)
 
-    # initialize the rest strain
-    if xi_eq is None:
-        xi_eq = jnp.zeros((n_xi,))
-        # by default, set the axial rest strain (local y-axis) along the entire rod to 1.0
-        rest_strain_reshaped = xi_eq.reshape((-1, 3))
-        rest_strain_reshaped = rest_strain_reshaped.at[:, -1].set(1.0)
-        xi_eq = rest_strain_reshaped.flatten()
+    # initialize the reference strain
+    if xi_ref is None:
+        xi_ref = jnp.zeros((n_xi,))
+        # by default, set the axial reference strain (local y-axis) along the entire rod to 1.0
+        ref_strain_reshaped = xi_ref.reshape((-1, 3))
+        ref_strain_reshaped = ref_strain_reshaped.at[:, -2].set(1.0)
+        
+        xi_ref = ref_strain_reshaped.flatten()
     else:
-        assert xi_eq.shape == (n_xi,)
+        assert xi_ref.shape == (n_xi,)
 
     # concatenate the list of state symbols
-    state_syms_cat = sym_exps["state_syms"]["xi"] + sym_exps["state_syms"]["xi_d"]
+    state_syms_cat = sym_exps["state_syms"]["xi"] + sym_exps["state_syms"]["xid"]
 
     # lambdify symbolic expressions
     chi_lambda_sms = []
@@ -117,17 +118,17 @@ def factory(
             "jax",
         )
         J_lambda_sms.append(J_lambda)
-    J_d_lambda_sms = []
-    for J_d_exp in sym_exps["exps"]["J_d_sms"]:
-        J_d_lambda = sp.lambdify(
+    Jd_lambda_sms = []
+    for Jd_exp in sym_exps["exps"]["Jd_sms"]:
+        Jd_lambda = sp.lambdify(
             params_syms_cat
             + sym_exps["state_syms"]["xi"]
-            + sym_exps["state_syms"]["xi_d"]
+            + sym_exps["state_syms"]["xid"]
             + [sym_exps["state_syms"]["s"]],
-            J_d_exp,
+            Jd_exp,
             "jax",
         )
-        J_d_lambda_sms.append(J_d_lambda)
+        Jd_lambda_sms.append(Jd_lambda)
 
     B_lambda = sp.lambdify(
         params_syms_cat + sym_exps["state_syms"]["xi"], sym_exps["exps"]["B"], "jax"
@@ -245,7 +246,7 @@ def factory(
             jacobian_fn: Callable,
             params: Dict[str, Array],
             B_xi: Array,
-            xi_eq: Array,
+            xi_ref: Array,
             q: Array,
         ) -> Array:
             """
@@ -256,7 +257,7 @@ def factory(
                 jacobian_fn: function to compute the Jacobian
                 params: dictionary with robot parameters
                 B_xi: strain basis matrix
-                xi_eq: equilibrium strains as array of shape (n_xi,)
+                xi_ref: reference strains as array of shape (n_xi,)
                 q: configuration of the robot
             Returns:
                 A: actuation matrix of shape (n_xi, n_xi) where n_xi is the number of strains.
@@ -282,7 +283,7 @@ def factory(
                 and theta is the planar orientation with respect to the x-axis
         """
         # map the configuration to the strains
-        xi = xi_eq + B_xi @ q
+        xi = xi_ref + B_xi @ q
         # add a small number to the bending strain to avoid singularities
         xi_epsed = apply_eps_to_bend_strains(xi, eps)
 
@@ -310,11 +311,11 @@ def factory(
             eps: small number to avoid singularities (e.g., division by zero)
         Returns:
             J: Jacobian matrix of shape (3, n_q) of the backbone point in Cartesian-space
-                Relates the configuration-space velocity q_d to the Cartesian-space velocity chi_d,
-                where chi_d = J @ q_d. Chi_d consists of [p_x_d, p_y_d, theta_d]
+                Relates the configuration-space velocity qd to the Cartesian-space velocity chid,
+                where chid = J @ qd. Chid consists of [p_xd, p_yd, thetad]
         """
         # map the configuration to the strains
-        xi = xi_eq + B_xi @ q
+        xi = xi_ref + B_xi @ q
         # add a small number to the bending strain to avoid singularities
         xi_epsed = apply_eps_to_bend_strains(xi, eps)
 
@@ -334,14 +335,14 @@ def factory(
         return J
 
     def dynamical_matrices_fn(
-        params: Dict[str, Array], q: Array, q_d: Array, eps: float = 1e4 * global_eps
+        params: Dict[str, Array], q: Array, qd: Array, eps: float = 1e4 * global_eps
     ) -> Tuple[Array, Array, Array, Array, Array, Array]:
         """
         Compute the dynamical matrices of the system.
         Args:
             params: Dictionary of robot parameters
             q: generalized coordinates of shape (n_q, )
-            q_d: generalized velocities of shape (n_q, )
+            qd: generalized velocities of shape (n_q, )
             eps: small number to avoid singularities (e.g., division by zero)
         Returns:
             B: mass / inertia matrix of shape (n_q, n_q)
@@ -352,8 +353,8 @@ def factory(
             alpha: actuation matrix of shape (n_q, n_tau)
         """
         # map the configuration to the strains
-        xi = xi_eq + B_xi @ q
-        xi_d = B_xi @ q_d
+        xi = xi_ref + B_xi @ q
+        xid = B_xi @ qd
 
         # add a small number to the bending strain to avoid singularities
         xi_epsed = apply_eps_to_bend_strains(xi, eps)
@@ -362,7 +363,7 @@ def factory(
         K = stiffness_fn(params, B_xi, formulate_in_strain_space=True)
         # compute the actuation matrix
         A = actuation_mapping_fn(
-            forward_kinematics_fn, jacobian_fn, params, B_xi, xi_eq, q
+            forward_kinematics_fn, jacobian_fn, params, B_xi, xi_ref, q
         )
 
         # dissipative matrix from the parameters
@@ -371,12 +372,12 @@ def factory(
         params_for_lambdify = select_params_for_lambdify_fn(params)
 
         B = B_xi.T @ B_lambda(*params_for_lambdify, *xi_epsed) @ B_xi
-        C_xi = C_lambda(*params_for_lambdify, *xi_epsed, *xi_d)
+        C_xi = C_lambda(*params_for_lambdify, *xi_epsed, *xid)
         C = B_xi.T @ C_xi @ B_xi
         G = B_xi.T @ G_lambda(*params_for_lambdify, *xi_epsed).squeeze()
 
         # apply the strain basis to the elastic and dissipative matrices
-        K = B_xi.T @ K @ (xi - xi_eq)  # evaluate K(xi) = K @ xi
+        K = B_xi.T @ K @ (xi - xi_ref)  # evaluate K(xi) = K @ xi
         D = B_xi.T @ D @ B_xi
 
         # apply the strain basis to the actuation matrix
@@ -384,20 +385,20 @@ def factory(
 
         return B, C, G, K, D, alpha
 
-    def kinetic_energy_fn(params: Dict[str, Array], q: Array, q_d: Array) -> Array:
+    def kinetic_energy_fn(params: Dict[str, Array], q: Array, qd: Array) -> Array:
         """
         Compute the kinetic energy of the system.
         Args:
             params: Dictionary of robot parameters
             q: generalized coordinates of shape (n_q, )
-            q_d: generalized velocities of shape (n_q, )
+            qd: generalized velocities of shape (n_q, )
         Returns:
             T: kinetic energy of shape ()
         """
-        B, C, G, K, D, alpha = dynamical_matrices_fn(params, q=q, q_d=q_d)
+        B, C, G, K, D, alpha = dynamical_matrices_fn(params, q=q, qd=qd)
 
         # kinetic energy
-        T = (0.5 * q_d.T @ B @ q_d).squeeze()
+        T = (0.5 * qd.T @ B @ qd).squeeze()
 
         return T
 
@@ -414,14 +415,14 @@ def factory(
             U: potential energy of shape ()
         """
         # map the configuration to the strains
-        xi = xi_eq + B_xi @ q
+        xi = xi_ref + B_xi @ q
         # add a small number to the bending strain to avoid singularities
         xi_epsed = apply_eps_to_bend_strains(xi, eps)
 
         # compute the stiffness matrix
         K = stiffness_fn(params, B_xi, formulate_in_strain_space=True)
         # elastic energy
-        U_K = 0.5 * (xi - xi_eq).T @ K @ (xi - xi_eq)  # evaluate K(xi) = K @ xi
+        U_K = 0.5 * (xi - xi_ref).T @ K @ (xi - xi_ref)  # evaluate K(xi) = K @ xi
 
         # gravitational potential energy
         params_for_lambdify = select_params_for_lambdify_fn(params)
@@ -432,17 +433,17 @@ def factory(
 
         return U
 
-    def energy_fn(params: Dict[str, Array], q: Array, q_d: Array) -> Array:
+    def energy_fn(params: Dict[str, Array], q: Array, qd: Array) -> Array:
         """
         Compute the total energy of the system.
         Args:
             params: Dictionary of robot parameters
             q: generalized coordinates of shape (n_q, )
-            q_d: generalized velocities of shape (n_q, )
+            qd: generalized velocities of shape (n_q, )
         Returns:
             E: total energy of shape ()
         """
-        T = kinetic_energy_fn(params, q, q_d)
+        T = kinetic_energy_fn(params, q, qd)
         U = potential_energy_fn(params, q)
         E = T + U
 
@@ -451,7 +452,7 @@ def factory(
     def operational_space_dynamical_matrices_fn(
         params: Dict[str, Array],
         q: Array,
-        q_d: Array,
+        qd: Array,
         s: Array,
         B: Array,
         C: Array,
@@ -465,7 +466,7 @@ def factory(
         Args:
             params: dictionary of parameters
             q: generalized coordinates of shape (n_q,)
-            q_d: generalized velocities of shape (n_q,)
+            qd: generalized velocities of shape (n_q,)
             s: point coordinate along the robot in the interval [0, L].
             B: inertia matrix in the generalized coordinates of shape (n_q, n_q)
             C: coriolis matrix derived with Christoffer symbols in the generalized coordinates of shape (n_q, n_q)
@@ -476,15 +477,15 @@ def factory(
             Lambda: inertia matrix in the operational space of shape (3, 3)
             mu: matrix with corioli and centrifugal terms in the operational space of shape (3, 3)
             J: Jacobian of the Cartesian pose with respect to the generalized coordinates of shape (3, n_q)
-            J_d: time-derivative of the Jacobian of the end-effector pose with respect to the generalized coordinates
+            Jd: time-derivative of the Jacobian of the end-effector pose with respect to the generalized coordinates
                 of shape (3, n_q)
             JB_pinv: Dynamically-consistent pseudo-inverse of the Jacobian. Allows the mapping of torques
                 from the generalized coordinates to the operational space: f = JB_pinv.T @ tau_q
                 Shape (n_q, 3)
         """
         ## map the configuration to the strains
-        xi = xi_eq + B_xi @ q
-        xi_d = B_xi @ q_d
+        xi = xi_ref + B_xi @ q
+        xid = B_xi @ qd
         # add a small number to the bending strain to avoid singularities
         xi_epsed = apply_eps_to_bend_strains(xi, eps)
 
@@ -501,17 +502,17 @@ def factory(
         J = lax.switch(
             segment_idx, J_lambda_sms, *params_for_lambdify, *xi_epsed, s_segment
         ).squeeze()
-        J_d = lax.switch(
+        Jd = lax.switch(
             segment_idx,
-            J_d_lambda_sms,
+            Jd_lambda_sms,
             *params_for_lambdify,
             *xi_epsed,
-            *xi_d,
+            *xid,
             s_segment,
         ).squeeze()
-        # apply the operational_space_selector and strain basis to the J and J_d
+        # apply the operational_space_selector and strain basis to the J and Jd
         J = J[operational_space_selector, :] @ B_xi
-        J_d = J_d[operational_space_selector, :] @ B_xi
+        Jd = Jd[operational_space_selector, :] @ B_xi
 
         # inverse of the inertia matrix in the configuration space
         B_inv = jnp.linalg.inv(B)
@@ -520,14 +521,14 @@ def factory(
             J @ B_inv @ J.T
         )  # inertia matrix in the operational space
         mu = Lambda @ (
-            J @ B_inv @ C - J_d
+            J @ B_inv @ C - Jd
         )  # coriolis and centrifugal matrix in the operational space
 
         JB_pinv = (
             B_inv @ J.T @ Lambda
         )  # dynamically-consistent pseudo-inverse of the Jacobian
 
-        return Lambda, mu, J, J_d, JB_pinv
+        return Lambda, mu, J, Jd, JB_pinv
 
     auxiliary_fns = {
         "apply_eps_to_bend_strains": apply_eps_to_bend_strains,
