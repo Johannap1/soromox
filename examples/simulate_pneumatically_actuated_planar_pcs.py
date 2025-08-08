@@ -30,26 +30,31 @@ params = {
     "l": 1e-1 * jnp.ones((num_segments,)),
     "r": 2e-2 * jnp.ones((num_segments,)),
     "rho": rho,
-    "g": jnp.array([0.0, 9.81]), # gravitational acceleration [m/s^2] UP!
+    "g": jnp.array([0.0, 9.81]),  # gravitational acceleration [m/s^2] UP!
     "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
     "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
     "r_cham_in": 5e-3 * jnp.ones((num_segments,)),
     "r_cham_out": 2e-2 - 2e-3 * jnp.ones((num_segments,)),
-    "varphi_cham": jnp.pi/2 * jnp.ones((num_segments,)),
+    "varphi_cham": jnp.pi / 2 * jnp.ones((num_segments,)),
 }
 params["D"] = 5e-4 * jnp.diag(
-    (jnp.repeat(
-        jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
-    ) * params["l"][:, None]).flatten()
+    (
+        jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0)
+        * params["l"][:, None]
+    ).flatten()
 )
 
 # activate all strains (i.e. bending, shear, and axial)
 # strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
-strain_selector = jnp.array([True, False, True])[None, :].repeat(num_segments, axis=0).flatten()
+strain_selector = (
+    jnp.array([True, False, True])[None, :].repeat(num_segments, axis=0).flatten()
+)
 
 B_xi, forward_kinematics_fn, dynamical_matrices_fn, auxiliary_fns = (
     pneumatically_actuated_planar_pcs.factory(
-        num_segments, sym_exp_filepath, strain_selector, # simplified_actuation_mapping=True
+        num_segments,
+        sym_exp_filepath,
+        strain_selector,  # simplified_actuation_mapping=True
     )
 )
 # jit the functions
@@ -68,23 +73,37 @@ def sweep_actuation_mapping():
     A = actuation_mapping_fn(params, B_xi, q)
     print("Evaluating actuation matrix for straight backbone: A =\n", A)
 
-    kappa_be_pts = jnp.linspace(-3*jnp.pi, 3*jnp.pi, 500)
+    kappa_be_pts = jnp.linspace(-3 * jnp.pi, 3 * jnp.pi, 500)
     sigma_ax_pts = jnp.zeros_like(kappa_be_pts)
     q_pts = jnp.stack([kappa_be_pts, sigma_ax_pts], axis=-1)
     A_pts = vmap(actuation_mapping_fn, in_axes=(None, None, 0))(params, B_xi, q_pts)
     # mark the points that are not controllable as the u1 and u2 terms share the same sign
     non_controllable_selector = A_pts[..., 0, 0] * A_pts[..., 0, 1] >= 0.0
     non_controllable_indices = jnp.where(non_controllable_selector)[0]
-    non_controllable_boundary_indices = jnp.where(non_controllable_selector[:-1] != non_controllable_selector[1:])[0]
+    non_controllable_boundary_indices = jnp.where(
+        non_controllable_selector[:-1] != non_controllable_selector[1:]
+    )[0]
     # plot the mapping on the bending strain for various bending strains
-    fig, ax = plt.subplots(num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_bending_strain")
+    fig, ax = plt.subplots(
+        num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_bending_strain"
+    )
     plt.title(r"Actuation mapping from $u$ to $\tau_\mathrm{be}$")
     # # shade the region where the actuation mapping is negative as we are not able to bend the robot further
     # ax.axhspan(A_pts[:, 0, 0:2].min(), 0.0, facecolor='red', alpha=0.2)
     for idx in non_controllable_indices:
-        ax.axvspan(kappa_be_pts[idx], kappa_be_pts[idx+1], facecolor='red', alpha=0.2)
-    ax.plot(kappa_be_pts, A_pts[:, 0, 0], linewidth=2, label=r"$\frac{\partial \tau_\mathrm{be}}{\partial u_1}$")
-    ax.plot(kappa_be_pts, A_pts[:, 0, 1], linewidth=2, label=r"$\frac{\partial \tau_\mathrm{ax}}{\partial u_2}$")
+        ax.axvspan(kappa_be_pts[idx], kappa_be_pts[idx + 1], facecolor="red", alpha=0.2)
+    ax.plot(
+        kappa_be_pts,
+        A_pts[:, 0, 0],
+        linewidth=2,
+        label=r"$\frac{\partial \tau_\mathrm{be}}{\partial u_1}$",
+    )
+    ax.plot(
+        kappa_be_pts,
+        A_pts[:, 0, 1],
+        linewidth=2,
+        label=r"$\frac{\partial \tau_\mathrm{ax}}{\partial u_2}$",
+    )
     ax.set_xlabel(r"$\kappa_\mathrm{be}$ [rad/m]")
     ax.set_ylabel(r"$\frac{\partial \tau_\mathrm{be}}{\partial u_1}$")
     plt.legend()
@@ -95,12 +114,16 @@ def sweep_actuation_mapping():
     # plot the actuation mapping of u1 vs. the bending strain for various segment radii
     r_pts = jnp.linspace(1e-2, 1e-1, 10)
     r_cham_out_pts = r_pts - 2e-3
-    fig, ax = plt.subplots(num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_bending_strain_4segment_radii")
+    fig, ax = plt.subplots(
+        num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_bending_strain_4segment_radii"
+    )
     for r, r_cham_out in zip(r_pts, r_cham_out_pts):
         _params = params.copy()
         _params["r"] = r * jnp.ones((num_segments,))
         _params["r_cham_out"] = r_cham_out * jnp.ones((num_segments,))
-        A_pts = vmap(actuation_mapping_fn, in_axes=(None, None, 0))(_params, B_xi, q_pts)
+        A_pts = vmap(actuation_mapping_fn, in_axes=(None, None, 0))(
+            _params, B_xi, q_pts
+        )
         ax.plot(kappa_be_pts, A_pts[:, 0, 0], label=r"$R = " + str(r) + "$")
     ax.set_xlabel(r"$\kappa_\mathrm{be}$ [rad/m]")
     ax.set_ylabel(r"$\frac{\partial \tau_\mathrm{be}}{\partial u_1}$")
@@ -122,26 +145,44 @@ def sweep_actuation_mapping():
     A_grid = A_pts.reshape(kappa_be_grid.shape[:2] + A_pts.shape[-2:])
 
     # plot the mapping on the bending strain
-    fig, ax = plt.subplots(num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_axial_vs_bending_strain")
+    fig, ax = plt.subplots(
+        num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_axial_vs_bending_strain"
+    )
     plt.title(r"Actuation mapping from $u_1$ to $\tau_\mathrm{be}$")
     # contourf plot
     c = ax.contourf(kappa_be_grid, sigma_ax_grid, A_grid[..., 0, 0], levels=100)
     fig.colorbar(c, ax=ax, label=r"$\frac{\partial \tau_\mathrm{be}}{\partial u_1}$")
     # contour plot
-    ax.contour(kappa_be_grid, sigma_ax_grid, A_grid[..., 0, 0], levels=20, colors="k", linewidths=0.5)
+    ax.contour(
+        kappa_be_grid,
+        sigma_ax_grid,
+        A_grid[..., 0, 0],
+        levels=20,
+        colors="k",
+        linewidths=0.5,
+    )
     ax.set_xlabel(r"$\kappa_\mathrm{be}$ [rad/m]")
     ax.set_ylabel(r"$\sigma_\mathrm{ax}$ [-]")
     plt.tight_layout()
     plt.show()
 
     # plot the mapping on the axial strain
-    fig, ax = plt.subplots(num="pneumatic_planar_pcs_actuation_mapping_axial_torque_vs_axial_vs_bending_strain")
+    fig, ax = plt.subplots(
+        num="pneumatic_planar_pcs_actuation_mapping_axial_torque_vs_axial_vs_bending_strain"
+    )
     plt.title(r"Actuation mapping from $u_1$ to $\tau_\mathrm{ax}$")
     # contourf plot
     c = ax.contourf(kappa_be_grid, sigma_ax_grid, A_grid[..., 1, 0], levels=100)
     fig.colorbar(c, ax=ax, label=r"$\frac{\partial \tau_\mathrm{ax}}{\partial u_1}$")
     # contour plot
-    ax.contour(kappa_be_grid, sigma_ax_grid, A_grid[..., 1, 0], levels=20, colors="k", linewidths=0.5)
+    ax.contour(
+        kappa_be_grid,
+        sigma_ax_grid,
+        A_grid[..., 1, 0],
+        levels=20,
+        colors="k",
+        linewidths=0.5,
+    )
     ax.set_xlabel(r"$\kappa_\mathrm{be}$ [rad/m]")
     ax.set_ylabel(r"$\sigma_\mathrm{ax}$ [-]")
     plt.tight_layout()
@@ -150,7 +191,9 @@ def sweep_actuation_mapping():
 
 def simulate_robot():
     # define initial configuration
-    q0 = jnp.repeat(jnp.array([-5.0 * jnp.pi, -0.2])[None, :], num_segments, axis=0).flatten()
+    q0 = jnp.repeat(
+        jnp.array([-5.0 * jnp.pi, -0.2])[None, :], num_segments, axis=0
+    ).flatten()
     # number of generalized coordinates
     n_q = q0.shape[0]
 
@@ -160,7 +203,9 @@ def simulate_robot():
     ts = jnp.arange(0.0, 7.0, dt)  # time steps
 
     x0 = jnp.concatenate([q0, jnp.zeros_like(q0)])  # initial condition
-    u = jnp.array([1.2e3, 0e0])  # control inputs (pressures in the right and left chambers)
+    u = jnp.array(
+        [1.2e3, 0e0]
+    )  # control inputs (pressures in the right and left chambers)
 
     ode_fn = ode_factory(dynamical_matrices_fn, params, u)
     term = ODETerm(ode_fn)
@@ -190,12 +235,14 @@ def simulate_robot():
     plt.figure()
     for segment_idx in range(num_segments):
         plt.plot(
-            ts, q_ts[:, 2 * segment_idx + 0],
-            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
+            ts,
+            q_ts[:, 2 * segment_idx + 0],
+            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]",
         )
         plt.plot(
-            ts, q_ts[:, 2 * segment_idx + 1],
-            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
+            ts,
+            q_ts[:, 2 * segment_idx + 1],
+            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]",
         )
     plt.xlabel("Time [s]")
     plt.ylabel("Configuration")
@@ -252,6 +299,7 @@ def simulate_robot():
     plt.box(True)
     plt.tight_layout()
     plt.show()
+
 
 if __name__ == "__main__":
     sweep_actuation_mapping()

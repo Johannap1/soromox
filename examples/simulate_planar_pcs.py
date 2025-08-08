@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Slider
 import numpy as onp
-from typing import Callable, Dict
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.planar_pcs import PlanarPCS
@@ -29,7 +28,7 @@ def draw_robot(
         robot.forward_kinematics, in_axes=(None, 0), out_axes=-1
     )
     L_max = jnp.sum(robot.L)
-    
+
     s_ps = jnp.linspace(0, L_max, num_points)
     chi_ps = batched_forward_kinematics(q, s_ps)
 
@@ -63,14 +62,13 @@ def animate_robot_matplotlib(
     ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.03])  # [left, bottom, width, height]
 
     # Base
-    def draw_base(ax, robot, l=robot.L[0]/2):
+    def draw_base(ax, robot, L=robot.L[0] / 2):
         angle1 = robot.th0 - jnp.pi / 2
         angle2 = robot.th0 + jnp.pi / 2
-        x1, y1 = l * jnp.cos(angle1), l * jnp.sin(angle1)
-        x2, y2 = l * jnp.cos(angle2), l * jnp.sin(angle2)
+        x1, y1 = L * jnp.cos(angle1), L * jnp.sin(angle1)
+        x2, y2 = L * jnp.cos(angle2), L * jnp.sin(angle2)
         ax.plot([x1, x2], [y1, y2], color="black", linestyle="-", linewidth=2)
-    
-    
+
     if animation:
         (line,) = ax.plot([], [], lw=4, color="blue")
         ax.set_xlim(-width / 2, width / 2)
@@ -148,11 +146,11 @@ if __name__ == "__main__":
         (num_segments,)
     )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
-        "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
+        "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
-        "g": jnp.array([0.0, 9.81]), # gravity vector [m/s^2] UP!
+        "g": jnp.array([0.0, 9.81]),  # gravity vector [m/s^2] UP!
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
     }
@@ -171,11 +169,12 @@ if __name__ == "__main__":
         params=params,
         order_gauss=5,
     )
-    
+
     J, Jd = robot.jacobian_and_derivative(
-        q=jnp.zeros((3*num_segments,)), 
-        qd=jnp.zeros((3*num_segments,)), 
-        s=params["L"][0])
+        q=jnp.zeros((3 * num_segments,)),
+        qd=jnp.zeros((3 * num_segments,)),
+        s=params["L"][0],
+    )
 
     # =====================================================
     # Simulation upon time
@@ -235,7 +234,11 @@ if __name__ == "__main__":
 
     # end effector orientation vs. time
     plt.figure()
-    plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label="End-effector Orientation $\theta$ [deg]")
+    plt.plot(
+        ts,
+        chi_ee_ts[:, 0] / jnp.pi * 180,
+        label="End-effector Orientation $\theta$ [deg]",
+    )
     plt.xlabel("Time [s]")
     plt.ylabel("End-effector Orientation [deg]")
     plt.legend()
