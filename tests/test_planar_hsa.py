@@ -37,8 +37,8 @@ def test_end_effector_kinematics(seed: int = 0):
         kappa_b = random.uniform(
             subrng1,
             (num_segments,),
-            minval=-jnp.pi / jnp.mean(params["l"]),
-            maxval=jnp.pi / jnp.mean(params["l"]),
+            minval=-jnp.pi / jnp.mean(params["L"]),
+            maxval=jnp.pi / jnp.mean(params["L"]),
         )
         sigma_sh = random.uniform(subrng2, (num_segments,), minval=-0.2, maxval=0.2)
         sigma_a = random.uniform(subrng3, (num_segments,), minval=0.0, maxval=0.5)

@@ -23,7 +23,7 @@ sym_exp_filepath = (
 params = {
     "m": jnp.array([10.0, 6.0]),
     "I": jnp.array([3.0, 2.0]),
-    "l": jnp.array([2.0, 1.0]),
+    "L": jnp.array([2.0, 1.0]),
     "lc": jnp.array([1.0, 0.5]),
     "g": jnp.array([0.0, -9.81]),
 }
@@ -51,11 +51,11 @@ def draw_robot(
 ) -> onp.ndarray:
     # plotting in OpenCV
     h, w = height, width  # img height and width
-    ppm = h / (2.5 * jnp.sum(params["l"]))  # pixel per meter
+    ppm = h / (2.5 * jnp.sum(params["L"]))  # pixel per meter
     robot_color = (0, 0, 0)  # black robot_color in BGR
 
     # poses along the robot of shape (3, N)
-    link_indices = jnp.arange(params["l"].shape[0], dtype=jnp.int32)
+    link_indices = jnp.arange(params["L"].shape[0], dtype=jnp.int32)
     chi_ls = jnp.zeros((3, link_indices.shape[0] + 1))
     chi_ls = chi_ls.at[:, 1:].set(
         batched_forward_kinematics_fn(params, q, link_indices)

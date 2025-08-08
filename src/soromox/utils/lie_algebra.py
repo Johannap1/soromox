@@ -107,11 +107,11 @@ def coadjoint_se2(vec3: Array) -> Array:
     ang = vec3[0]
     lin = vec3[1:].reshape((2, 1))  # Linear as a (3,1) vector
 
-    adj_star = jnp.concatenate(
+    coadj = jnp.concatenate(
         [jnp.zeros((3, 1)), jnp.concatenate([lin.T @ J, ang * J], axis=0)], axis=1
     )
 
-    return adj_star
+    return coadj
 
 
 def Adjoint_g_SE2(mat3: Array) -> Array:
@@ -554,9 +554,9 @@ def coadjoint_se3(vec6: Array) -> Array:
     angtilde = tilde_SE3(ang)  # Tilde operator for angular part
     lintilde = tilde_SE3(lin)  # Tilde operator for linear part
 
-    adj_star = jnp.block([[angtilde, lintilde], [jnp.zeros((3, 3)), angtilde]])
+    coadj = jnp.block([[angtilde, lintilde], [jnp.zeros((3, 3)), angtilde]])
 
-    return adj_star
+    return coadj
 
 
 def Adjoint_g_SE3(mat4: Array) -> Array:

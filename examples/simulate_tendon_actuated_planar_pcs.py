@@ -28,7 +28,7 @@ sym_exp_filepath = (
 rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
 params = {
     "th0": jnp.array(0.0),  # initial orientation angle [rad]
-    "l": 1e-1 * jnp.ones((num_segments,)),
+    "L": 1e-1 * jnp.ones((num_segments,)),
     "r": 2e-2 * jnp.ones((num_segments,)),
     "rho": rho,
     "g": jnp.array([0.0, 9.81]), # gravitational acceleration [m/s^2] UP!
@@ -39,7 +39,7 @@ params = {
 params["D"] = 1e-3 * jnp.diag(
     (jnp.repeat(
         jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
-    ) * params["l"][:, None]).flatten()
+    ) * params["L"][:, None]).flatten()
 )
 
 # activate all strains (i.e. bending, shear, and axial)
@@ -74,12 +74,12 @@ def draw_robot(
 ) -> onp.ndarray:
     # plotting in OpenCV
     h, w = height, width  # img height and width
-    ppm = h / (2.0 * jnp.sum(params["l"]))  # pixel per meter
+    ppm = h / (2.0 * jnp.sum(params["L"]))  # pixel per meter
     base_color = (0, 0, 0)  # black robot_color in BGR
     robot_color = (255, 0, 0)  # black robot_color in BGR
 
     # we use for plotting N points along the length of the robot
-    s_ps = jnp.linspace(0, jnp.sum(params["l"]), num_points)
+    s_ps = jnp.linspace(0, jnp.sum(params["L"]), num_points)
 
     # poses along the robot of shape (3, N)
     chi_ps = batched_forward_kinematics_fn(params, q, s_ps)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
     # evaluate the forward kinematics along the trajectory
     chi_ee_ts = vmap(forward_kinematics_fn, in_axes=(None, 0, None))(
-        params, q_ts, jnp.array([jnp.sum(params["l"])])
+        params, q_ts, jnp.array([jnp.sum(params["L"])])
     )
     # plot the configuration vs time
     plt.figure()

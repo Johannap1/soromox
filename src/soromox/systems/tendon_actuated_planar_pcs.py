@@ -47,7 +47,7 @@ def factory(
                 n_act is the number of actuators
         """
         # extract the parameters
-        l = params["l"]
+        l = params["L"]
         # map the configuration to the strains
         xi = xi_ref + B_xi @ q
         # segment indices

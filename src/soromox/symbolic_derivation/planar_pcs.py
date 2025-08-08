@@ -188,7 +188,7 @@ def symbolically_derive_planar_pcs_model(
     sym_exps = {
         "params_syms": {
             "th0": th0,
-            "l": l_syms,
+            "L": l_syms,
             "r": r_syms,
             "rho": rho_syms,
             "g": g_syms,

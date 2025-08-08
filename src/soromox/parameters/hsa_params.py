@@ -25,7 +25,7 @@ def generate_common_base_params(
 
     params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]
-        "l": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
+        "L": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
         # length of the rigid proximal caps of the rods connecting to the base [m]
         "lpc": 25e-3 * jnp.ones((num_segments,)),
         # length of the rig id distal caps of the rods connecting to the platform [m]
@@ -126,7 +126,7 @@ def generate_base_params_for_fpu(
     # old params (1st ISER submission)
     """ params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]
-        "l": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
+        "L": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
         # length of the rigid proximal caps of the rods connecting to the base [m]
         "lpc": 25e-3 * jnp.ones((num_segments,)),
         # length of the rig id distal caps of the rods connecting to the platform [m]

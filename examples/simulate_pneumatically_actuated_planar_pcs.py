@@ -27,7 +27,7 @@ sym_exp_filepath = (
 rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
 params = {
     "th0": jnp.array(0.0),  # initial orientation angle [rad]
-    "l": 1e-1 * jnp.ones((num_segments,)),
+    "L": 1e-1 * jnp.ones((num_segments,)),
     "r": 2e-2 * jnp.ones((num_segments,)),
     "rho": rho,
     "g": jnp.array([0.0, 9.81]),  # gravitational acceleration [m/s^2] UP!
@@ -40,7 +40,7 @@ params = {
 params["D"] = 5e-4 * jnp.diag(
     (
         jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0)
-        * params["l"][:, None]
+        * params["L"][:, None]
     ).flatten()
 )
 
@@ -229,7 +229,7 @@ def simulate_robot():
 
     # evaluate the forward kinematics along the trajectory
     chi_ee_ts = vmap(forward_kinematics_fn, in_axes=(None, 0, None))(
-        params, q_ts, jnp.array([jnp.sum(params["l"])])
+        params, q_ts, jnp.array([jnp.sum(params["L"])])
     )
     # plot the configuration vs time
     plt.figure()

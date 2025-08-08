@@ -177,7 +177,7 @@ def forward_kinematics(params: Dict, q: Array) -> Array:
         ValueError: If configuration vector has wrong dimensions
         
     Example:
-        >>> params = {"l": jnp.array([0.1]), "r": jnp.array([0.01])}
+        >>> params = {"L": jnp.array([0.1]), "r": jnp.array([0.01])}
         >>> q = jnp.array([0.0, 0.0, -1.0])
         >>> pos = forward_kinematics(params, q)
     """

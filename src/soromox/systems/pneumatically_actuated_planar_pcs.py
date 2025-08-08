@@ -61,7 +61,7 @@ def factory(
                 n_act is the number of actuators
         """
         # all segment bases and tips
-        sms = jnp.concatenate([jnp.zeros((1,)), jnp.cumsum(params["l"])], axis=0)
+        sms = jnp.concatenate([jnp.zeros((1,)), jnp.cumsum(params["L"])], axis=0)
 
         # compute the poses of all segment tips
         chi_sms = vmap(forward_kinematics_fn, in_axes=(None, None, 0))(params, q, sms)
@@ -223,7 +223,7 @@ def stiffness_fn(
     """
     # stiffness matrix of shape (num_segments, 3, 3)
     S_sms = vmap(_compute_stiffness_matrix_for_segment)(
-        params["l"],
+        params["L"],
         params["r"],
         params["r_cham_in"],
         params["r_cham_out"],

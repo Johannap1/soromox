@@ -28,12 +28,12 @@ def draw_robot(
         height: image height
         num_points: number of points to plot along the length of the robot
     """
-    num_segments = params["l"].shape[0]
+    num_segments = params["L"].shape[0]
 
     # plotting in OpenCV
     h, w = height, width  # img height and width
     ppm = h / (
-        2.0 * jnp.sum(params["lpc"] + params["l"] + params["ldc"])
+        2.0 * jnp.sum(params["lpc"] + params["L"] + params["ldc"])
     )  # pixel per meter
     base_color = (0, 0, 0)  # black base color in BGR
     backbone_color = (255, 0, 0)  # blue robot color in BGR
@@ -51,7 +51,7 @@ def draw_robot(
     )
 
     # we use for plotting N points along the length of the robot
-    s_ps = jnp.linspace(0, jnp.sum(params["l"]), num_points)
+    s_ps = jnp.linspace(0, jnp.sum(params["L"]), num_points)
 
     # poses along the robot of shape (3, N)
     chiv_ps = batched_forward_kinematics_virtual_backbone_fn(

@@ -192,7 +192,7 @@ def factory(
             s_segment: point coordinate along the segment in the interval [0, l_segment
         """
         # cumsum of the segment lengths
-        l_cum = jnp.cumsum(params["l"])
+        l_cum = jnp.cumsum(params["L"])
         # add zero to the beginning of the array
         l_cum_padded = jnp.concatenate([jnp.array([0.0]), l_cum], axis=0)
         # determine in which segment the point is located
@@ -222,7 +222,7 @@ def factory(
                 S: elastic matrix of shape (n_q, n_q) if formulate_in_strain_space is False or (n_xi, n_xi) otherwise
             """
             # length of the segments
-            l = params["l"]
+            l = params["L"]
             # cross-sectional area and second moment of area
             A = jnp.pi * params["r"] ** 2
             Ib = A**2 / (4 * jnp.pi)

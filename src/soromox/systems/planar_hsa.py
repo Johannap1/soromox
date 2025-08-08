@@ -129,10 +129,10 @@ class PlanarHSA(eqx.Module):
         self.params_for_lambdify = params_for_lambdify
 
         try:
-            L = params["l"]
+            L = params["L"]
         except KeyError:
             return KeyError(
-                f"Symbolic expressions file does not contain 'l'. Please generate the symbolic expressions first."
+                f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.L = L
 
@@ -141,7 +141,7 @@ class PlanarHSA(eqx.Module):
             L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
         except KeyError:
             return KeyError(
-                f"Symbolic expressions file does not contain 'l'. Please generate the symbolic expressions first."
+                f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.L_cum = L_cum
 
@@ -150,10 +150,10 @@ class PlanarHSA(eqx.Module):
 
         # Number of segments
         try:
-            num_segments = len(params_syms["l"])
+            num_segments = len(params_syms["L"])
         except KeyError:
             return KeyError(
-                f"Symbolic expressions file does not contain 'l'. Please generate the symbolic expressions first."
+                f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.num_segments = num_segments
 
@@ -655,11 +655,11 @@ class PlanarHSA(eqx.Module):
         Returns:
             xi: strains of the virtual backbone of shape (num_dofs, )
         """
-        # rest strains of the virtual backbone
-        xi_star = self.rest_strains_fn()
+        # reference strains of the virtual backbone
+        xi_ref = self.ref_strains_fn()
 
         # map the configuration to the strains
-        xi = self.B_xi @ q + xi_star
+        xi = self.B_xi @ q + xi_ref
 
         return xi
 
@@ -700,22 +700,22 @@ class PlanarHSA(eqx.Module):
         return vxi
 
     @eqx.filter_jit
-    def rest_strains_fn(self) -> Array:
+    def ref_strains_fn(self) -> Array:
         """
-        Compute the rest strains of the virtual backbone
+        Compute the ref strains of the virtual backbone
 
         Returns:
-            vxi_star: rest strains of the virtual backbone of shape (num_dofs, )
+            vxi_ref: ref strains of the virtual backbone of shape (num_dofs, )
         """
-        # rest strains of the physical rods
-        pxi_star = jnp.zeros((self.num_segments, self.num_rods_per_segment, 3))
-        pxi_star = pxi_star.at[:, :, 0].set(self.kappa_b_ref)
-        pxi_star = pxi_star.at[:, :, 1].set(self.sigma_sh_ref)
-        pxi_star = pxi_star.at[:, :, 2].set(self.sigma_a_ref)
+        # reference strains of the physical rods
+        pxi_ref = jnp.zeros((self.num_segments, self.num_rods_per_segment, 3))
+        pxi_ref = pxi_ref.at[:, :, 0].set(self.kappa_b_ref)
+        pxi_ref = pxi_ref.at[:, :, 1].set(self.sigma_sh_ref)
+        pxi_ref = pxi_ref.at[:, :, 2].set(self.sigma_a_ref)
 
-        # map the rest strains from the physical rods to the virtual backbone
-        vxi_star = self.beta_inv_fn(pxi_star)
-        return vxi_star
+        # map the reference strains from the physical rods to the virtual backbone
+        vxi_ref = self.beta_inv_fn(pxi_ref)
+        return vxi_ref
 
     @eqx.filter_jit
     def apply_eps_to_bend_strains_fn(
@@ -981,11 +981,11 @@ class PlanarHSA(eqx.Module):
             )
         )
 
-        # rest strains of the virtual backbone
-        vxi_star = self.rest_strains_fn()
+        # reference strains of the virtual backbone
+        vxi_ref = self.ref_strains_fn()
 
         # map the strains to the generalized coordinates
-        q = jnp.linalg.pinv(self.B_xi) @ (vxi - vxi_star)
+        q = jnp.linalg.pinv(self.B_xi) @ (vxi - vxi_ref)
 
         return q
 
