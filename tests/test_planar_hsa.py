@@ -6,12 +6,9 @@ from jax import Array, jit, random
 from jax import numpy as jnp
 import soromox
 from pathlib import Path
-import sympy as sp
-from typing import Tuple
 
 from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL as params
-from soromox.systems import planar_hsa
-from soromox.systems.utils import substitute_params_into_all_symbolic_expressions
+from soromox.systems.planar_hsa import PlanarHSA
 
 num_segments = 1
 num_rods_per_segment = 2
@@ -26,20 +23,16 @@ sym_exp_filepath = (
 
 def test_end_effector_kinematics(seed: int = 0):
     print("Testing end effector kinematics...")
-    (
-        _,
-        forward_kinematics_end_effector_fn,
-        jacobian_end_effector_fn,
-        inverse_kinematics_end_effector_fn,
-        _,
-        sys_helpers,
-    ) = planar_hsa.factory(sym_exp_filepath)
+    robot = PlanarHSA(
+        sym_exp_filepath=sym_exp_filepath,
+        params=params,
+    )
 
-    # load saved symbolic data
+    # load saved symbolic data TODO: not used in this test
     sym_exps = dill.load(open(str(sym_exp_filepath), "rb"))
 
     rng = random.PRNGKey(seed)
-    for idx in range(10):
+    for _ in range(10):
         rng, subrng1, subrng2, subrng3, subrng4, subrng5 = random.split(rng, 6)
         kappa_b = random.uniform(
             subrng1,
@@ -54,9 +47,9 @@ def test_end_effector_kinematics(seed: int = 0):
         print("q = ", q)
 
         # forward kinematics
-        chiee = forward_kinematics_end_effector_fn(params, q)
+        chiee = robot.forward_kinematics_end_effector_fn(q)
         # inverse kinematics
-        q_rec = inverse_kinematics_end_effector_fn(params, chiee)
+        q_rec = robot.inverse_kinematics_end_effector_fn(chiee)
 
         if not jnp.allclose(q, q_rec, atol=1e-6):
             print("q = ", q)

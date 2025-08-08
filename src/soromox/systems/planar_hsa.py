@@ -931,8 +931,8 @@ class PlanarHSA(eqx.Module):
         # transformation from the base to the end-effector
         T_b_to_ee = jnp.array(
             [
-                [jnp.cos(chiee[2]), -jnp.sin(chiee[2]), chiee[0]],
-                [jnp.sin(chiee[2]), jnp.cos(chiee[2]), chiee[1]],
+                [jnp.cos(chiee[0]), -jnp.sin(chiee[0]), chiee[1]],
+                [jnp.sin(chiee[0]), jnp.cos(chiee[0]), chiee[2]],
                 [0.0, 0.0, 1.0],
             ]
         )
@@ -940,8 +940,8 @@ class PlanarHSA(eqx.Module):
         # transformation from the distal end of the virtual backbone to the end-effector
         T_de_to_ee = jnp.array(
             [
-                [jnp.cos(chiee_off[2]), -jnp.sin(chiee_off[2]), chiee_off[0]],
-                [jnp.sin(chiee_off[2]), jnp.cos(chiee_off[2]), ldc + hp + chiee_off[1]],
+                [jnp.cos(chiee_off[0]), -jnp.sin(chiee_off[0]), chiee_off[1]],
+                [jnp.sin(chiee_off[0]), jnp.cos(chiee_off[0]), ldc + hp + chiee_off[2]],
                 [0.0, 0.0, 1.0],
             ]
         )
@@ -952,14 +952,14 @@ class PlanarHSA(eqx.Module):
         # compute the SE(2) pose from the transformation matrix
         vchi_pe_to_de = jnp.array(
             [
+                jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
                 T_pe_to_de[0, 2],
                 T_pe_to_de[1, 2],
-                jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
             ]
         )
 
         # extract the x and y position and the orientation
-        px, py, th = vchi_pe_to_de[0], vchi_pe_to_de[1], vchi_pe_to_de[2]
+        th, px, py = vchi_pe_to_de[0], vchi_pe_to_de[1], vchi_pe_to_de[2]
 
         # add small eps for numerical stability
         th_sign = jnp.sign(th)
