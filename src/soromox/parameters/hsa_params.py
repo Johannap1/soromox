@@ -56,7 +56,7 @@ def generate_common_base_params(
 
     if end_effector_attached:
         # the end-effector is moved by 25mm in the y-dir relative to the top surface of the HSA platform
-        params["chiee_off"] = jnp.array([0.0, 0.025, 0.0])
+        params["chiee_off"] = jnp.array([0.0, 0.0, 0.025])
         params["mpl"] = jnp.array(
             0.018
         )  # the end-effector attachment has a mass of 18g

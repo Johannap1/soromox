@@ -104,7 +104,7 @@ class PlanarHSA(eqx.Module):
         try:
             sym_exps = dill.load(open(str(sym_exp_filepath), "rb"))
         except FileNotFoundError:
-            return FileNotFoundError(
+            raise FileNotFoundError(
                 f"Symbolic expressions file not found. Please generate the symbolic expressions first."
             )
 
@@ -112,7 +112,7 @@ class PlanarHSA(eqx.Module):
         try:
             params_syms = sym_exps["params_syms"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'params_syms'. Please generate the symbolic expressions first."
             )
 
@@ -123,7 +123,7 @@ class PlanarHSA(eqx.Module):
                     for param in params_vals.flatten():
                         params_for_lambdify.append(param)
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain the required parameters. Please generate the symbolic expressions first."
             )
         self.params_for_lambdify = params_for_lambdify
@@ -131,7 +131,7 @@ class PlanarHSA(eqx.Module):
         try:
             L = params["L"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.L = L
@@ -140,7 +140,7 @@ class PlanarHSA(eqx.Module):
             # cumsum of the segment lengths
             L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.L_cum = L_cum
@@ -152,7 +152,7 @@ class PlanarHSA(eqx.Module):
         try:
             num_segments = len(params_syms["L"])
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
             )
         self.num_segments = num_segments
@@ -161,7 +161,7 @@ class PlanarHSA(eqx.Module):
         try:
             num_rods_per_segment = len(params_syms["rout"]) // num_segments
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'rout'. Please generate the symbolic expressions first."
             )
         self.num_rods_per_segment = num_rods_per_segment
@@ -177,7 +177,7 @@ class PlanarHSA(eqx.Module):
         try:
             num_dofs = len(sym_exps["state_syms"]["xi"])
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'state_syms'. Please generate the symbolic expressions first."
             )
         self.num_dofs = num_dofs
@@ -215,7 +215,7 @@ class PlanarHSA(eqx.Module):
                 sym_exps["state_syms"]["xi"] + sym_exps["state_syms"]["xid"]
             )
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain 'state_syms'. Please generate the symbolic expressions first."
             )
 
@@ -235,7 +235,7 @@ class PlanarHSA(eqx.Module):
                 )
                 chiv_lambda_sms.append(chiv_lambda)
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does ['exps']['chiv_sms']. Please generate the symbolic expressions first."
             )
         self.chiv_lambda_sms = chiv_lambda_sms
@@ -253,7 +253,7 @@ class PlanarHSA(eqx.Module):
                 )
                 chir_lambda_sms.append(chir_lambda)
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain ['exps']['chir_sms']. Please generate the symbolic expressions first."
             )
         self.chir_lambda_sms = chir_lambda_sms
@@ -269,7 +269,7 @@ class PlanarHSA(eqx.Module):
                 )
                 chip_lambda_sms.append(chip_lambda)
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Symbolic expressions file does not contain ['exps']['chip_sms']. Please generate the symbolic expressions first."
             )
         self.chip_lambda_sms = chip_lambda_sms
@@ -282,7 +282,7 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify chiee. Check the symbolic expressions file."
+            raise "Fail to lambdify chiee. Check the symbolic expressions file."
         self.chiee_lambda = chiee_lambda
 
         try:
@@ -292,7 +292,7 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify Jee. Check the symbolic expressions file."
+            raise "Fail to lambdify Jee. Check the symbolic expressions file."
         self.Jee_lambda = Jee_lambda
 
         try:
@@ -304,7 +304,7 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify Jeed. Check the symbolic expressions file."
+            raise "Fail to lambdify Jeed. Check the symbolic expressions file."
         self.Jeed_lambda = Jeed_lambda
 
         # dynamical matrices
@@ -315,7 +315,7 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify B. Check the symbolic expressions file."
+            raise "Fail to lambdify B. Check the symbolic expressions file."
         self.B_lambda = B_lambda
 
         try:
@@ -323,7 +323,7 @@ class PlanarHSA(eqx.Module):
                 params_syms_cat + state_syms_cat, sym_exps["exps"]["C"], "jax"
             )
         except ValueError:
-            return "Fail to lambdify C. Check the symbolic expressions file."
+            raise "Fail to lambdify C. Check the symbolic expressions file."
         self.C_lambda = C_lambda
 
         try:
@@ -333,13 +333,13 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify G. Check the symbolic expressions file."
+            raise "Fail to lambdify G. Check the symbolic expressions file."
         self.G_lambda = G_lambda
 
         try:
             Shat_lambda = sp.lambdify(params_syms_cat, sym_exps["exps"]["Shat"], "jax")
         except ValueError:
-            return "Fail to lambdify Shat. Check the symbolic expressions file."
+            raise "Fail to lambdify Shat. Check the symbolic expressions file."
         self.Shat_lambda = Shat_lambda
 
         try:
@@ -349,13 +349,13 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify K. Check the symbolic expressions file."
+            raise "Fail to lambdify K. Check the symbolic expressions file."
         self.K_lambda = K_lambda
 
         try:
             D_lambda = sp.lambdify(params_syms_cat, sym_exps["exps"]["D"], "jax")
         except ValueError:
-            return "Fail to lambdify D. Check the symbolic expressions file."
+            raise "Fail to lambdify D. Check the symbolic expressions file."
         self.D_lambda = D_lambda
 
         try:
@@ -367,7 +367,7 @@ class PlanarHSA(eqx.Module):
                 "jax",
             )
         except ValueError:
-            return "Fail to lambdify alpha. Check the symbolic expressions file."
+            raise "Fail to lambdify alpha. Check the symbolic expressions file."
         self.alpha_lambda = alpha_lambda
 
     def _set_params(
@@ -379,47 +379,59 @@ class PlanarHSA(eqx.Module):
         Args:
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters to update:
-                - "roff": TODO
-                - "kappa_b_ref": TODO
-                - "sigma_sh_ref": TODO
-                - "sigma_a_ref": TODO
-                - "pcudim": TODO
-                - "lpc": TODO
-                - "ldc": TODO
-                - "chiee_off": TODO
+                - "roff": Array of shape (num_segments, num_rods_per_segment)
+                    offset [m] of each rod from the centerline. 
+                    The rows correspond to the segments.
+                - "kappa_b_ref": Array of shape (num_segments, num_rods_per_segment)
+                    bending reference curvatures of each rod
+                - "sigma_sh_ref": Array of shape (num_segments, num_rods_per_segment)
+                    shear reference curvatures of each rod
+                - "sigma_a_ref": Array of shape (num_segments, num_rods_per_segment)
+                    axial reference strains of each rod
+                - "pcudim": Array of shape (num_segments, 3)
+                    width, height, depth of each segment's platform [m]
+                - "lpc": Array of shape (num_segments,)
+                    length of the rigid proximal of the rods connecting to the base [m]
+                - "ldc": Array of shape (num_segments,)
+                    length of the rigid distal of the rods connecting to the platform [m]
+                - "chiee_off": Array of shape (3,)
+                    rigid offset transformation from the distal end of the platform to the end-effector [m]
+                    in the form [theta, p_x, p_y]
                 - "hysteresis": Dictionary containing hysteresis parameters if consider_hysteresis is True
-                    - "basis": Basis for the hysteresis model
-                    - "alpha": TODO
-                    - "A": TODO
-                    - "n": TODO
-                    - "beta": TODO
-                    - "gamma": TODO
+                    - "basis": 
+                        Basis for the hysteresis model
+                    - Bouc-Wen model parameters:
+                        - "alpha": [-] Ratio of post-yield and pre-yield stiffness
+                        - "A": TODO
+                        - "n": [-] TODO
+                        - "beta": [-] TODO
+                        - "gamma": [-] TODO
         """
         try:
             roff = params["roff"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'roff' not found in the parameters dictionary. Please provide it."
             )
         self.roff = roff
         try:
             kappa_b_ref = params["kappa_b_ref"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'kappa_b_ref' not found in the parameters dictionary. Please provide it."
             )
         self.kappa_b_ref = kappa_b_ref
         try:
             sigma_sh_ref = params["sigma_sh_ref"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'sigma_sh_ref' not found in the parameters dictionary. Please provide it."
             )
         self.sigma_sh_ref = sigma_sh_ref
         try:
             sigma_a_ref = params["sigma_a_ref"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'sigma_a_ref' not found in the parameters dictionary. Please provide it."
             )
         self.sigma_a_ref = sigma_a_ref
@@ -427,28 +439,28 @@ class PlanarHSA(eqx.Module):
         try:
             pcudim = params["pcudim"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'pcudim' not found in the parameters dictionary. Please provide it."
             )
         self.pcudim = pcudim
         try:
             lpc = params["lpc"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'lpc' not found in the parameters dictionary. Please provide it."
             )
         self.lpc = lpc
         try:
             ldc = params["ldc"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'ldc' not found in the parameters dictionary. Please provide it."
             )
         self.ldc = ldc
         try:
             chiee_off = params["chiee_off"]
         except KeyError:
-            return KeyError(
+            raise KeyError(
                 f"Parameter 'chiee_off' not found in the parameters dictionary. Please provide it."
             )
         self.chiee_off = chiee_off
@@ -531,21 +543,33 @@ class PlanarHSA(eqx.Module):
         Args:
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters to update:
-                - "roff": TODO
-                - "kappa_b_ref": TODO
-                - "sigma_sh_ref": TODO
-                - "sigma_a_ref": TODO
-                - "pcudim": TODO
-                - "lpc": TODO
-                - "ldc": TODO
-                - "chiee_off": TODO
+                - "roff": Array of shape (num_segments, num_rods_per_segment)
+                    offset [m] of each rod from the centerline. 
+                    The rows correspond to the segments.
+                - "kappa_b_ref": Array of shape (num_segments, num_rods_per_segment)
+                    bending reference curvatures of each rod
+                - "sigma_sh_ref": Array of shape (num_segments, num_rods_per_segment)
+                    shear reference curvatures of each rod
+                - "sigma_a_ref": Array of shape (num_segments, num_rods_per_segment)
+                    axial reference strains of each rod
+                - "pcudim": Array of shape (num_segments, 3)
+                    width, height, depth of each segment's platform [m]
+                - "lpc": Array of shape (num_segments,)
+                    length of the rigid proximal of the rods connecting to the base [m]
+                - "ldc": Array of shape (num_segments,)
+                    length of the rigid distal of the rods connecting to the platform [m]
+                - "chiee_off": Array of shape (3,)
+                    rigid offset transformation from the distal end of the platform to the end-effector [m]
+                    in the form [theta, p_x, p_y]
                 - "hysteresis": Dictionary containing hysteresis parameters if consider_hysteresis is True
-                    - "basis": Basis for the hysteresis model
-                    - "alpha": TODO
-                    - "A": TODO
-                    - "n": TODO
-                    - "beta": TODO
-                    - "gamma": TODO
+                    - "basis": 
+                        Basis for the hysteresis model
+                    - Bouc-Wen model parameters:
+                        - "alpha": [-] Ratio of post-yield and pre-yield stiffness
+                        - "A": TODO
+                        - "n": [-] TODO
+                        - "beta": [-] TODO
+                        - "gamma": [-] TODO
         """
         # Apply updates sequentially
         updated_self = self
@@ -1134,12 +1158,13 @@ class PlanarHSA(eqx.Module):
         return K_full
 
     @eqx.filter_jit
-    def stiffness_vector(self, q: Array) -> Array:
+    def elastic_force(self, q: Array, z:Array) -> Array:
         """
-        Compute the stiffness vector of the robot.
+        Compute the elastic force vector of the robot.
 
         Args:
             q (Array): generalized coordinates of shape (num_dofs,).
+            z (Array): hysteresis state vector of shape (num_hysteresis, )
 
         Returns:
             K (Array): Stiffness vector of shape (num_dofs, ).
@@ -1210,7 +1235,7 @@ class PlanarHSA(eqx.Module):
         return alpha
 
     @eqx.filter_jit
-    def actuation_matrix(self, q: Array, phi: Array) -> Array:
+    def actuation_force(self, q: Array, phi: Array) -> Array:
         """
         Compute the actuation matrix of the robot.
 
@@ -1231,10 +1256,10 @@ class PlanarHSA(eqx.Module):
     @eqx.filter_jit
     def Shat(self) -> Array:
         """
-        TODO
+        Compute the nominal stiffness of the robot.
 
         Returns:
-            Array: TODO
+            Array: Nominal stiffness matrix of shape (num_dofs, num_dofs).
         """
         Shat = self.Shat_lambda(*self.params_for_lambdify)
 
@@ -1336,15 +1361,15 @@ class PlanarHSA(eqx.Module):
             B = self.inertia_matrix(q)
             C = self.coriolis_matrix(q, qd)
             G = self.gravitational_force(q)
-            K = self.stiffness_vector(q)
+            tauel = self.elastic_force(q, z)
             D = self.damping_matrix()
-            alpha = self.actuation_matrix(q, phi)
+            alpha = self.actuation_force(q, phi)
 
         else:
             B = self.inertia_matrix(q)
             C = self.coriolis_matrix(q, qd)
             G = self.gravitational_force(q)
-            K = self.stiffness_vector(q)
+            tauel = self.elastic_force(q, z)
             D = self.damping_matrix()
 
             phi = jnp.zeros((self.num_segments * self.num_rods_per_segment,))
@@ -1355,7 +1380,7 @@ class PlanarHSA(eqx.Module):
         B_inv = jnp.linalg.inv(B)
 
         # Compute the acceleration
-        qdd = B_inv @ (-C @ qd - G - K - D @ qd + alpha)
+        qdd = B_inv @ (-C @ qd - G - tauel - D @ qd + alpha)
 
         yd = jnp.concatenate([qd, qdd, zd])
 
