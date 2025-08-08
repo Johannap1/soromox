@@ -148,7 +148,7 @@ if __name__ == "__main__":
         (num_segments,)
     )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
-        "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
+        "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
@@ -235,7 +235,7 @@ if __name__ == "__main__":
 
     # end effector orientation vs. time
     plt.figure()
-    plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label="End-effector Orientation $\theta$ [deg]")
+    plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label=r"End-effector Orientation $\theta$ [deg]")
     plt.xlabel("Time [s]")
     plt.ylabel("End-effector Orientation [deg]")
     plt.legend()
