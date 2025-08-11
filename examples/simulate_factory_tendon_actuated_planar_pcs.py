@@ -15,6 +15,12 @@ import soromox
 from soromox import ode_factory
 from soromox.systems import factory_tendon_actuated_planar_pcs as planar_pcs
 
+jnp.set_printoptions(
+    threshold=jnp.inf,
+    linewidth=jnp.inf,
+    formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
+)
+
 num_segments = 1
 
 # filepath to symbolic expressions
@@ -124,11 +130,22 @@ if __name__ == "__main__":
         jnp.zeros_like(q0),
     )
     print("A =\n", A)
+    
+    B, C, G, K, D, A = dynamical_matrices_fn(params, q0, jnp.zeros_like(q0))
+    print("B =\n", B)
+    print("C =\n", C)
+    print("G =\n", G)
+    print("K =\n", K)
+    print("D =\n", D)
+    print("A =\n", A)
 
     x0 = jnp.concatenate([q0, jnp.zeros_like(q0)])  # initial condition
     u = jnp.array([1.0, 1.0])[None].repeat(num_segments, axis=0).flatten()  # tendon tensions
     # u = 2e-1 * jnp.array([2.0, 0.0, 0.0, 1.0])
     print("u =\n", u)
+    
+    
+    print("Au =\n", A @ u)
 
     ode_fn = ode_factory(dynamical_matrices_fn, params, u)
     term = ODETerm(ode_fn)
@@ -225,26 +242,26 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    # create video
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    video_path.parent.mkdir(parents=True, exist_ok=True)
-    video = cv2.VideoWriter(
-        str(video_path),
-        fourcc,
-        1 / (skip_step * dt),  # fps
-        (video_width, video_height),
-    )
+    # # create video
+    # fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # video_path.parent.mkdir(parents=True, exist_ok=True)
+    # video = cv2.VideoWriter(
+    #     str(video_path),
+    #     fourcc,
+    #     1 / (skip_step * dt),  # fps
+    #     (video_width, video_height),
+    # )
 
-    for time_idx, t in enumerate(video_ts):
-        x = sol.ys[time_idx]
-        img = draw_robot(
-            batched_forward_kinematics,
-            params,
-            x[: (x.shape[0] // 2)],
-            video_width,
-            video_height,
-        )
-        video.write(img)
+    # for time_idx, t in enumerate(video_ts):
+    #     x = sol.ys[time_idx]
+    #     img = draw_robot(
+    #         batched_forward_kinematics,
+    #         params,
+    #         x[: (x.shape[0] // 2)],
+    #         video_width,
+    #         video_height,
+    #     )
+    #     video.write(img)
 
-    video.release()
-    print(f"Video saved at {video_path}")
+    # video.release()
+    # print(f"Video saved at {video_path}")

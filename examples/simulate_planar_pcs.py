@@ -14,11 +14,11 @@ from soromox.systems.planar_pcs import PlanarPCS
 
 
 jax.config.update("jax_enable_x64", True)  # double precision
-jnp.set_printoptions(
-    threshold=jnp.inf,
-    linewidth=jnp.inf,
-    formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
-)
+# jnp.set_printoptions(
+#     threshold=jnp.inf,
+#     linewidth=jnp.inf,
+#     formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
+# )
 
 
 def draw_robot_curve(
@@ -143,7 +143,7 @@ if __name__ == "__main__":
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
-        "g": jnp.array([0.0, -9.81]),
+        "g": jnp.array([0.0, 9.81]),
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
     }
@@ -175,97 +175,110 @@ if __name__ == "__main__":
 
     # Actuation parameters
     u = jnp.zeros_like(q0)
+    
+    # B = robot.inertia_matrix(q0)
+    # C = robot.coriolis_matrix(q0, qd0)
+    G = robot.gravitational_force(q0)
+    # K = robot.stiffness_matrix()@q0
+    # D = robot.damping_matrix()
+    # A = robot.actuation_force(q0, u)
+    # print("B =\n", B)
+    # print("C =\n", C)
+    print("G =\n", G)
+    # print("K =\n", K)
+    # print("D =\n", D)
+    # print("A =\n", A)
 
-    # Simulation time parameters
-    t0 = 0.0
-    t1 = 2.0
-    dt = 1e-4
-    skip_step = 100  # how many time steps to skip in between video frames
+    # # Simulation time parameters
+    # t0 = 0.0
+    # t1 = 2.0
+    # dt = 1e-4
+    # skip_step = 100  # how many time steps to skip in between video frames
 
-    # Solver
-    solver = Tsit5()  # Runge-Kutta 5(4) method
+    # # Solver
+    # solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, q_d_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=t0,
-        t1=t1,
-        dt=dt,
-        skip_steps=skip_step,
-        solver=solver,
-        max_steps=None,
-    )
+    # ts, q_ts, q_d_ts = robot.resolve_upon_time(
+    #     q0=q0,
+    #     qd0=qd0,
+    #     u=u,
+    #     t0=t0,
+    #     t1=t1,
+    #     dt=dt,
+    #     skip_steps=skip_step,
+    #     solver=solver,
+    #     max_steps=None,
+    # )
 
-    # =====================================================
-    # End-effector position upon time
-    # =====================================================
-    forward_kinematics_end_effector = jax.jit(
-        partial(
-            robot.forward_kinematics,
-            s=jnp.sum(robot.L),  # end-effector position
-        )
-    )
-    chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
+    # # =====================================================
+    # # End-effector position upon time
+    # # =====================================================
+    # forward_kinematics_end_effector = jax.jit(
+    #     partial(
+    #         robot.forward_kinematics,
+    #         s=jnp.sum(robot.L),  # end-effector position
+    #     )
+    # )
+    # chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
 
-    plt.figure()
-    plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
-    plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
-    plt.xlabel("Time [s]")
-    plt.ylabel("End-effector position [m]")
-    plt.legend()
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
+    # plt.figure()
+    # plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
+    # plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("End-effector position [m]")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.box(True)
+    # plt.tight_layout()
+    # plt.show()
 
-    # end effector orientation vs. time
-    plt.figure()
-    plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label="End-effector Orientation $\theta$ [deg]")
-    plt.xlabel("Time [s]")
-    plt.ylabel("End-effector Orientation [deg]")
-    plt.legend()
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
+    # # end effector orientation vs. time
+    # plt.figure()
+    # plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label="End-effector Orientation $\theta$ [deg]")
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("End-effector Orientation [deg]")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.box(True)
+    # plt.tight_layout()
+    # plt.show()
 
-    plt.figure()
-    plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
-    plt.axis("equal")
-    plt.grid(True)
-    plt.xlabel("End-effector x [m]")
-    plt.ylabel("End-effector y [m]")
-    plt.colorbar(label="Time [s]")
-    plt.tight_layout()
-    plt.show()
+    # plt.figure()
+    # plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
+    # plt.axis("equal")
+    # plt.grid(True)
+    # plt.xlabel("End-effector x [m]")
+    # plt.ylabel("End-effector y [m]")
+    # plt.colorbar(label="Time [s]")
+    # plt.tight_layout()
+    # plt.show()
 
-    # =====================================================
-    # Energy computation upon time
-    # =====================================================
-    U_ts = jax.vmap(jax.jit(partial(robot.potential_energy)))(q_ts)
-    T_ts = jax.vmap(jax.jit(partial(robot.kinetic_energy)))(q_ts, q_d_ts)
+    # # =====================================================
+    # # Energy computation upon time
+    # # =====================================================
+    # U_ts = jax.vmap(jax.jit(partial(robot.potential_energy)))(q_ts)
+    # T_ts = jax.vmap(jax.jit(partial(robot.kinetic_energy)))(q_ts, q_d_ts)
 
-    plt.figure()
-    plt.plot(ts, U_ts, label="Potential Energy")
-    plt.plot(ts, T_ts, label="Kinetic Energy")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Energy (J)")
-    plt.legend()
-    plt.title("Energy over Time")
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
+    # plt.figure()
+    # plt.plot(ts, U_ts, label="Potential Energy")
+    # plt.plot(ts, T_ts, label="Kinetic Energy")
+    # plt.xlabel("Time (s)")
+    # plt.ylabel("Energy (J)")
+    # plt.legend()
+    # plt.title("Energy over Time")
+    # plt.grid(True)
+    # plt.box(True)
+    # plt.tight_layout()
+    # plt.show()
 
-    # =====================================================
-    # Plot the robot configuration upon time
-    # =====================================================
-    animate_robot_matplotlib(
-        robot=robot,
-        t_list=ts,  # shape (T,)
-        q_list=q_ts,  # shape (T, DOF)
-        num_points=50,
-        interval=100,  # ms
-        slider=True,
-    )
+    # # =====================================================
+    # # Plot the robot configuration upon time
+    # # =====================================================
+    # animate_robot_matplotlib(
+    #     robot=robot,
+    #     t_list=ts,  # shape (T,)
+    #     q_list=q_ts,  # shape (T, DOF)
+    #     num_points=50,
+    #     interval=100,  # ms
+    #     slider=True,
+    # )

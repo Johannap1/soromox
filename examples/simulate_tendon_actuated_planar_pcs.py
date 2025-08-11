@@ -1,172 +1,261 @@
-import cv2  # importing cv2
 from functools import partial
 import jax
 
-jax.config.update("jax_enable_x64", True)  # double precision
-from diffrax import diffeqsolve, Euler, ODETerm, SaveAt, Tsit5
-from jax import Array, vmap
+from diffrax import Tsit5
+from jax import Array
 from jax import numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as onp
-from pathlib import Path
-from typing import Callable, Dict
 
-import soromox
-from soromox import ode_factory
-from soromox.systems import tendon_actuated_planar_pcs as planar_pcs
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
+from matplotlib.widgets import Slider
 
-num_segments = 1
+jax.config.update("jax_enable_x64", True)  # double precision
+from soromox.systems.tendon_actuated_planar_pcs import TendonDrivenPlanarPCS
 
-# filepath to symbolic expressions
-sym_exp_filepath = (
-    Path(soromox.__file__).parent
-    / "symbolic_expressions"
-    / f"planar_pcs_ns-{num_segments}.dill"
+jnp.set_printoptions(
+    threshold=jnp.inf,
+    linewidth=jnp.inf,
+    formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
 )
-
-# set parameters
-rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
-params = {
-    "th0": jnp.array(0.0),  # initial orientation angle [rad]
-    "l": 1e-1 * jnp.ones((num_segments,)),
-    "r": 2e-2 * jnp.ones((num_segments,)),
-    "rho": rho,
-    "g": jnp.array([0.0, 9.81]),
-    "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
-    "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
-    "d": 2e-2 * jnp.array([[1.0, -1.0]]).repeat(num_segments, axis=0),  # distance of tendons from the central axis [m]
-}
-params["D"] = 1e-3 * jnp.diag(
-    (jnp.repeat(
-        jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
-    ) * params["l"][:, None]).flatten()
-)
-
-# activate all strains (i.e. bending, shear, and axial)
-strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
-# actuation selector for the segments
-segment_actuation_selector = jnp.ones((num_segments,), dtype=bool)
-# segment_actuation_selector = jnp.array([False, True]) # only the last segment is actuated
-
-# define initial configuration
-q0 = jnp.repeat(jnp.array([5.0 * jnp.pi, 0.1, 0.2])[None, :], num_segments, axis=0).flatten()
-# number of generalized coordinates
-n_q = q0.shape[0]
-
-# set simulation parameters
-dt = 1e-4  # time step
-ts = jnp.arange(0.0, 10.0, dt)  # time steps
-skip_step = 10  # how many time steps to skip in between video frames
-video_ts = ts[::skip_step]  # time steps for video
-
-# video settings
-video_width, video_height = 700, 700  # img height and width
-video_path = Path(__file__).parent / "videos" / f"planar_pcs_ns-{num_segments}.mp4"
-
 
 def draw_robot(
-    batched_forward_kinematics_fn: Callable,
-    params: Dict[str, Array],
+    robot: TendonDrivenPlanarPCS,
     q: Array,
-    width: int,
-    height: int,
     num_points: int = 50,
-) -> onp.ndarray:
-    # plotting in OpenCV
-    h, w = height, width  # img height and width
-    ppm = h / (2.0 * jnp.sum(params["l"]))  # pixel per meter
-    base_color = (0, 0, 0)  # black robot_color in BGR
-    robot_color = (255, 0, 0)  # black robot_color in BGR
+):
+    batched_forward_kinematics = jax.vmap(
+        robot.forward_kinematics, in_axes=(None, 0), out_axes=-1
+    )
+    L_max = jnp.sum(robot.L)
 
-    # we use for plotting N points along the length of the robot
-    s_ps = jnp.linspace(0, jnp.sum(params["l"]), num_points)
+    s_ps = jnp.linspace(0, L_max, num_points)
+    chi_ps = batched_forward_kinematics(q, s_ps)
 
-    # poses along the robot of shape (3, N)
-    chi_ps = batched_forward_kinematics_fn(params, q, s_ps)
+    curve = onp.array(chi_ps[1:, :], dtype=onp.float32).T
 
-    img = 255 * onp.ones((w, h, 3), dtype=jnp.uint8)  # initialize background to white
-    curve_origin = onp.array(
-        [w // 2, 0.1 * h], dtype=onp.int32
-    )  # in x-y pixel coordinates
-    # draw base
-    cv2.rectangle(img, (0, h - curve_origin[1]), (w, h), color=base_color, thickness=-1)
-    # transform robot poses to pixel coordinates
-    # should be of shape (N, 2)
-    curve = onp.array((curve_origin + chi_ps[:2, :].T * ppm), dtype=onp.int32)
-    # invert the v pixel coordinate
-    curve[:, 1] = h - curve[:, 1]
-    cv2.polylines(img, [curve], isClosed=False, color=robot_color, thickness=10)
+    return curve  # (N, 2)
 
-    return img
 
+def animate_robot_matplotlib(
+    robot: TendonDrivenPlanarPCS,
+    t_list: Array,  # shape (T,)
+    q_list: Array,  # shape (T, DOF)
+    num_points: int = 50,
+    interval: int = 50,
+    slider: bool = None,
+    animation: bool = None,
+    show: bool = True,
+):
+    if slider is None and animation is None:
+        raise ValueError("Either 'slider' or 'animation' must be set to True.")
+    if animation and slider:
+        raise ValueError(
+            "Cannot use both animation and slider at the same time. Choose one."
+        )
+
+    width = jnp.linalg.norm(robot.L) * 3
+    height = width
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.03])  # [left, bottom, width, height]
+
+    # Base
+    def draw_base(ax, robot, L=robot.L[0] / 2):
+        angle1 = robot.th0 - jnp.pi / 2
+        angle2 = robot.th0 + jnp.pi / 2
+        x1, y1 = L * jnp.cos(angle1), L * jnp.sin(angle1)
+        x2, y2 = L * jnp.cos(angle2), L * jnp.sin(angle2)
+        ax.plot([x1, x2], [y1, y2], color="black", linestyle="-", linewidth=2)
+
+    if animation:
+        (line,) = ax.plot([], [], lw=4, color="blue")
+        ax.set_xlim(-width / 2, width / 2)
+        ax.set_ylim(0, height)
+        title_text = ax.set_title("t = 0.00 s")
+
+        def init():
+            line.set_data([], [])
+            title_text.set_text("t = 0.00 s")
+            return line, title_text
+
+        def update(frame_idx):
+            q = q_list[frame_idx]
+            t = t_list[frame_idx]
+            draw_base(ax, robot, L=0.1)
+            curve = draw_robot(robot, q, num_points)
+            line.set_data(curve[:, 0], curve[:, 1])
+            title_text.set_text(f"t = {t:.2f} s")
+            return line, title_text
+
+        ani = FuncAnimation(
+            fig,
+            update,
+            frames=len(q_list),
+            init_func=init,
+            blit=False,
+            interval=interval,
+        )
+
+        if show:
+            plt.show()
+        plt.close(fig)
+        return HTML(ani.to_jshtml())
+
+    elif slider:
+
+        def update_plot(frame_idx):
+            ax.cla()  # Clear current axes
+            ax.set_xlim(-width / 2, width / 2)
+            ax.set_ylim(0, height)
+            ax.set_xlabel("X [m]")
+            ax.set_ylabel("Y [m]")
+            ax.set_title(f"t = {t_list[frame_idx]:.2f} s")
+            draw_base(ax, robot, L=0.1)
+            q = q_list[frame_idx]
+            curve = draw_robot(robot, q, num_points)
+            ax.plot(curve[:, 0], curve[:, 1], lw=4, color="blue")
+            fig.canvas.draw_idle()
+
+        # Create slider
+        slider = Slider(
+            ax=ax_slider,
+            label="Frame",
+            valmin=0,
+            valmax=len(t_list) - 1,
+            valinit=0,
+            valstep=1,
+        )
+        slider.on_changed(update_plot)
+
+        update_plot(0)  # Initial plot
+
+        if show:
+            plt.show()
+
+        plt.close(fig)
+        return HTML(
+            "Slider animation not implemented in HTML format. Use matplotlib directly to view the slider."
+        )  # Slider cannot be converted to HTML
 
 if __name__ == "__main__":
-    strain_basis, forward_kinematics_fn, dynamical_matrices_fn, auxiliary_fns = (
-        planar_pcs.factory(num_segments, sym_exp_filepath, strain_selector, segment_actuation_selector=segment_actuation_selector)
-    )
-    actuation_mapping_fn = auxiliary_fns["actuation_mapping_fn"]
-    # jit the functions
-    dynamical_matrices_fn = jax.jit(partial(dynamical_matrices_fn))
-    batched_forward_kinematics = vmap(
-        forward_kinematics_fn, in_axes=(None, None, 0), out_axes=-1
+    num_segments = 1  # number of segments in the robot
+    rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
+    params = {
+        "th0": jnp.array(0.0),#jnp.pi / 2),  # initial orientation angle [rad]
+        "L": 1e-1 * jnp.ones((num_segments,)),
+        "r": 2e-2 * jnp.ones((num_segments,)),
+        "rho": rho,
+        "g": jnp.array([0.0, 9.81]), # gravitational acceleration [m/s^2] UP!
+        "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
+        "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
+        "d": 2e-2 * jnp.array([[1.0, -1.0]]).repeat(num_segments, axis=0),  # distance of tendons from the central axis [m]
+    }
+    params["D"] = 1e-3 * jnp.diag(
+        (jnp.repeat(
+            jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
+        ) * params["L"][:, None]).flatten()
     )
 
-    # test the actuation mapping function
-    xi_eq = jnp.array([0.0, 0.0, 1.0])[None].repeat(num_segments, axis=0).flatten()
-    B_xi = strain_basis
-    # call the actuation mapping function
-    A = actuation_mapping_fn(
-        forward_kinematics_fn,
-        auxiliary_fns["jacobian_fn"],
-        params,
-        B_xi,
-        xi_eq,
-        jnp.zeros_like(q0),
-    )
-    print("A =\n", A)
+    # activate all strains (i.e. bending, shear, and axial)
+    strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
+    # actuation selector for the segments
+    segment_actuation_selector = jnp.ones((num_segments,), dtype=bool)
 
-    x0 = jnp.concatenate([q0, jnp.zeros_like(q0)])  # initial condition
+    # ======================================================
+    # Robot initialization
+    # ======================================================
+    robot = TendonDrivenPlanarPCS(
+        num_segments=num_segments,
+        params=params,
+        order_gauss=5,
+        strain_selector=strain_selector,
+        segment_actuation_selector=segment_actuation_selector,
+    )
+
+    # =====================================================
+    # Simulation upon time
+    # =====================================================
+    # Initial configuration
+    q0 = jnp.repeat(
+        jnp.array([5.0 * jnp.pi, 0.1, 0.2])[None, :], num_segments, axis=0
+    ).flatten()
+    # Initial velocities
+    qd0 = jnp.zeros_like(q0)
+    
+    # Actuation parameters
     u = jnp.array([1.0, 1.0])[None].repeat(num_segments, axis=0).flatten()  # tendon tensions
-    # u = 2e-1 * jnp.array([2.0, 0.0, 0.0, 1.0])
+    # u = jnp.zeros(robot.num_actuators)
+    
     print("u =\n", u)
 
-    ode_fn = ode_factory(dynamical_matrices_fn, params, u)
-    term = ODETerm(ode_fn)
+    # call the actuation mapping function
+    A = robot.actuation_matrix(
+        q0,
+    )
+    print("A =\n", A)
+    
+    B = robot.inertia_matrix(q0)
+    C = robot.coriolis_matrix(q0, qd0)
+    G = robot.gravitational_force(q0)
+    K = robot.stiffness_matrix()@q0
+    D = robot.damping_matrix()
+    A = robot.actuation_matrix(q0)
+    print("B =\n", B)
+    print("C =\n", C)
+    print("G =\n", G)
+    print("K =\n", K)
+    print("D =\n", D)
+    print("A =\n", A)
+    
+    print("Au =\n", A @ u)
 
-    sol = diffeqsolve(
-        term,
-        solver=Tsit5(),
-        t0=ts[0],
-        t1=ts[-1],
-        dt0=dt,
-        y0=x0,
+    # Simulation time parameters
+    t0 = 0.0
+    t1 = 10.0
+    dt = 1e-4
+    skip_step = 10  # how many time steps to skip in between video frames
+
+    # Solver
+    solver = Tsit5()  # Runge-Kutta 5(4) method
+
+    ts, q_ts, qd_ts = robot.resolve_upon_time(
+        q0=q0,
+        qd0=qd0,
+        u=u,
+        t0=t0,
+        t1=t1,
+        dt=dt,
+        skip_steps=skip_step,
+        solver=solver,
         max_steps=None,
-        saveat=SaveAt(ts=video_ts),
     )
 
-    print("sol.ys =\n", sol.ys)
-    # the evolution of the generalized coordinates
-    q_ts = sol.ys[:, :n_q]
-    # the evolution of the generalized velocities
-    q_d_ts = sol.ys[:, n_q:]
-
-    # evaluate the forward kinematics along the trajectory
-    chi_ee_ts = vmap(forward_kinematics_fn, in_axes=(None, 0, None))(
-        params, q_ts, jnp.array([jnp.sum(params["l"])])
+    # =====================================================
+    # End-effector position upon time
+    # =====================================================
+    forward_kinematics_end_effector = jax.jit(
+        partial(
+            robot.forward_kinematics,
+            s=jnp.sum(robot.L),  # end-effector position
+        )
     )
-    # plot the configuration vs time
+    chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
+    
     plt.figure()
     for segment_idx in range(num_segments):
         plt.plot(
-            video_ts, q_ts[:, 3 * segment_idx + 0],
+            ts, q_ts[:, 3 * segment_idx + 0],
             label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
         )
         plt.plot(
-            video_ts, q_ts[:, 3 * segment_idx + 1],
+            ts, q_ts[:, 3 * segment_idx + 1],
             label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
         )
         plt.plot(
-            video_ts, q_ts[:, 3 * segment_idx + 2],
+            ts, q_ts[:, 3 * segment_idx + 2],
             label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
         )
     plt.xlabel("Time [s]")
@@ -175,20 +264,35 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-    # plot end-effector position vs time
+
     plt.figure()
-    plt.plot(video_ts, chi_ee_ts[:, 0], label="x")
-    plt.plot(video_ts, chi_ee_ts[:, 1], label="y")
+    plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
+    plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
     plt.xlabel("Time [s]")
-    plt.ylabel("End-effector Position [m]")
+    plt.ylabel("End-effector position [m]")
     plt.legend()
     plt.grid(True)
     plt.box(True)
     plt.tight_layout()
     plt.show()
-    # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
+
+    # end effector orientation vs. time
     plt.figure()
-    plt.scatter(chi_ee_ts[:, 0], chi_ee_ts[:, 1], c=video_ts, cmap="viridis")
+    plt.plot(
+        ts,
+        chi_ee_ts[:, 0] / jnp.pi * 180,
+        label=r"End-effector Orientation $\theta$ [deg]",
+    )
+    plt.xlabel("Time [s]")
+    plt.ylabel("End-effector Orientation [deg]")
+    plt.legend()
+    plt.grid(True)
+    plt.box(True)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure()
+    plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
     plt.axis("equal")
     plt.grid(True)
     plt.xlabel("End-effector x [m]")
@@ -196,55 +300,33 @@ if __name__ == "__main__":
     plt.colorbar(label="Time [s]")
     plt.tight_layout()
     plt.show()
-    # plt.figure()
-    # plt.plot(chi_ee_ts[:, 0], chi_ee_ts[:, 1])
-    # plt.axis("equal")
-    # plt.grid(True)
-    # plt.xlabel("End-effector x [m]")
-    # plt.ylabel("End-effector y [m]")
-    # plt.tight_layout()
-    # plt.show()
 
-    # plot the energy along the trajectory
-    kinetic_energy_fn_vmapped = vmap(
-        partial(auxiliary_fns["kinetic_energy_fn"], params)
-    )
-    potential_energy_fn_vmapped = vmap(
-        partial(auxiliary_fns["potential_energy_fn"], params)
-    )
-    U_ts = potential_energy_fn_vmapped(q_ts)
-    T_ts = kinetic_energy_fn_vmapped(q_ts, q_d_ts)
+    # =====================================================
+    # Energy computation upon time
+    # =====================================================
+    U_ts = jax.vmap(jax.jit(partial(robot.potential_energy)))(q_ts)
+    T_ts = jax.vmap(jax.jit(partial(robot.kinetic_energy)))(q_ts, qd_ts)
+
     plt.figure()
-    plt.plot(video_ts, U_ts, label="Potential energy")
-    plt.plot(video_ts, T_ts, label="Kinetic energy")
-    plt.xlabel("Time [s]")
-    plt.ylabel("Energy [J]")
+    plt.plot(ts, U_ts, label="Potential Energy")
+    plt.plot(ts, T_ts, label="Kinetic Energy")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Energy (J)")
     plt.legend()
+    plt.title("Energy over Time")
     plt.grid(True)
     plt.box(True)
     plt.tight_layout()
     plt.show()
 
-    # create video
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    video_path.parent.mkdir(parents=True, exist_ok=True)
-    video = cv2.VideoWriter(
-        str(video_path),
-        fourcc,
-        1 / (skip_step * dt),  # fps
-        (video_width, video_height),
+    # =====================================================
+    # Plot the robot configuration upon time
+    # =====================================================
+    animate_robot_matplotlib(
+        robot=robot,
+        t_list=ts,  # shape (T,)
+        q_list=q_ts,  # shape (T, DOF)
+        num_points=50,
+        interval=100,  # ms
+        slider=True,
     )
-
-    for time_idx, t in enumerate(video_ts):
-        x = sol.ys[time_idx]
-        img = draw_robot(
-            batched_forward_kinematics,
-            params,
-            x[: (x.shape[0] // 2)],
-            video_width,
-            video_height,
-        )
-        video.write(img)
-
-    video.release()
-    print(f"Video saved at {video_path}")

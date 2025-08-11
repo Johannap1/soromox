@@ -15,7 +15,7 @@ import soromox
 from soromox import ode_factory
 from soromox.systems import planar_pcs_sym
 
-num_segments = 1
+num_segments = 2
 
 # filepath to symbolic expressions
 sym_exp_filepath = (
@@ -108,6 +108,14 @@ if __name__ == "__main__":
     batched_forward_kinematics = vmap(
         forward_kinematics_fn, in_axes=(None, None, 0), out_axes=-1
     )
+    
+    B, C, G, K, D, A = dynamical_matrices_fn(params, q0, jnp.zeros_like(q0))
+    # print("B =\n", B)
+    # print("C =\n", C)
+    print("G =\n", G)
+    # print("K =\n", K)
+    # print("D =\n", D)
+    # print("A =\n", A)
 
     # import matplotlib.pyplot as plt
     # plt.plot(chi_ps[0, :], chi_ps[1, :])
@@ -125,135 +133,135 @@ if __name__ == "__main__":
     # cv2.waitKey()
     # cv2.destroyWindow(window_name)
 
-    x0 = jnp.concatenate([q0, jnp.zeros_like(q0)])  # initial condition
-    tau = jnp.zeros_like(q0)  # torques
+    # x0 = jnp.concatenate([q0, jnp.zeros_like(q0)])  # initial condition
+    # tau = jnp.zeros_like(q0)  # torques
 
-    ode_fn = ode_factory(dynamical_matrices_fn, params, tau)
-    # jit the ODE function
-    ode_fn = jax.jit(ode_fn)
-    # jit the ODE function
-    ode_fn = jax.jit(ode_fn)
-    term = ODETerm(ode_fn)
+    # ode_fn = ode_factory(dynamical_matrices_fn, params, tau)
+    # # jit the ODE function
+    # ode_fn = jax.jit(ode_fn)
+    # # jit the ODE function
+    # ode_fn = jax.jit(ode_fn)
+    # term = ODETerm(ode_fn)
 
-    sol = diffeqsolve(
-        term,
-        solver=Tsit5(),
-        t0=ts[0],
-        t1=ts[-1],
-        dt0=dt,
-        y0=x0,
-        max_steps=None,
-        saveat=SaveAt(ts=video_ts),
-    )
+    # sol = diffeqsolve(
+    #     term,
+    #     solver=Tsit5(),
+    #     t0=ts[0],
+    #     t1=ts[-1],
+    #     dt0=dt,
+    #     y0=x0,
+    #     max_steps=None,
+    #     saveat=SaveAt(ts=video_ts),
+    # )
 
-    print("sol.ys =\n", sol.ys)
-    # the evolution of the generalized coordinates
-    q_ts = sol.ys[:, :n_q]
-    # the evolution of the generalized velocities
-    q_d_ts = sol.ys[:, n_q:]    
+    # print("sol.ys =\n", sol.ys)
+    # # the evolution of the generalized coordinates
+    # q_ts = sol.ys[:, :n_q]
+    # # the evolution of the generalized velocities
+    # q_d_ts = sol.ys[:, n_q:]    
 
-    s_max = jnp.array([jnp.sum(params["l"])])
+    # s_max = jnp.array([jnp.sum(params["l"])])
 
-    forward_kinematics_fn_end_effector = partial(forward_kinematics_fn, params, s=s_max)
-    forward_kinematics_fn_end_effector = jax.jit(forward_kinematics_fn_end_effector)
-    forward_kinematics_fn_end_effector = vmap(forward_kinematics_fn_end_effector)
+    # forward_kinematics_fn_end_effector = partial(forward_kinematics_fn, params, s=s_max)
+    # forward_kinematics_fn_end_effector = jax.jit(forward_kinematics_fn_end_effector)
+    # forward_kinematics_fn_end_effector = vmap(forward_kinematics_fn_end_effector)
 
-    # evaluate the forward kinematics along the trajectory
-    chi_ee_ts = forward_kinematics_fn_end_effector(q_ts)
-    # plot the configuration vs time
-    plt.figure()
-    for segment_idx in range(num_segments):
-        plt.plot(
-            video_ts,
-            q_ts[:, 3 * segment_idx + 0],
-            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]",
-        )
-        plt.plot(
-            video_ts,
-            q_ts[:, 3 * segment_idx + 1],
-            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]",
-        )
-        plt.plot(
-            video_ts,
-            q_ts[:, 3 * segment_idx + 2],
-            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]",
-        )
-    plt.xlabel("Time [s]")
-    plt.ylabel("Configuration")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-    # plot end-effector position vs time
-    plt.figure()
-    plt.plot(video_ts, chi_ee_ts[:, 0], label="x")
-    plt.plot(video_ts, chi_ee_ts[:, 1], label="y")
-    plt.xlabel("Time [s]")
-    plt.ylabel("End-effector Position [m]")
-    plt.legend()
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
-    # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
-    plt.figure()
-    plt.scatter(chi_ee_ts[:, 0], chi_ee_ts[:, 1], c=video_ts, cmap="viridis")
-    plt.axis("equal")
-    plt.grid(True)
-    plt.xlabel("End-effector x [m]")
-    plt.ylabel("End-effector y [m]")
-    plt.colorbar(label="Time [s]")
-    plt.tight_layout()
-    plt.show()
+    # # evaluate the forward kinematics along the trajectory
+    # chi_ee_ts = forward_kinematics_fn_end_effector(q_ts)
+    # # plot the configuration vs time
     # plt.figure()
-    # plt.plot(chi_ee_ts[:, 0], chi_ee_ts[:, 1])
+    # for segment_idx in range(num_segments):
+    #     plt.plot(
+    #         video_ts,
+    #         q_ts[:, 3 * segment_idx + 0],
+    #         label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]",
+    #     )
+    #     plt.plot(
+    #         video_ts,
+    #         q_ts[:, 3 * segment_idx + 1],
+    #         label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]",
+    #     )
+    #     plt.plot(
+    #         video_ts,
+    #         q_ts[:, 3 * segment_idx + 2],
+    #         label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]",
+    #     )
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("Configuration")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.tight_layout()
+    # plt.show()
+    # # plot end-effector position vs time
+    # plt.figure()
+    # plt.plot(video_ts, chi_ee_ts[:, 0], label="x")
+    # plt.plot(video_ts, chi_ee_ts[:, 1], label="y")
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("End-effector Position [m]")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.box(True)
+    # plt.tight_layout()
+    # plt.show()
+    # # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
+    # plt.figure()
+    # plt.scatter(chi_ee_ts[:, 0], chi_ee_ts[:, 1], c=video_ts, cmap="viridis")
     # plt.axis("equal")
     # plt.grid(True)
     # plt.xlabel("End-effector x [m]")
     # plt.ylabel("End-effector y [m]")
+    # plt.colorbar(label="Time [s]")
+    # plt.tight_layout()
+    # plt.show()
+    # # plt.figure()
+    # # plt.plot(chi_ee_ts[:, 0], chi_ee_ts[:, 1])
+    # # plt.axis("equal")
+    # # plt.grid(True)
+    # # plt.xlabel("End-effector x [m]")
+    # # plt.ylabel("End-effector y [m]")
+    # # plt.tight_layout()
+    # # plt.show()
+
+    # # plot the energy along the trajectory
+    # kinetic_energy_fn_vmapped = vmap(
+    #     partial(jax.jit(auxiliary_fns["kinetic_energy_fn"]), params)
+    # )
+    # potential_energy_fn_vmapped = vmap(
+    #     partial(jax.jit(auxiliary_fns["potential_energy_fn"]), params)
+    # )
+    # U_ts = potential_energy_fn_vmapped(q_ts)
+    # T_ts = kinetic_energy_fn_vmapped(q_ts, q_d_ts)
+    # plt.figure()
+    # plt.plot(video_ts, U_ts, label="Potential energy")
+    # plt.plot(video_ts, T_ts, label="Kinetic energy")
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("Energy [J]")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.box(True)
     # plt.tight_layout()
     # plt.show()
 
-    # plot the energy along the trajectory
-    kinetic_energy_fn_vmapped = vmap(
-        partial(jax.jit(auxiliary_fns["kinetic_energy_fn"]), params)
-    )
-    potential_energy_fn_vmapped = vmap(
-        partial(jax.jit(auxiliary_fns["potential_energy_fn"]), params)
-    )
-    U_ts = potential_energy_fn_vmapped(q_ts)
-    T_ts = kinetic_energy_fn_vmapped(q_ts, q_d_ts)
-    plt.figure()
-    plt.plot(video_ts, U_ts, label="Potential energy")
-    plt.plot(video_ts, T_ts, label="Kinetic energy")
-    plt.xlabel("Time [s]")
-    plt.ylabel("Energy [J]")
-    plt.legend()
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
+    # # # create video
+    # # fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # # video_path.parent.mkdir(parents=True, exist_ok=True)
+    # # video = cv2.VideoWriter(
+    # #     str(video_path),
+    # #     fourcc,
+    # #     1 / (skip_step * dt),  # fps
+    # #     (video_width, video_height),
+    # # )
 
-    # create video
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    video_path.parent.mkdir(parents=True, exist_ok=True)
-    video = cv2.VideoWriter(
-        str(video_path),
-        fourcc,
-        1 / (skip_step * dt),  # fps
-        (video_width, video_height),
-    )
+    # # for time_idx, t in enumerate(video_ts):
+    # #     x = sol.ys[time_idx]
+    # #     img = draw_robot(
+    # #         batched_forward_kinematics,
+    # #         params,
+    # #         x[: (x.shape[0] // 2)],
+    # #         video_width,
+    # #         video_height,
+    # #     )
+    # #     video.write(img)
 
-    for time_idx, t in enumerate(video_ts):
-        x = sol.ys[time_idx]
-        img = draw_robot(
-            batched_forward_kinematics,
-            params,
-            x[: (x.shape[0] // 2)],
-            video_width,
-            video_height,
-        )
-        video.write(img)
-
-    video.release()
-    print(f"Video saved at {video_path}")
+    # # video.release()
+    # # print(f"Video saved at {video_path}")

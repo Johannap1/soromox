@@ -1023,7 +1023,7 @@ class PlanarPCS(eqx.Module):
                 )
                 J_j = self._jacobian_bodyframe_full(q, Xs_j)
 
-                return Ws_j * J_j.T @ M_i @ Ad_g_inv_j @ self.g
+                return - Ws_j * J_j.T @ M_i @ Ad_g_inv_j @ self.g
 
             G_blocks_segment_i = vmap(G_j)(jnp.arange(self.num_gauss_points))
 
@@ -1265,7 +1265,7 @@ class PlanarPCS(eqx.Module):
                 p_j = (
                     self.forward_kinematics(q, Xs_j).at[0].set(0.0)
                 )  # Set the orientation angle to 0 for gravitational energy computation
-                return Ws_j * rho_i * A_i * jnp.dot(p_j, self.g)
+                return - Ws_j * rho_i * A_i * jnp.dot(p_j, self.g)
 
             U_G_blocks_segment_i = vmap(U_G_j)(jnp.arange(self.num_gauss_points))
 

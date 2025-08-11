@@ -35,7 +35,7 @@ class TendonDrivenPlanarPCS(PlanarPCS):
             params=params,
             order_gauss=order_gauss,
             strain_selector=strain_selector,
-            xi_ref=xi_ref,
+            xi_star=xi_ref,
         )
         
         if segment_actuation_selector is None:
@@ -178,8 +178,10 @@ class TendonDrivenPlanarPCS(PlanarPCS):
                     A_d: actuation matrix of shape (n_xi, ) where n_xi is the number of strains
                 """
                 kappa_0 = xi[0]  # bending strain
-                axial_0 = xi[1]  # axial strain TODO: check if this is correct
-                shear_0 = xi[2]  # shear strain
+                # axial_0 = xi[1]  # axial strain TODO: check if this is correct
+                # shear_0 = xi[2]  # shear strain
+                axial_0 = xi[2]  # axial strain TODO: check if this is correct
+                shear_0 = xi[1]  # shear strain
                 square_root_term = jnp.sqrt(shear_0 ** 2 + (axial_0 + d * kappa_0) ** 2)
                 
                 def compute_A_d_wrt_xi_i(i: Array, L_i: Array, xi_i: Array) -> Array:
@@ -193,8 +195,10 @@ class TendonDrivenPlanarPCS(PlanarPCS):
                         A_d_segment: actuation matrix for the segment of shape (3, 3)
                     """
                     kappa_i = xi_i[0]  # bending strain
-                    axial_i = xi_i[1]  # axial strain TODO: check if this is correct
-                    shear_i = xi_i[2]  # shear strain
+                    # axial_i = xi_i[1]  # axial strain TODO: check if this is correct
+                    # shear_i = xi_i[2]  # shear strain
+                    axial_i = xi_i[2]  # axial strain TODO: check if this is correct
+                    shear_i = xi_i[1]  # shear strain
                     A_d_wrt_xi_i = -jnp.array(
                         [
                             L_i * d * (d * kappa_i + axial_i) / square_root_term,
