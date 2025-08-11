@@ -196,21 +196,6 @@ if __name__ == "__main__":
         q0,
     )
     print("A =\n", A)
-    
-    B = robot.inertia_matrix(q0)
-    C = robot.coriolis_matrix(q0, qd0)
-    G = robot.gravitational_force(q0)
-    K = robot.stiffness_matrix()@q0
-    D = robot.damping_matrix()
-    A = robot.actuation_matrix(q0)
-    print("B =\n", B)
-    print("C =\n", C)
-    print("G =\n", G)
-    print("K =\n", K)
-    print("D =\n", D)
-    print("A =\n", A)
-    
-    print("Au =\n", A @ u)
 
     # Simulation time parameters
     t0 = 0.0
