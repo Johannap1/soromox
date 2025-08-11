@@ -10,7 +10,7 @@ from .utils import (
 
 from .planar_pcs import PlanarPCS
 
-class TendonDrivenPlanarPCS(PlanarPCS):
+class TendonActuatedPlanarPCS(PlanarPCS):
     
     d: Array  # distance of the tendons from the segment's backbone, shape (num_segments,)
     
@@ -96,7 +96,7 @@ class TendonDrivenPlanarPCS(PlanarPCS):
             )
         self.d = jnp.asarray(d, dtype=jnp.float32)
         
-    def update_params(self, params: Dict[str, Array]) -> "TendonDrivenPlanarPCS":
+    def update_params(self, params: Dict[str, Array]) -> "TendonActuatedPlanarPCS":
         """
         Update the parameters of the tendon-driven planar PCS.
 
@@ -198,8 +198,8 @@ class TendonDrivenPlanarPCS(PlanarPCS):
                     A_d_wrt_xi_i = -jnp.array(
                         [
                             L_i * d * (d * kappa_i + axial_i) / square_root_term,
-                            L_i * shear_i / square_root_term,
                             L_i * (d * kappa_i + axial_i) / square_root_term,
+                            L_i * shear_i / square_root_term,
                         ]
                     )
                     A_d_segment = jnp.where(

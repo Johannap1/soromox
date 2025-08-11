@@ -12,10 +12,10 @@ from IPython.display import HTML
 from matplotlib.widgets import Slider
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.systems.tendon_actuated_planar_pcs import TendonDrivenPlanarPCS
+from soromox.systems.tendon_actuated_planar_pcs import TendonActuatedPlanarPCS
 
 def draw_robot(
-    robot: TendonDrivenPlanarPCS,
+    robot: TendonActuatedPlanarPCS,
     q: Array,
     num_points: int = 50,
 ):
@@ -33,7 +33,7 @@ def draw_robot(
 
 
 def animate_robot_matplotlib(
-    robot: TendonDrivenPlanarPCS,
+    robot: TendonActuatedPlanarPCS,
     t_list: Array,  # shape (T,)
     q_list: Array,  # shape (T, DOF)
     num_points: int = 50,
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     # ======================================================
     # Robot initialization
     # ======================================================
-    robot = TendonDrivenPlanarPCS(
+    robot = TendonActuatedPlanarPCS(
         num_segments=num_segments,
         params=params,
         order_gauss=5,
