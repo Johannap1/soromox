@@ -125,7 +125,7 @@ if __name__ == "__main__":
     )
     print(f"Video saved at {video_path}")
 
-    # Lecture et affichage de la vidéo générée
+    # Playback and display of generated video
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"Erreur lors de l'ouverture de la vidéo {video_path}")

@@ -122,3 +122,4 @@ if __name__ == "__main__":
         video.write(img)
 
     video.release()
+    print(f"Video saved to {video_path}")

@@ -1,8 +1,7 @@
-import dill
 import jax
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from jax import Array, jit, random
+from jax import random
 from jax import numpy as jnp
 import soromox
 from pathlib import Path
@@ -27,9 +26,6 @@ def test_end_effector_kinematics(seed: int = 0):
         sym_exp_filepath=sym_exp_filepath,
         params=params,
     )
-
-    # load saved symbolic data TODO: not used in this test
-    sym_exps = dill.load(open(str(sym_exp_filepath), "rb"))
 
     rng = random.PRNGKey(seed)
     for _ in range(10):

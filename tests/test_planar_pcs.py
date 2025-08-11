@@ -4,13 +4,9 @@ from soromox.systems.planar_pcs import PlanarPCS
 
 from jax import Array
 from jax import numpy as jnp
-from functools import partial
 from numpy.testing import assert_allclose
-from pathlib import Path
 
 from soromox.utils.tolerance import Tolerance
-
-from typing import Optional, Literal
 
 jax.config.update("jax_enable_x64", True)  # double precision
 

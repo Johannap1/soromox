@@ -12,7 +12,7 @@ from typing import Callable, Dict
 
 import soromox
 from soromox import ode_factory
-from soromox.systems import pneumatically_actuated_planar_pcs
+from soromox.systems import factory_pneumatically_actuated_planar_pcs
 
 num_segments = 1
 
@@ -51,7 +51,7 @@ strain_selector = (
 )
 
 B_xi, forward_kinematics_fn, dynamical_matrices_fn, auxiliary_fns = (
-    pneumatically_actuated_planar_pcs.factory(
+    factory_pneumatically_actuated_planar_pcs.factory(
         num_segments,
         sym_exp_filepath,
         strain_selector,  # simplified_actuation_mapping=True

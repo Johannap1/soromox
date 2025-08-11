@@ -104,7 +104,6 @@ class PlanarPCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
-        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_ref: Optional[Array] = None,
@@ -134,8 +133,6 @@ class PlanarPCS(eqx.Module):
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
-            num_actuators (Optional[int], optional):
-                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -218,10 +215,7 @@ class PlanarPCS(eqx.Module):
         self.xi_ref = xi_ref
 
         # Number of actuators
-        if num_actuators is None:
-            self.num_actuators = int(self.num_active_strains.item())
-        else:
-            self.num_actuators = num_actuators
+        self.num_actuators = int(self.num_active_strains.item())
 
     def _set_params(self, params: Dict[str, Array]) -> None:
         """

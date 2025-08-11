@@ -13,7 +13,7 @@ from typing import Callable, Dict
 
 import soromox
 from soromox import ode_factory
-from soromox.systems import tendon_actuated_planar_pcs as planar_pcs
+from soromox.systems import factory_tendon_actuated_planar_pcs as planar_pcs
 
 num_segments = 1
 

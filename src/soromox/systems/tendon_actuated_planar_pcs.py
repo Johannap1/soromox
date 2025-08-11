@@ -1,60 +1,157 @@
-__all__ = ["factory", "stiffness_fn"]
 from jax import Array, debug, lax, vmap
 import jax.numpy as jnp
-from soromox.math_utils import blk_diag
-import numpy as onp
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Callable, Dict, Optional
 
-from .planar_pcs_sym import factory as planar_pcs_factory
+import equinox as eqx
 
+from .utils import (
+    compute_strain_basis,
+)
 
-def factory(
-    num_segments: int,
-    *args,
-    segment_actuation_selector: Optional[Array] = None,
-    **kwargs,
-):
-    """
-    Factory function for the tendon-driven planar PCS.
-    Args:
-        num_segments: number of segments
-        segment_actuation_selector: actuation selector for the segments as boolean array of shape (num_segments,)
-            True entries signify that the segment is actuated, False entries signify that the segment is passive
-    Returns:
-    """
-    if segment_actuation_selector is None:
-        segment_actuation_selector = jnp.ones(num_segments, dtype=bool)
+from .planar_pcs import PlanarPCS
 
-    def actuation_mapping_fn(
-        forward_kinematics_fn: Callable,
-        jacobian_fn: Callable,
+class TendonDrivenPlanarPCS(PlanarPCS):
+    
+    d: Array  # distance of the tendons from the segment's backbone, shape (num_segments,)
+    
+    segment_actuation_selector: Array  # boolean array of shape (num_segments,) indicating which segments are actuated
+    segment_indices_to_actuate: Array  # indices of the segments that are actuated, shape (num_actuated_segments,)
+    
+    B_actuators: Array  # strain basis matrix for the actuators, shape (num_active_strains, num_actuators)
+    
+    num_actuators: int = eqx.field(static=True)  # Number of actuators
+    
+    def __init__(
+        self,
+        num_segments: int,
         params: Dict[str, Array],
-        B_xi: Array,
-        xi_ref: Array,
-        q: Array,
-    ) -> Array:
+        order_gauss: int = 5,
+        strain_selector: Optional[Array] = None,
+        xi_ref: Optional[Array] = None,
+        segment_actuation_selector: Optional[Array] = None,
+    ):
+        super().__init__(
+            num_segments=num_segments,
+            params=params,
+            order_gauss=order_gauss,
+            strain_selector=strain_selector,
+            xi_ref=xi_ref,
+        )
+        
+        if segment_actuation_selector is None:
+            segment_actuation_selector = jnp.ones(num_segments, dtype=bool)
+        self.segment_actuation_selector = segment_actuation_selector
+        
+        self.segment_indices_to_actuate = jnp.array(
+            [i for i, act in enumerate(segment_actuation_selector) if act]
+        )
+        
+        self.num_actuators = int(jnp.sum(segment_actuation_selector)) * 2  # each segment has two tendons
+        
+        self.B_actuators = compute_strain_basis(segment_actuation_selector)
+        
+        self._set_params(params)
+    
+    def _set_params(self, params: Dict[str, Array]):
         """
-        Returns the actuation matrix that maps the actuation space to the configuration space.
+        Set the parameters of the tendon-driven planar PCS.
+        
         Args:
-            forward_kinematics_fn: function to compute the forward kinematics
-            jacobian_fn: function to compute the Jacobian
-            params: dictionary with robot parameters
-            B_xi: strain basis matrix
-            xi_ref: reference strains as array of shape (n_xi,)
-            q: configuration of the robot
-        Returns:
-            A: actuation matrix of shape (n_xi, n_act) where n_xi is the number of strains and
-                n_act is the number of actuators
+            params (Dict[str, Array]): Dictionary containing the parameters of the robot.
+                Dictionary containing the robot parameters:
+                - "th0": (optional) float
+                    Initial orientation angle [rad]
+                    Default is 90 degrees (1.57 radians).
+                - "L": List/Array of num_segments floats
+                    Length of each segment [m]
+                - "r": List/Array of num_segments floats
+                    Radius of each segment [m]
+                - "rho": List/Array of num_segments floats
+                    Density of each segment [kg/m^3]
+                - "g": List/Array of 2 floats [gx, gy]
+                    Gravitational acceleration vector [m/s^2]
+                - "E": List/Array of num_segments floats
+                    Elastic modulus of each segment [Pa]
+                - "G": List/Array of num_segments floats
+                    Shear modulus of each segment [Pa]
+                - "D": List/Array of (num_segments x num_segments) floats
+                    Damping matrix of each segment [Pa*s]
+                - "d": List/Array of num_segments floats
+                    Distance of the tendons from the segment's backbone [m]
         """
-        # extract the parameters
-        l = params["L"]
-        # map the configuration to the strains
-        xi = xi_ref + B_xi @ q
-        # segment indices
-        segment_indices = jnp.arange(num_segments)
+        super()._set_params(params)
+        
+        # Distance of the tendons from the segment's backbone
+        try:
+            d = params["d"]
+        except KeyError:
+            raise KeyError(
+                "The parameter 'd' (distance of the tendons from the segment's backbone) is required for the tendon-driven planar PCS."
+            )
+        if not isinstance(d, (list, jnp.ndarray)):
+            raise TypeError("The parameter 'd' must be a list or a jnp.ndarray.")
+        if len(d) != self.num_segments:
+            raise ValueError(
+                f"The parameter 'd' must have the same length as the number of segments ({self.num_segments})."
+            )
+        self.d = jnp.asarray(d, dtype=jnp.float32)
+        
+    def update_params(self, params: Dict[str, Array]) -> "TendonDrivenPlanarPCS":
+        """
+        Update the parameters of the tendon-driven planar PCS.
+
+        Args:
+            params (Dict[str, Array]):
+                Dictionary that contains the robot parameters to update:
+                - "th0": (optional) float
+                    Initial orientation angle [rad]
+                - "L": List/Array of num_segments floats
+                    Length of each segment [m]
+                - "r": List/Array of num_segments floats
+                    Radius of each segment [m]
+                - "rho": List/Array of num_segments floats
+                    Density of each segment [kg/m^3]
+                - "g": List/Array of 2 floats [gx, gy]
+                    Gravitational acceleration vector [m/s^2]
+                - "E": List/Array of num_segments floats
+                    Elastic modulus of each segment [Pa]
+                - "G": List/Array of num_segments floats
+                    Shear modulus of each segment [Pa]
+                - "D": List/Array of (num_segments x num_segments) floats
+                    Damping matrix of each segment [Pa*s]
+                - "d": List/Array of num_segments floats
+                    Distance of the tendons from the segment's backbone [m]
+        """
+        # Apply updates sequentially
+        updated_self = super().update_params(params)
+        
+        if "d" in params:
+            d = params["d"]
+            if not isinstance(d, (list, jnp.ndarray)):
+                raise TypeError("The parameter 'd' must be a list or a jnp.ndarray.")
+            if len(d) != self.num_segments:
+                raise ValueError(
+                    f"The parameter 'd' must have the same length as the number of segments ({self.num_segments})."
+                )
+            updated_self = eqx.tree_at(lambda x: x.d, updated_self, jnp.asarray(d, dtype=jnp.float32))
+    
+    @eqx.filter_jit
+    def actuation_matrix(self, q: Array) -> Array:
+        """
+        Compute the actuation matrix of the robot.
+        
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            A (Array): Actuation matrix of shape (num_active_strains, num_actuators)
+        """
+        xi = self.strain(q)
+        
+        segment_indices = jnp.arange(self.num_segments)
 
         def compute_actuation_matrix_for_segment(
-            segment_idx,
+            segment_idx: int,
             d_sm: Array,
         ) -> Array:
             """
@@ -80,56 +177,61 @@ def factory(
                 Returns:
                     A_d: actuation matrix of shape (n_xi, ) where n_xi is the number of strains
                 """
-
-                def compute_A_d_wrt_xi_i(i: Array, l_i: Array, xi_i: Array) -> Array:
+                kappa_0 = xi[0]  # bending strain
+                axial_0 = xi[1]  # axial strain TODO: check if this is correct
+                shear_0 = xi[2]  # shear strain
+                square_root_term = jnp.sqrt(shear_0 ** 2 + (axial_0 + d * kappa_0) ** 2)
+                
+                def compute_A_d_wrt_xi_i(i: Array, L_i: Array, xi_i: Array) -> Array:
                     """
                     Compute the actuation matrix for a single actuator with respect to the strains of a single segment.
                     Args:
                         i: index of the segment
-                        l_i: length of the segment
+                        L_i: length of the segment
                         xi_i: strains for the segment
                     Returns:
                         A_d_segment: actuation matrix for the segment of shape (3, 3)
                     """
-                    square_root_term = jnp.sqrt(xi[1] ** 2 + (xi[2] + d * xi[0]) ** 2)
+                    kappa_i = xi_i[0]  # bending strain
+                    axial_i = xi_i[1]  # axial strain TODO: check if this is correct
+                    shear_i = xi_i[2]  # shear strain
                     A_d_wrt_xi_i = -jnp.array(
                         [
-                            l_i * d * (d * xi_i[0] + xi_i[2]) / square_root_term,
-                            l_i * xi_i[1] / square_root_term,
-                            l_i * (d * xi_i[0] + xi_i[2]) / square_root_term,
+                            L_i * d * (d * kappa_i + axial_i) / square_root_term,
+                            L_i * shear_i / square_root_term,
+                            L_i * (d * kappa_i + axial_i) / square_root_term,
                         ]
                     )
-                    return jnp.where(
+                    A_d_segment = jnp.where(
                         i * jnp.ones((3,)) <= segment_idx * jnp.ones((3,)),
                         A_d_wrt_xi_i,
                         jnp.zeros_like(A_d_wrt_xi_i),
                     )
-
+                    
+                    return A_d_segment
+                
                 A_d = vmap(compute_A_d_wrt_xi_i)(
-                    segment_indices, l, xi.reshape(-1, 3)
+                    segment_indices, self.L, xi.reshape(-1, 3)
                 ).reshape(-1)
 
                 return A_d
 
             A_sm = vmap(compute_A_d, in_axes=0, out_axes=-1)(d_sm)
-
+            
             return A_sm
 
         # compute the actuation matrix for all segments
-        # will have shape (num_segments, n_xi, num_segment_tendons)
-        A = vmap(compute_actuation_matrix_for_segment, in_axes=(0, 0), out_axes=0)(
-            segment_indices,
-            params["d"],
-        )
-
+        
+        # (num_segments, n_xi, num_segment_tendons)
+        A = vmap(
+            compute_actuation_matrix_for_segment, in_axes=(0, 0), out_axes=0
+        )(segment_indices, self.d)
+        
         # deactivate the actuation for some segments
-        A = A[segment_actuation_selector]
+        # (num_actuated_segments, n_xi, num_segment_tendons)
+        A = A[self.segment_indices_to_actuate]
 
         # reshape the actuation matrix to have shape (n_xi, n_act)
-        A = A.transpose((1, 0, 2)).reshape(xi.shape[0], -1)
-
+        A = jnp.concatenate(A, axis=1)  # concatenate along the second axis
+        
         return A
-
-    return planar_pcs_factory(
-        *args, actuation_mapping_fn=actuation_mapping_fn, **kwargs
-    )

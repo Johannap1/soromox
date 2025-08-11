@@ -1,26 +1,21 @@
-from diffrax import Tsit5
 from functools import partial
-from IPython.display import HTML
 import jax
-import jax.numpy as jnp
+
+from diffrax import Tsit5
 from jax import Array
+from jax import numpy as jnp
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Slider
 import numpy as onp
 
+from matplotlib.animation import FuncAnimation
+from IPython.display import HTML
+from matplotlib.widgets import Slider
+
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.systems.planar_pcs import PlanarPCS
-
-jnp.set_printoptions(
-    threshold=jnp.inf,
-    linewidth=jnp.inf,
-    formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
-)
-
+from soromox.systems.tendon_actuated_planar_pcs import TendonDrivenPlanarPCS
 
 def draw_robot(
-    robot: PlanarPCS,
+    robot: TendonDrivenPlanarPCS,
     q: Array,
     num_points: int = 50,
 ):
@@ -38,7 +33,7 @@ def draw_robot(
 
 
 def animate_robot_matplotlib(
-    robot: PlanarPCS,
+    robot: TendonDrivenPlanarPCS,
     t_list: Array,  # shape (T,)
     q_list: Array,  # shape (T, DOF)
     num_points: int = 50,
@@ -139,39 +134,39 @@ def animate_robot_matplotlib(
             "Slider animation not implemented in HTML format. Use matplotlib directly to view the slider."
         )  # Slider cannot be converted to HTML
 
-
 if __name__ == "__main__":
-    num_segments = 1
+    num_segments = 1  # number of segments in the robot
     rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
         "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
-        "g": jnp.array([0.0, 9.81]),  # gravity vector [m/s^2] UP!
+        "g": jnp.array([0.0, 9.81]), # gravitational acceleration [m/s^2] UP!
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
+        "d": 2e-2 * jnp.array([[1.0, -1.0]]).repeat(num_segments, axis=0),  # distance of tendons from the central axis [m]
     }
     params["D"] = 1e-3 * jnp.diag(
-        (
-            jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0)
-            * params["L"][:, None]
-        ).flatten()
+        (jnp.repeat(
+            jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
+        ) * params["L"][:, None]).flatten()
     )
+
+    # activate all strains (i.e. bending, shear, and axial)
+    strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
+    # actuation selector for the segments
+    segment_actuation_selector = jnp.ones((num_segments,), dtype=bool)
 
     # ======================================================
     # Robot initialization
     # ======================================================
-    robot = PlanarPCS(
+    robot = TendonDrivenPlanarPCS(
         num_segments=num_segments,
         params=params,
         order_gauss=5,
-    )
-
-    J, Jd = robot.jacobian_and_derivative(
-        q=jnp.zeros((3 * num_segments,)),
-        qd=jnp.zeros((3 * num_segments,)),
-        s=params["L"][0],
+        strain_selector=strain_selector,
+        segment_actuation_selector=segment_actuation_selector,
     )
 
     # =====================================================
@@ -183,15 +178,24 @@ if __name__ == "__main__":
     ).flatten()
     # Initial velocities
     qd0 = jnp.zeros_like(q0)
-
+    
     # Actuation parameters
-    u = jnp.zeros_like(q0)
+    u = jnp.array([1.0, 1.0])[None].repeat(num_segments, axis=0).flatten()  # tendon tensions
+    # u = jnp.zeros(robot.num_actuators)
+    
+    print("u =\n", u)
+
+    # call the actuation mapping function
+    A = robot.actuation_matrix(
+        q0,
+    )
+    print("A =\n", A)
 
     # Simulation time parameters
     t0 = 0.0
-    t1 = 2.0
+    t1 = 10.0
     dt = 1e-4
-    skip_step = 100  # how many time steps to skip in between video frames
+    skip_step = 10  # how many time steps to skip in between video frames
 
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
@@ -218,7 +222,7 @@ if __name__ == "__main__":
         )
     )
     chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
-
+    
     plt.figure()
     for segment_idx in range(num_segments):
         plt.plot(
@@ -226,11 +230,11 @@ if __name__ == "__main__":
             label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 2],
+            ts, q_ts[:, 3 * segment_idx + 1],
             label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 1],
+            ts, q_ts[:, 3 * segment_idx + 2],
             label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
         )
     plt.xlabel("Time [s]")
@@ -239,7 +243,7 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-    
+
     plt.figure()
     plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
     plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
