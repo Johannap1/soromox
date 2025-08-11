@@ -32,7 +32,7 @@ def draw_robot(
     s_ps = jnp.linspace(0, L_max, num_points)
     chi_ps = batched_forward_kinematics(q, s_ps)
 
-    curve = onp.array(chi_ps[1:, :], dtype=onp.float32).T
+    curve = onp.array(chi_ps[1:, :], dtype=onp.float64).T
 
     return curve  # (N, 2)
 

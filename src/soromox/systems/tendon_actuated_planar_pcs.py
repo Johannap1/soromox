@@ -1,26 +1,67 @@
-from jax import Array, debug, lax, vmap
+from jax import Array, vmap
 import jax.numpy as jnp
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 import equinox as eqx
 
-from .utils import (
-    compute_strain_basis,
-)
-
 from .planar_pcs import PlanarPCS
 
+
 class TendonActuatedPlanarPCS(PlanarPCS):
-    
+    """
+    Tendon-driven Planar Piecewise Constant Strain (PCS) model for 2D soft continuum robots.
+
+    This class implements the geometric and dynamic modeling of a 2D soft robot
+    using the Cosserat rod theory and piecewise constant strain assumption.
+    It supports computation of forward kinematics, Jacobians, dynamical matrices.
+
+    Attributes:
+    ----------
+    num_segments : int
+        Number of segments (constant strain sections) along the robot.
+    num_actuators : int
+        Number of actuators (control inputs) for the robot (2 per actuated segment in the case of planar tendon-driven robots).
+    th0 : Array
+        Initial orientation angle of the robot in radians.
+    g : Array
+        Gravitational acceleration vector (embedded in a 3D vector).
+        [0, g_x, g_y]
+    L, r, E, G, rho, D : Array
+        Physical properties of each segment (length, radius, elastic/shear modulus, etc.).
+    num_active_strains : int
+        Number of active strain components (based on strain_selector).
+    num_strains : int
+        Total number of strain components (6 * num_segments).
+    B_xi : Array
+        Basis matrix for projecting active strains.
+    xi_ref : Array
+        Reference strain (reference configuration) of the robot.
+    num_gauss_points : int
+        Number of points used for numerical integration.
+        Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
+    Xs, Ws : Array
+        Gauss-Legendre quadrature nodes and weights for numerical integration.
+    d: Array
+        Distances of the tendons from the segment's backbone.
+    segment_indices_to_actuate : Array
+        Indices of the segments that are actuated.
+
+    Notes:
+    -----
+    - The strain vector is composed of 3 components per segment:
+      [kappa_z, sigma_x, sigma_y].
+      By default, the rod is assumed to be straight and aligned with the x-axis,
+        so the reference strain is set to [0, 1, 0].
+        Thus:   - kappa_z corresponds to bending around the z-axis,
+                - sigma_x corresponds to axial strain along the x-axis,
+                - sigma_y corresponds to shear along the y-axis.
+
+    """
+
     d: Array  # distance of the tendons from the segment's backbone, shape (num_segments,)
-    
-    segment_actuation_selector: Array  # boolean array of shape (num_segments,) indicating which segments are actuated
+
     segment_indices_to_actuate: Array  # indices of the segments that are actuated, shape (num_actuated_segments,)
-    
-    B_actuators: Array  # strain basis matrix for the actuators, shape (num_active_strains, num_actuators)
-    
-    num_actuators: int = eqx.field(static=True)  # Number of actuators
-    
+
     def __init__(
         self,
         num_segments: int,
@@ -37,25 +78,24 @@ class TendonActuatedPlanarPCS(PlanarPCS):
             strain_selector=strain_selector,
             xi_ref=xi_ref,
         )
-        
+
         if segment_actuation_selector is None:
             segment_actuation_selector = jnp.ones(num_segments, dtype=bool)
-        self.segment_actuation_selector = segment_actuation_selector
-        
+
         self.segment_indices_to_actuate = jnp.array(
             [i for i, act in enumerate(segment_actuation_selector) if act]
         )
-        
-        self.num_actuators = int(jnp.sum(segment_actuation_selector)) * 2  # each segment has two tendons
-        
-        self.B_actuators = compute_strain_basis(segment_actuation_selector)
-        
+
+        self.num_actuators = (
+            int(jnp.sum(segment_actuation_selector)) * 2
+        )  # each segment has two tendons
+
         self._set_params(params)
-    
+
     def _set_params(self, params: Dict[str, Array]):
         """
         Set the parameters of the tendon-driven planar PCS.
-        
+
         Args:
             params (Dict[str, Array]): Dictionary containing the parameters of the robot.
                 Dictionary containing the robot parameters:
@@ -80,7 +120,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     Distance of the tendons from the segment's backbone [m]
         """
         super()._set_params(params)
-        
+
         # Distance of the tendons from the segment's backbone
         try:
             d = params["d"]
@@ -94,8 +134,8 @@ class TendonActuatedPlanarPCS(PlanarPCS):
             raise ValueError(
                 f"The parameter 'd' must have the same length as the number of segments ({self.num_segments})."
             )
-        self.d = jnp.asarray(d, dtype=jnp.float32)
-        
+        self.d = jnp.asarray(d, dtype=jnp.float64)
+
     def update_params(self, params: Dict[str, Array]) -> "TendonActuatedPlanarPCS":
         """
         Update the parameters of the tendon-driven planar PCS.
@@ -121,10 +161,14 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     Damping matrix of each segment [Pa*s]
                 - "d": List/Array of num_segments floats
                     Distance of the tendons from the segment's backbone [m]
+                    
+        Returns:
+            updated_self (TendonActuatedPlanarPCS):
+                A new instance of TendonActuatedPlanarPCS with updated parameters.
         """
         # Apply updates sequentially
         updated_self = super().update_params(params)
-        
+
         if "d" in params:
             d = params["d"]
             if not isinstance(d, (list, jnp.ndarray)):
@@ -133,13 +177,17 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                 raise ValueError(
                     f"The parameter 'd' must have the same length as the number of segments ({self.num_segments})."
                 )
-            updated_self = eqx.tree_at(lambda x: x.d, updated_self, jnp.asarray(d, dtype=jnp.float32))
-    
+            updated_self = eqx.tree_at(
+                lambda x: x.d, updated_self, jnp.asarray(d, dtype=jnp.float64)
+            )
+        
+        return updated_self
+
     @eqx.filter_jit
     def actuation_matrix(self, q: Array) -> Array:
         """
         Compute the actuation matrix of the robot.
-        
+
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
 
@@ -147,7 +195,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
             A (Array): Actuation matrix of shape (num_active_strains, num_actuators)
         """
         xi = self.strain(q)
-        
+
         segment_indices = jnp.arange(self.num_segments)
 
         def compute_actuation_matrix_for_segment(
@@ -178,10 +226,10 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     A_d: actuation matrix of shape (n_xi, ) where n_xi is the number of strains
                 """
                 kappa_0 = xi[0]  # bending strain
-                axial_0 = xi[1]  # axial strain TODO: check if this is correct
+                axial_0 = xi[1]  # axial strain
                 shear_0 = xi[2]  # shear strain
-                square_root_term = jnp.sqrt(shear_0 ** 2 + (axial_0 + d * kappa_0) ** 2)
-                
+                square_root_term = jnp.sqrt(shear_0**2 + (axial_0 + d * kappa_0) ** 2)
+
                 def compute_A_d_wrt_xi_i(i: Array, L_i: Array, xi_i: Array) -> Array:
                     """
                     Compute the actuation matrix for a single actuator with respect to the strains of a single segment.
@@ -193,7 +241,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                         A_d_segment: actuation matrix for the segment of shape (3, 3)
                     """
                     kappa_i = xi_i[0]  # bending strain
-                    axial_i = xi_i[1]  # axial strain TODO: check if this is correct
+                    axial_i = xi_i[1]  # axial strain
                     shear_i = xi_i[2]  # shear strain
                     A_d_wrt_xi_i = -jnp.array(
                         [
@@ -207,9 +255,9 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                         A_d_wrt_xi_i,
                         jnp.zeros_like(A_d_wrt_xi_i),
                     )
-                    
+
                     return A_d_segment
-                
+
                 A_d = vmap(compute_A_d_wrt_xi_i)(
                     segment_indices, self.L, xi.reshape(-1, 3)
                 ).reshape(-1)
@@ -217,21 +265,21 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                 return A_d
 
             A_sm = vmap(compute_A_d, in_axes=0, out_axes=-1)(d_sm)
-            
+
             return A_sm
 
         # compute the actuation matrix for all segments
-        
+
         # (num_segments, n_xi, num_segment_tendons)
-        A = vmap(
-            compute_actuation_matrix_for_segment, in_axes=(0, 0), out_axes=0
-        )(segment_indices, self.d)
-        
+        A = vmap(compute_actuation_matrix_for_segment, in_axes=(0, 0), out_axes=0)(
+            segment_indices, self.d
+        )
+
         # deactivate the actuation for some segments
         # (num_actuated_segments, n_xi, num_segment_tendons)
         A = A[self.segment_indices_to_actuate]
 
         # reshape the actuation matrix to have shape (n_xi, n_act)
         A = jnp.concatenate(A, axis=1)  # concatenate along the second axis
-        
+
         return A

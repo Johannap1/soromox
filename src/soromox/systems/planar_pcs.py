@@ -366,6 +366,10 @@ class PlanarPCS(eqx.Module):
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
+                    
+        Returns:
+            updated_self (PlanarPCS):
+                A new instance of PlanarPCS with updated parameters.
         """
         # Apply updates sequentially
         updated_self = self

@@ -27,7 +27,7 @@ def draw_robot(
     s_ps = jnp.linspace(0, L_max, num_points)
     chi_ps = batched_forward_kinematics(q, s_ps)
 
-    curve = onp.array(chi_ps[1:, :], dtype=onp.float32).T
+    curve = onp.array(chi_ps[1:, :], dtype=onp.float64).T
 
     return curve  # (N, 2)
 
@@ -230,12 +230,12 @@ if __name__ == "__main__":
             label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 1],
-            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
-        )
-        plt.plot(
             ts, q_ts[:, 3 * segment_idx + 2],
             label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
+        )
+        plt.plot(
+            ts, q_ts[:, 3 * segment_idx + 1],
+            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
         )
     plt.xlabel("Time [s]")
     plt.ylabel("Configuration")
@@ -270,6 +270,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
+    # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
     plt.figure()
     plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
     plt.axis("equal")
