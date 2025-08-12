@@ -6,7 +6,6 @@ from typing import Callable, Dict, Tuple, Optional
 
 from .utils import (
     compute_strain_basis,
-    compute_spatial_stiffness_matrix,
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
@@ -926,8 +925,38 @@ class PCS(eqx.Module):
         Returns:
             A_i (Array): local cross-sectional area of the i-th segment
         """
-        A_i = jnp.pi * self.r[i] ** 2  # Cross-sectional area
+        # Cross-sectional area for a circular cross-section
+        A_i = jnp.pi * self.r[i] ** 2
         return A_i
+    
+    @eqx.filter_jit
+    def _local_second_moment_of_area(self, i: int) -> Array:
+        """
+        Compute the local second moment of area for the i-th segment.
+
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            I_i (Array): local second moment of area of the i-th segment
+        """
+        # Second moment of area for a circular cross-section
+        I_i = jnp.pi * self.r[i] ** 4 / 4
+        return I_i
+    
+    def _local_polar_moment_of_inertia(self, i: int) -> Array:
+        """
+        Compute the local polar moment of inertia for the i-th segment.
+
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            J_i (Array): local polar moment of inertia of the i-th segment
+        """
+        # Polar moment of inertia for a circular cross-section
+        J_i = jnp.pi * self.r[i] ** 4 / 2
+        return J_i
 
     @eqx.filter_jit
     def _local_mass_matrix(self, i: int) -> Array:
@@ -941,7 +970,7 @@ class PCS(eqx.Module):
         """
         rho_i = self.rho[i]
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
-        I_i = A_i**2 / (4 * jnp.pi)  # Second moment of area
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
 
         M_i = rho_i * jnp.diag(jnp.array([I_i, I_i, I_i, A_i, A_i, A_i]))
         return M_i
@@ -1130,16 +1159,44 @@ class PCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
+    
+    @eqx.filter_jit
+    def _local_stiffness_matrix(self, i:int) -> Array:
+        """
+        Compute the local stiffness matrix of a planar system for a rod aligned along the x-axis.
+        
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            S_i (Array): Local stiffness matrix of shape (3, 3) for the i-th segment.
+        """
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
+        A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
+        J_i = self._local_polar_moment_of_inertia(i)  # Polar moment of inertia
+                
+        S_i = self.L[i] * jnp.diag(
+            jnp.stack(
+                [
+                    self.G[i] * J_i,  # torsion X
+                    self.E[i] * I_i,  # bending Y
+                    self.E[i] * I_i,  # bending Z
+                    A_i * self.E[i],  # axial X
+                    4 / 3 * A_i * self.G[i],  # shear Y
+                    4 / 3 * A_i * self.G[i],  # shear Z
+                ],
+                axis=0
+            )
+        )
+
+        return S_i
 
     @eqx.filter_jit
     def _stiffness(self, formulate_in_strain_space: bool = False) -> Array:
-        # cross-sectional area and second moment of area
-        A = jnp.pi * self.r**2
-        Ib = A**2 / (4 * jnp.pi)
-        J = jnp.pi * self.r**4 / 2  # Polar moment of inertia
-
         # stiffness matrix of shape (num_segments, 6, 6)
-        S_sms = vmap(compute_spatial_stiffness_matrix)(self.L, A, Ib, J, self.E, self.G)
+        S_sms = vmap(self._local_stiffness_matrix)(
+            jnp.arange(self.num_segments)
+        )
         # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
         S = blk_diag(S_sms)
 

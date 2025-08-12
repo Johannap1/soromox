@@ -803,7 +803,7 @@ class PlanarHSA(eqx.Module):
             s_local,
         ).squeeze()
 
-        chi = jnp.roll(chi, 1)
+        chi = jnp.roll(chi, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chi
 
@@ -845,7 +845,7 @@ class PlanarHSA(eqx.Module):
             s_local,
         ).squeeze()
 
-        chir = jnp.roll(chir, 1)
+        chir = jnp.roll(chir, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chir
 
@@ -872,7 +872,7 @@ class PlanarHSA(eqx.Module):
             segment_idx, self.chip_lambda_sms, *self.params_for_lambdify, *xi_epsed
         ).squeeze()
 
-        chip = jnp.roll(chip, 1)
+        chip = jnp.roll(chip, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chip
 
@@ -896,7 +896,7 @@ class PlanarHSA(eqx.Module):
         # evaluate the symbolic expression
         chiee = self.chiee_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
 
-        chiee = jnp.roll(chiee, 1)
+        chiee = jnp.roll(chiee, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chiee
 

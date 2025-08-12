@@ -138,13 +138,14 @@ def animate_robot_matplotlib(
 def sweep_actuation_mapping(
     robot: PneumaticallyActuatedPlanarPCS,
 ):
-    # evaluate the actuation matrix for a straight backbone
-    q = jnp.zeros((2 * robot.num_segments,))
+    # Actuation mapping for a straight backbone
+    q = jnp.zeros((robot.num_active_strains,)) # straight backbone, no bending or axial strain
     A = robot.actuation_matrix(q)
     print("Evaluating actuation matrix for straight backbone: A =\n", A)
 
+    # Curvature and axial strain points to evaluate the actuation mapping
     kappa_be_pts = jnp.linspace(-3 * jnp.pi, 3 * jnp.pi, 500)
-    sigma_ax_pts = jnp.zeros_like(kappa_be_pts)
+    sigma_ax_pts = jnp.zeros_like(kappa_be_pts) # no axial strain
     q_pts = jnp.stack([kappa_be_pts, sigma_ax_pts], axis=-1)
     A_pts = vmap(robot.actuation_matrix)(q_pts)
     
@@ -184,14 +185,14 @@ def sweep_actuation_mapping(
 
     # plot the actuation mapping of u1 vs. the bending strain for various segment radii
     r_pts = jnp.linspace(1e-2, 1e-1, 10)
-    r_cham_out_pts = r_pts - 2e-3
+    r_chamber_out_pts = r_pts - 2e-3
     fig, ax = plt.subplots(
         num="pneumatic_planar_pcs_actuation_mapping_bending_torque_vs_bending_strain_4segment_radii"
     )
-    for r, r_cham_out in zip(r_pts, r_cham_out_pts):
+    for r, r_chamber_out in zip(r_pts, r_chamber_out_pts):
         _params = {}
         _params["r"] = r * jnp.ones((robot.num_segments,))
-        _params["r_cham_out"] = r_cham_out * jnp.ones((robot.num_segments,))
+        _params["r_chamber_out"] = r_chamber_out * jnp.ones((robot.num_segments,))
         updated_robot = robot.update_params(_params)
         A_pts = vmap(updated_robot.actuation_matrix)(q_pts)
         ax.plot(kappa_be_pts, A_pts[:, 0, 0], label=r"$R = " + str(r) + "$")
@@ -264,15 +265,16 @@ if __name__ == "__main__":
     rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
         "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
+        # "th0": jnp.array(0.0),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
         "g": jnp.array([0.0, 9.81]),  # gravitational acceleration [m/s^2] UP!
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
-        "r_cham_in": 5e-3 * jnp.ones((num_segments,)),
-        "r_cham_out": 2e-2 - 2e-3 * jnp.ones((num_segments,)),
-        "varphi_cham": jnp.pi / 2 * jnp.ones((num_segments,)),
+        "r_chamber_in": 5e-3 * jnp.ones((num_segments,)),
+        "r_chamber_out": 2e-2 - 2e-3 * jnp.ones((num_segments,)),
+        "phi_chamber": jnp.pi / 2 * jnp.ones((num_segments,)),
     }
     params["D"] = 5e-4 * jnp.diag(
         (
@@ -281,11 +283,9 @@ if __name__ == "__main__":
         ).flatten()
     )
 
-    # activate all strains (i.e. bending, shear, and axial)
-    # strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
     strain_selector = (
-        jnp.array([True, False, True])[None, :].repeat(num_segments, axis=0).flatten()
-    )
+        jnp.array([True, True, False])[None, :].repeat(num_segments, axis=0).flatten()
+    ) # Select bending and axial strains, no shear strain
     
     # ======================================================
     # Robot initialization
@@ -295,9 +295,10 @@ if __name__ == "__main__":
         params=params,
         order_gauss=5,
         strain_selector=strain_selector,
+        simplified_actuation_mapping=True,
     )
     
-    print("A=", robot.actuation_matrix(q=jnp.zeros((2 * num_segments,))))
+    print("A=", robot.actuation_matrix(q=jnp.zeros(robot.num_active_strains)))
 
     # ======================================================
     # Sweep the actuation mapping

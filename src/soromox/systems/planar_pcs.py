@@ -6,7 +6,6 @@ from typing import Callable, Dict, Tuple, Optional
 
 from .utils import (
     compute_strain_basis,
-    compute_planar_stiffness_matrix,
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
@@ -932,8 +931,24 @@ class PlanarPCS(eqx.Module):
         Returns:
             A_i (Array): local cross-sectional area of the i-th segment
         """
-        A_i = jnp.pi * self.r[i] ** 2  # Cross-sectional area
+        # Cross-sectional area
+        A_i = jnp.pi * self.r[i] ** 2
         return A_i
+    
+    @eqx.filter_jit
+    def _local_second_moment_of_area(self, i: int) -> Array:
+        """
+        Compute the local second moment of area for the i-th segment.
+
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            I_i (Array): local second moment of area of the i-th segment
+        """
+        # Second moment of area
+        I_i = jnp.pi * self.r[i] ** 4 / 4
+        return I_i
 
     @eqx.filter_jit
     def _local_mass_matrix(self, i: int) -> Array:
@@ -947,7 +962,7 @@ class PlanarPCS(eqx.Module):
         """
         rho_i = self.rho[i]
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
-        I_i = A_i**2 / (4 * jnp.pi)  # Second moment of area
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
 
         M_i = rho_i * jnp.diag(jnp.array([I_i, A_i, A_i]))
         return M_i
@@ -1138,15 +1153,41 @@ class PlanarPCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
+    
+    @eqx.filter_jit
+    def _local_stiffness_matrix(self, i:int) -> Array:
+        """
+        Compute the local stiffness matrix of a planar system for a rod aligned along the x-axis.
+        
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            S_i (Array): Local stiffness matrix of shape (3, 3) for the i-th segment.
+        """
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
+        A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
+        
+        S_i = self.L[i] * jnp.diag(
+            jnp.stack(
+                [
+                    I_i * self.E[i], # bending Z
+                    A_i * self.E[i], # axial X
+                    4 / 3 * A_i * self.G[i], # shear Y
+                ], 
+                axis=0
+            )
+        )
+
+        return S_i
 
     @eqx.filter_jit
     def _stiffness(self, formulate_in_strain_space: bool = False) -> Array:
-        # cross-sectional area and second moment of area
-        A = jnp.pi * self.r**2
-        Ib = A**2 / (4 * jnp.pi)
 
         # stiffness matrix of shape (num_segments, 3, 3)
-        S_sms = vmap(compute_planar_stiffness_matrix)(self.L, A, Ib, self.E, self.G)
+        S_sms = vmap(self._local_stiffness_matrix)(
+            jnp.arange(self.num_segments)
+        )
 
         # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
         S = blk_diag(S_sms)
@@ -1397,14 +1438,11 @@ class PlanarPCS(eqx.Module):
             Jd (Array): Time-derivative of the Jacobian at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
             JB_pinv (Array): Dynamically-consistent pseudo-inverse of the Jacobian, shape (num_active_strains, num_operational_space_dims).
         """
-        # classify the point along the robot to the corresponding segment
-        _, s_local = self.classify_segment(s)
-
         # make operational_space_selector a boolean array
         operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
-        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s_local)
+        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s)
 
         J = J[operational_space_selector, :]
         Jd = Jd[operational_space_selector, :]

@@ -243,13 +243,15 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     kappa_i = xi_i[0]  # bending strain
                     axial_i = xi_i[1]  # axial strain
                     shear_i = xi_i[2]  # shear strain
+                    
                     A_d_wrt_xi_i = -jnp.array(
                         [
-                            L_i * d * (d * kappa_i + axial_i) / square_root_term,
-                            L_i * (d * kappa_i + axial_i) / square_root_term,
-                            L_i * shear_i / square_root_term,
+                            L_i * d * (d * kappa_i + axial_i) / square_root_term,   # actuation on the bending
+                            L_i * (d * kappa_i + axial_i) / square_root_term,       # actuation on the axial strain
+                            L_i * shear_i / square_root_term,                       # actuation on the shear strain
                         ]
                     )
+                    
                     A_d_segment = jnp.where(
                         i * jnp.ones((3,)) <= segment_idx * jnp.ones((3,)),
                         A_d_wrt_xi_i,
