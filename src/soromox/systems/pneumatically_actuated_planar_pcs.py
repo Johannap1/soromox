@@ -277,7 +277,7 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         
         return I_i
 
-    @eqx.filter_jit
+    # @eqx.filter_jit
     def actuation_matrix(self, q: Array) -> Array:
         """
         Compute the actuation matrix of the robot.
@@ -329,21 +329,21 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                 )
                 
                 A_segment_i = self.B_xi.T @ A_full_segment_i
-            else:                
-                # Contribution of the distal end
-                A_segment_i_distal_end = J_tip_i.T @ jnp.array(
-                    [
-                        [A_one_chamber * r_center_of_pressure, -A_one_chamber * r_center_of_pressure],
-*                       [2 * A_one_chamber * jnp.cos(th_tip_i), 2 * A_one_chamber * jnp.cos(th_tip_i)],
-                        [-2 * A_one_chamber * jnp.sin(th_tip_i), -2 * A_one_chamber * jnp.sin(th_tip_i)],
-                    ]
-                )
+            else:
                 # Contribution of the proximal end
                 A_segment_i_proximal_end = J_base_i.T @ jnp.array(
                     [
                         [-A_one_chamber * r_center_of_pressure, A_one_chamber * r_center_of_pressure],
                         [-2 * A_one_chamber * jnp.cos(th_base_i), -2 * A_one_chamber * jnp.cos(th_base_i)],
                         [2 * A_one_chamber * jnp.sin(th_base_i), 2 * A_one_chamber * jnp.sin(th_base_i)],
+                    ]
+                )
+                # Contribution of the distal end
+                A_segment_i_distal_end = J_tip_i.T @ jnp.array(
+                    [
+                        [A_one_chamber * r_center_of_pressure, -A_one_chamber * r_center_of_pressure],
+                        [2 * A_one_chamber * jnp.cos(th_tip_i), 2 * A_one_chamber * jnp.cos(th_tip_i)],
+                        [-2 * A_one_chamber * jnp.sin(th_tip_i), -2 * A_one_chamber * jnp.sin(th_tip_i)],
                     ]
                 )
                 
@@ -355,6 +355,12 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         A_blocks_tot = vmap(A_segment_i)(
             jnp.arange(self.num_segments),
         )
+        
+        # # For debugging purposes, we can use a for loop instead of vmap
+        # A_blocks_tot = jnp.stack(
+        #     [A_segment_i(i) for i in range(self.num_segments)],
+        #     axis=0
+        # )
         
         # we need to sum the contributions of the actuation of each segment
         A = jnp.concatenate(A_blocks_tot, axis=-1)

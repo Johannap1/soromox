@@ -264,8 +264,8 @@ if __name__ == "__main__":
     num_segments = 1
     rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
-        "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
-        # "th0": jnp.array(0.0),  # initial orientation angle [rad]
+        # "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
+        "th0": jnp.array(0.0),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
@@ -295,7 +295,7 @@ if __name__ == "__main__":
         params=params,
         order_gauss=5,
         strain_selector=strain_selector,
-        simplified_actuation_mapping=True,
+        # simplified_actuation_mapping=True,
     )
     
     print("A=", robot.actuation_matrix(q=jnp.zeros(robot.num_active_strains)))
