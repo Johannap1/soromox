@@ -14,6 +14,7 @@ from matplotlib.widgets import Slider
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.tendon_actuated_planar_pcs import TendonActuatedPlanarPCS
 
+
 def draw_robot(
     robot: TendonActuatedPlanarPCS,
     q: Array,
@@ -134,23 +135,30 @@ def animate_robot_matplotlib(
             "Slider animation not implemented in HTML format. Use matplotlib directly to view the slider."
         )  # Slider cannot be converted to HTML
 
+
 if __name__ == "__main__":
     num_segments = 1  # number of segments in the robot
-    rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
+    rho = 1070 * jnp.ones(
+        (num_segments,)
+    )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
         "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
-        "g": jnp.array([0.0, 9.81]), # gravitational acceleration [m/s^2] UP!
+        "g": jnp.array([0.0, 9.81]),  # gravitational acceleration [m/s^2] UP!
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
-        "d": 2e-2 * jnp.array([[1.0, -1.0]]).repeat(num_segments, axis=0),  # distance of tendons from the central axis [m]
+        "d": 2e-2
+        * jnp.array([[1.0, -1.0]]).repeat(
+            num_segments, axis=0
+        ),  # distance of tendons from the central axis [m]
     }
     params["D"] = 1e-3 * jnp.diag(
-        (jnp.repeat(
-            jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0
-        ) * params["L"][:, None]).flatten()
+        (
+            jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0)
+            * params["L"][:, None]
+        ).flatten()
     )
 
     # activate all strains (i.e. bending, shear, and axial)
@@ -178,11 +186,13 @@ if __name__ == "__main__":
     ).flatten()
     # Initial velocities
     qd0 = jnp.zeros_like(q0)
-    
+
     # Actuation parameters
-    u = jnp.array([1.0, 1.0])[None].repeat(num_segments, axis=0).flatten()  # tendon tensions
+    u = (
+        jnp.array([1.0, 1.0])[None].repeat(num_segments, axis=0).flatten()
+    )  # tendon tensions
     # u = jnp.zeros(robot.num_actuators)
-    
+
     print("u =\n", u)
 
     # call the actuation mapping function
@@ -222,20 +232,23 @@ if __name__ == "__main__":
         )
     )
     chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
-    
+
     plt.figure()
     for segment_idx in range(num_segments):
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 0],
-            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
+            ts,
+            q_ts[:, 3 * segment_idx + 0],
+            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]",
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 2],
-            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
+            ts,
+            q_ts[:, 3 * segment_idx + 2],
+            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]",
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 1],
-            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
+            ts,
+            q_ts[:, 3 * segment_idx + 1],
+            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]",
         )
     plt.xlabel("Time [s]")
     plt.ylabel("Configuration")

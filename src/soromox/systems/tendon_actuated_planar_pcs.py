@@ -161,7 +161,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     Damping matrix of each segment [Pa*s]
                 - "d": List/Array of num_segments floats
                     Distance of the tendons from the segment's backbone [m]
-                    
+
         Returns:
             updated_self (TendonActuatedPlanarPCS):
                 A new instance of TendonActuatedPlanarPCS with updated parameters.
@@ -180,7 +180,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
             updated_self = eqx.tree_at(
                 lambda x: x.d, updated_self, jnp.asarray(d, dtype=jnp.float64)
             )
-        
+
         return updated_self
 
     @eqx.filter_jit
@@ -243,15 +243,22 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                     kappa_i = xi_i[0]  # bending strain
                     axial_i = xi_i[1]  # axial strain
                     shear_i = xi_i[2]  # shear strain
-                    
+
                     A_d_wrt_xi_i = -jnp.array(
                         [
-                            L_i * d * (d * kappa_i + axial_i) / square_root_term,   # actuation on the bending
-                            L_i * (d * kappa_i + axial_i) / square_root_term,       # actuation on the axial strain
-                            L_i * shear_i / square_root_term,                       # actuation on the shear strain
+                            L_i
+                            * d
+                            * (d * kappa_i + axial_i)
+                            / square_root_term,  # actuation on the bending
+                            L_i
+                            * (d * kappa_i + axial_i)
+                            / square_root_term,  # actuation on the axial strain
+                            L_i
+                            * shear_i
+                            / square_root_term,  # actuation on the shear strain
                         ]
                     )
-                    
+
                     A_d_segment = jnp.where(
                         i * jnp.ones((3,)) <= segment_idx * jnp.ones((3,)),
                         A_d_wrt_xi_i,

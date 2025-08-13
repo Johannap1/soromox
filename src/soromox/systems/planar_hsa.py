@@ -380,7 +380,7 @@ class PlanarHSA(eqx.Module):
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters to update:
                 - "roff": Array of shape (num_segments, num_rods_per_segment)
-                    offset [m] of each rod from the centerline. 
+                    offset [m] of each rod from the centerline.
                     The rows correspond to the segments.
                 - "kappa_b_ref": Array of shape (num_segments, num_rods_per_segment)
                     bending reference curvatures of each rod
@@ -398,7 +398,7 @@ class PlanarHSA(eqx.Module):
                     rigid offset transformation from the distal end of the platform to the end-effector [m]
                     in the form [theta, p_x, p_y]
                 - "hysteresis": Dictionary containing hysteresis parameters if consider_hysteresis is True
-                    - "basis": 
+                    - "basis":
                         Basis for the hysteresis model
                     - Bouc-Wen model parameters:
                         - "alpha": [-] Ratio of post-yield and pre-yield stiffness
@@ -544,7 +544,7 @@ class PlanarHSA(eqx.Module):
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters to update:
                 - "roff": Array of shape (num_segments, num_rods_per_segment)
-                    offset [m] of each rod from the centerline. 
+                    offset [m] of each rod from the centerline.
                     The rows correspond to the segments.
                 - "kappa_b_ref": Array of shape (num_segments, num_rods_per_segment)
                     bending reference curvatures of each rod
@@ -562,7 +562,7 @@ class PlanarHSA(eqx.Module):
                     rigid offset transformation from the distal end of the platform to the end-effector [m]
                     in the form [theta, p_x, p_y]
                 - "hysteresis": Dictionary containing hysteresis parameters if consider_hysteresis is True
-                    - "basis": 
+                    - "basis":
                         Basis for the hysteresis model
                     - Bouc-Wen model parameters:
                         - "alpha": [-] Ratio of post-yield and pre-yield stiffness
@@ -803,7 +803,9 @@ class PlanarHSA(eqx.Module):
             s_local,
         ).squeeze()
 
-        chi = jnp.roll(chi, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
+        chi = jnp.roll(
+            chi, 1
+        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chi
 
@@ -845,7 +847,9 @@ class PlanarHSA(eqx.Module):
             s_local,
         ).squeeze()
 
-        chir = jnp.roll(chir, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
+        chir = jnp.roll(
+            chir, 1
+        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chir
 
@@ -872,7 +876,9 @@ class PlanarHSA(eqx.Module):
             segment_idx, self.chip_lambda_sms, *self.params_for_lambdify, *xi_epsed
         ).squeeze()
 
-        chip = jnp.roll(chip, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
+        chip = jnp.roll(
+            chip, 1
+        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chip
 
@@ -896,7 +902,9 @@ class PlanarHSA(eqx.Module):
         # evaluate the symbolic expression
         chiee = self.chiee_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
 
-        chiee = jnp.roll(chiee, 1) # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
+        chiee = jnp.roll(
+            chiee, 1
+        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
 
         return chiee
 
@@ -1158,7 +1166,7 @@ class PlanarHSA(eqx.Module):
         return K_full
 
     @eqx.filter_jit
-    def elastic_force(self, q: Array, z:Array) -> Array:
+    def elastic_force(self, q: Array, z: Array) -> Array:
         """
         Compute the elastic force vector of the robot.
 

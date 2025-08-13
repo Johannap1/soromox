@@ -8,16 +8,19 @@ from .planar_pcs import PlanarPCS
 
 
 class PneumaticallyActuatedPlanarPCS(PlanarPCS):
-    
-    r_chamber_in : Array  # inner radius of each segment's chamber, shape (num_segments,)
-    r_chamber_out : Array  # outer radius of each segment's chamber, shape (num_segments,)
-    phi_chamber : Array  # sector angle of each segment's chamber, shape (num_segments,)
-    num_chambers: int = eqx.field(static=True, default=4)  # number of pneumatic chambers per segment
-    
+    r_chamber_in: Array  # inner radius of each segment's chamber, shape (num_segments,)
+    r_chamber_out: (
+        Array  # outer radius of each segment's chamber, shape (num_segments,)
+    )
+    phi_chamber: Array  # sector angle of each segment's chamber, shape (num_segments,)
+    num_chambers: int = eqx.field(
+        static=True, default=4
+    )  # number of pneumatic chambers per segment
+
     actuation_basis: Array  # actuation basis, shape (num_segments * 2, num_actuators)
 
     simplified_actuation_mapping: bool = eqx.field(static=True, default=False)
-    
+
     def __init__(
         self,
         num_segments: int,
@@ -46,7 +49,7 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         self.num_actuators = (
             int(jnp.sum(segment_actuation_selector)) * 2
         )  # each segment has two tendons
-        
+
         actuation_basis = jnp.zeros((2 * self.num_segments, self.num_actuators))
         actuation_basis_cumsum = jnp.cumsum(segment_actuation_selector)
         for i in range(self.num_segments):
@@ -55,7 +58,7 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                 actuation_basis = actuation_basis.at[2 * i, j].set(1.0)
                 actuation_basis = actuation_basis.at[2 * i + 1, j + 1].set(1.0)
         self.actuation_basis = actuation_basis
-        
+
         self.simplified_actuation_mapping = simplified_actuation_mapping
 
         self._set_params(params)
@@ -90,10 +93,10 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                     Outer radius of each segment's pneumatic chamber [m]
                 -"phi_chamber" : Array of num_segments floats
                     Sector angle of each segment's pneumatic chamber [rad]
-    
+
         """
         super()._set_params(params)
-        
+
         # Chamfer parameters
         try:
             r_chamber_in = params["r_chamber_in"]
@@ -102,7 +105,9 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                 "The parameter 'r_chamber_in' (inner radius of each segment's pneumatic chamber) is required for the pneumatically actuated planar PCS."
             )
         if not isinstance(r_chamber_in, (list, jnp.ndarray)):
-            raise TypeError("The parameter 'r_chamber_in' must be a list or a jnp.ndarray.")
+            raise TypeError(
+                "The parameter 'r_chamber_in' must be a list or a jnp.ndarray."
+            )
         if len(r_chamber_in) != self.num_segments:
             raise ValueError(
                 f"The parameter 'r_chamber_in' must have the same length as the number of segments ({self.num_segments})."
@@ -115,7 +120,9 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                 "The parameter 'r_chamber_out' (outer radius of each segment's pneumatic chamber) is required for the pneumatically actuated planar PCS."
             )
         if not isinstance(r_chamber_out, (list, jnp.ndarray)):
-            raise TypeError("The parameter 'r_chamber_out' must be a list or a jnp.ndarray.")
+            raise TypeError(
+                "The parameter 'r_chamber_out' must be a list or a jnp.ndarray."
+            )
         if len(r_chamber_out) != self.num_segments:
             raise ValueError(
                 f"The parameter 'r_chamber_out' must have the same length as the number of segments ({self.num_segments})."
@@ -128,7 +135,9 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
                 "The parameter 'phi_chamber' (sector angle of each segment's pneumatic chamber) is required for the pneumatically actuated planar PCS."
             )
         if not isinstance(phi_chamber, (list, jnp.ndarray)):
-            raise TypeError("The parameter 'phi_chamber' must be a list or a jnp.ndarray.")
+            raise TypeError(
+                "The parameter 'phi_chamber' must be a list or a jnp.ndarray."
+            )
         if len(phi_chamber) != self.num_segments:
             raise ValueError(
                 f"The parameter 'phi_chamber' must have the same length as the number of segments ({self.num_segments})."
@@ -176,41 +185,53 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         if "r_chamber_in" in params:
             r_chamber_in = params["r_chamber_in"]
             if not isinstance(r_chamber_in, (list, jnp.ndarray)):
-                raise TypeError("The parameter 'r_chamber_in' must be a list or a jnp.ndarray.")
+                raise TypeError(
+                    "The parameter 'r_chamber_in' must be a list or a jnp.ndarray."
+                )
             if len(r_chamber_in) != self.num_segments:
                 raise ValueError(
                     f"The parameter 'r_chamber_in' must have the same length as the number of segments ({self.num_segments})."
                 )
             updated_self = eqx.tree_at(
-                lambda x: x.r_chamber_in, updated_self, jnp.asarray(r_chamber_in, dtype=jnp.float64)
+                lambda x: x.r_chamber_in,
+                updated_self,
+                jnp.asarray(r_chamber_in, dtype=jnp.float64),
             )
-        
+
         if "r_chamber_out" in params:
             r_chamber_out = params["r_chamber_out"]
             if not isinstance(r_chamber_out, (list, jnp.ndarray)):
-                raise TypeError("The parameter 'r_chamber_out' must be a list or a jnp.ndarray.")
+                raise TypeError(
+                    "The parameter 'r_chamber_out' must be a list or a jnp.ndarray."
+                )
             if len(r_chamber_out) != self.num_segments:
                 raise ValueError(
                     f"The parameter 'r_chamber_out' must have the same length as the number of segments ({self.num_segments})."
                 )
             updated_self = eqx.tree_at(
-                lambda x: x.r_chamber_out, updated_self, jnp.asarray(r_chamber_out, dtype=jnp.float64)
+                lambda x: x.r_chamber_out,
+                updated_self,
+                jnp.asarray(r_chamber_out, dtype=jnp.float64),
             )
-        
+
         if "phi_chamber" in params:
             phi_chamber = params["phi_chamber"]
             if not isinstance(phi_chamber, (list, jnp.ndarray)):
-                raise TypeError("The parameter 'phi_chamber' must be a list or a jnp.ndarray.")
+                raise TypeError(
+                    "The parameter 'phi_chamber' must be a list or a jnp.ndarray."
+                )
             if len(phi_chamber) != self.num_segments:
                 raise ValueError(
                     f"The parameter 'phi_chamber' must have the same length as the number of segments ({self.num_segments})."
                 )
             updated_self = eqx.tree_at(
-                lambda x: x.phi_chamber, updated_self, jnp.asarray(phi_chamber, dtype=jnp.float64)
+                lambda x: x.phi_chamber,
+                updated_self,
+                jnp.asarray(phi_chamber, dtype=jnp.float64),
             )
-        
+
         return updated_self
-    
+
     @eqx.filter_jit
     def _local_chamber_cross_sectional_area(self, i: int) -> Array:
         """
@@ -222,10 +243,14 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         Returns:
             A_one_chamber_i (Array): local cross-sectional area of one pneumatic chamber of the i-th segment
         """
-        A_one_chamber_i = self.phi_chamber[i] / 2 * (self.r_chamber_out[i] ** 2 - self.r_chamber_in[i] ** 2)
-        
+        A_one_chamber_i = (
+            self.phi_chamber[i]
+            / 2
+            * (self.r_chamber_out[i] ** 2 - self.r_chamber_in[i] ** 2)
+        )
+
         return A_one_chamber_i
-    
+
     @eqx.filter_jit
     def _local_cross_sectional_area(self, i: int) -> Array:
         """
@@ -237,12 +262,16 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         Returns:
             A_i (Array): local cross-sectional area of the i-th segment
         """
-        A_full_i = super()._local_cross_sectional_area(i)  # Full cross-sectional area of the i-th segment without chambers
+        A_full_i = super()._local_cross_sectional_area(
+            i
+        )  # Full cross-sectional area of the i-th segment without chambers
         A_one_chamber_i = self._local_chamber_cross_sectional_area(i)
-        A_i = A_full_i - self.num_chambers * A_one_chamber_i  # Subtract the area of the four chambers
-        
+        A_i = (
+            A_full_i - self.num_chambers * A_one_chamber_i
+        )  # Subtract the area of the four chambers
+
         return A_i
-    
+
     @eqx.filter_jit
     def _local_chamber_second_moment_of_area(self, i: int) -> Array:
         """
@@ -254,12 +283,14 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         Returns:
             I_one_chamber_i (Array): local second moment of area of one pneumatic chamber of the i-th segment
         """
-        I_one_chamber_i = (self.phi_chamber[i] - jnp.sin(self.phi_chamber[i])) / 8 * (
-            self.r_chamber_out[i]**4 - self.r_chamber_in[i]**4
+        I_one_chamber_i = (
+            (self.phi_chamber[i] - jnp.sin(self.phi_chamber[i]))
+            / 8
+            * (self.r_chamber_out[i] ** 4 - self.r_chamber_in[i] ** 4)
         )
-        
+
         return I_one_chamber_i
-    
+
     @eqx.filter_jit
     def _local_second_moment_of_area(self, i: int) -> Array:
         """
@@ -271,10 +302,14 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         Returns:
             I_i (Array): local second moment of area of the i-th segment
         """
-        I_full_i = super()._local_second_moment_of_area(i)  # Full second moment of area of the i-th segment without chambers
+        I_full_i = super()._local_second_moment_of_area(
+            i
+        )  # Full second moment of area of the i-th segment without chambers
         I_one_chamber_i = self._local_chamber_second_moment_of_area(i)
-        I_i = I_full_i - self.num_chambers * I_one_chamber_i  # Subtract the second moment of area of the four chambers
-        
+        I_i = (
+            I_full_i - self.num_chambers * I_one_chamber_i
+        )  # Subtract the second moment of area of the four chambers
+
         return I_i
 
     # @eqx.filter_jit
@@ -298,55 +333,64 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         Returns:
             A (Array): Actuation matrix of shape (num_active_strains, num_actuators)
         """
-        
-        def A_segment_i(i: int) -> Array:
-            
-            # Orientation angles at the base and tip of the segment
-            th_base_i = self.forward_kinematics(q, self.L_cum[i])[0]
-            th_tip_i = self.forward_kinematics(q, self.L_cum[i + 1])[0]
-            
-            # Jacobians at the base and tip of the segment
-            J_base_i = self.jacobian_inertialframe(q, self.L_cum[i])
-            J_tip_i = self.jacobian_inertialframe(q, self.L_cum[i + 1])
 
+        def A_segment_i(i: int) -> Array:
             # Area of one pneumatic chamber
             A_one_chamber = self._local_chamber_cross_sectional_area(i)
-            
+
             # Distance from the center of the segment to the center of pressure of one chamber
             r_center_of_pressure = (
-                2 / 3 * 
-                jnp.sinc(self.phi_chamber[i] / 2) *
-                (self.r_chamber_out[i]**3 - self.r_chamber_in[i]**3) / (self.r_chamber_out[i]**2 - self.r_chamber_in[i]**2)
+                2
+                / 3
+                * jnp.sinc(self.phi_chamber[i] / 2)
+                * (self.r_chamber_out[i] ** 3 - self.r_chamber_in[i] ** 3)
+                / (self.r_chamber_out[i] ** 2 - self.r_chamber_in[i] ** 2)
             )
 
             if self.simplified_actuation_mapping:
                 A_full_segment_i = jnp.array(
                     [
-                        [A_one_chamber * r_center_of_pressure, -A_one_chamber * r_center_of_pressure], # actuation on the bending
-                        [2 * A_one_chamber, 2 * A_one_chamber], #actuation on the axial strain                        
-                        [0.0,               0.0],   # actuation on the shear strain
+                        [
+                            A_one_chamber * r_center_of_pressure,
+                            -A_one_chamber * r_center_of_pressure,
+                        ],  # actuation on the bending
+                        [
+                            2 * A_one_chamber,
+                            2 * A_one_chamber,
+                        ],  # actuation on the axial strain
+                        [0.0, 0.0],  # actuation on the shear strain
                     ]
                 )
-                
+
                 A_segment_i = self.B_xi.T @ A_full_segment_i
             else:
+                # Jacobians at the base and tip of the segment
+                J_base_i = self.jacobian_bodyframe(q, self.L_cum[i])
+                J_tip_i = self.jacobian_bodyframe(q, self.L_cum[i + 1])
+
                 # Contribution of the proximal end
                 A_segment_i_proximal_end = J_base_i.T @ jnp.array(
                     [
-                        [-A_one_chamber * r_center_of_pressure, A_one_chamber * r_center_of_pressure],
-                        [-2 * A_one_chamber * jnp.cos(th_base_i), -2 * A_one_chamber * jnp.cos(th_base_i)],
-                        [2 * A_one_chamber * jnp.sin(th_base_i), 2 * A_one_chamber * jnp.sin(th_base_i)],
+                        [
+                            -A_one_chamber * r_center_of_pressure,
+                            A_one_chamber * r_center_of_pressure,
+                        ],
+                        [-2 * A_one_chamber, -2 * A_one_chamber],
+                        [0.0, 0.0],
                     ]
                 )
                 # Contribution of the distal end
                 A_segment_i_distal_end = J_tip_i.T @ jnp.array(
                     [
-                        [A_one_chamber * r_center_of_pressure, -A_one_chamber * r_center_of_pressure],
-                        [2 * A_one_chamber * jnp.cos(th_tip_i), 2 * A_one_chamber * jnp.cos(th_tip_i)],
-                        [-2 * A_one_chamber * jnp.sin(th_tip_i), -2 * A_one_chamber * jnp.sin(th_tip_i)],
+                        [
+                            A_one_chamber * r_center_of_pressure,
+                            -A_one_chamber * r_center_of_pressure,
+                        ],
+                        [2 * A_one_chamber, 2 * A_one_chamber],
+                        [0.0, 0.0],
                     ]
                 )
-                
+
                 # sum the contributions of the distal and proximal ends
                 A_segment_i = A_segment_i_distal_end + A_segment_i_proximal_end
 
@@ -355,13 +399,13 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         A_blocks_tot = vmap(A_segment_i)(
             jnp.arange(self.num_segments),
         )
-        
+
         # # For debugging purposes, we can use a for loop instead of vmap
         # A_blocks_tot = jnp.stack(
         #     [A_segment_i(i) for i in range(self.num_segments)],
         #     axis=0
         # )
-        
+
         # we need to sum the contributions of the actuation of each segment
         A = jnp.concatenate(A_blocks_tot, axis=-1)
 

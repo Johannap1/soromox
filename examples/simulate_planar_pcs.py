@@ -142,7 +142,9 @@ def animate_robot_matplotlib(
 
 if __name__ == "__main__":
     num_segments = 1
-    rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
+    rho = 1070 * jnp.ones(
+        (num_segments,)
+    )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
         "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
@@ -222,16 +224,19 @@ if __name__ == "__main__":
     plt.figure()
     for segment_idx in range(num_segments):
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 0],
-            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]"
+            ts,
+            q_ts[:, 3 * segment_idx + 0],
+            label=r"$\kappa_\mathrm{be," + str(segment_idx + 1) + "}$ [rad/m]",
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 2],
-            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]"
+            ts,
+            q_ts[:, 3 * segment_idx + 2],
+            label=r"$\sigma_\mathrm{sh," + str(segment_idx + 1) + "}$ [-]",
         )
         plt.plot(
-            ts, q_ts[:, 3 * segment_idx + 1],
-            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]"
+            ts,
+            q_ts[:, 3 * segment_idx + 1],
+            label=r"$\sigma_\mathrm{ax," + str(segment_idx + 1) + "}$ [-]",
         )
     plt.xlabel("Time [s]")
     plt.ylabel("Configuration")
@@ -239,7 +244,8 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-    
+
+    # plot end-effector position vs time
     plt.figure()
     plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
     plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
@@ -266,6 +272,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
+    # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
     plt.figure()
     plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
     plt.axis("equal")

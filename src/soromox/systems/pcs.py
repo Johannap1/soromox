@@ -1,4 +1,5 @@
 import equinox as eqx
+import jax
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 import numpy as onp
@@ -864,14 +865,26 @@ class PCS(eqx.Module):
             Adj_g,
             _J_local,
         )
-        _Jd_global = jnp.einsum(
-            "ij, njk -> nik",
-            Adj_g,
-            _Jd_local,
-        )
-
         J_global = self._final_size_jacobian(_J_global) @ self.B_xi
-        Jd_global = self._final_size_jacobian(_Jd_global) @ self.B_xi
+
+        # _Jd_global = jnp.einsum(
+        #     "ij, njk -> nik",
+        #     Adj_g,
+        #     _Jd_local,
+        # )
+        # Jd_global = self._final_size_jacobian(_Jd_global) @ self.B_xi
+
+        # TODO:
+        # J_d = d(Ad_g * J_local) / dt
+        #       = Ad_g * d(J_local) / dt + d(Ad_g) / dt * J_local
+        # we need to add the term d(Ad_g) / dt * J_local !!!
+        # d(Ad_g) / dt = Ad_g @ adj_eta
+
+        # Meanwhile
+        def J_of_q(q_):
+            return self.jacobian_inertialframe(q_, s)
+
+        _, Jd_global = jax.jvp(J_of_q, (q,), (qd,))
 
         return J_global, Jd_global
 
@@ -928,7 +941,7 @@ class PCS(eqx.Module):
         # Cross-sectional area for a circular cross-section
         A_i = jnp.pi * self.r[i] ** 2
         return A_i
-    
+
     @eqx.filter_jit
     def _local_second_moment_of_area(self, i: int) -> Array:
         """
@@ -943,7 +956,7 @@ class PCS(eqx.Module):
         # Second moment of area for a circular cross-section
         I_i = jnp.pi * self.r[i] ** 4 / 4
         return I_i
-    
+
     def _local_polar_moment_of_inertia(self, i: int) -> Array:
         """
         Compute the local polar moment of inertia for the i-th segment.
@@ -1159,12 +1172,12 @@ class PCS(eqx.Module):
         G = self.B_xi.T @ G_full
 
         return G
-    
+
     @eqx.filter_jit
-    def _local_stiffness_matrix(self, i:int) -> Array:
+    def _local_stiffness_matrix(self, i: int) -> Array:
         """
         Compute the local stiffness matrix of a planar system for a rod aligned along the x-axis.
-        
+
         Args:
             i (int): index of the segment
 
@@ -1174,7 +1187,7 @@ class PCS(eqx.Module):
         I_i = self._local_second_moment_of_area(i)  # Second moment of area
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
         J_i = self._local_polar_moment_of_inertia(i)  # Polar moment of inertia
-                
+
         S_i = self.L[i] * jnp.diag(
             jnp.stack(
                 [
@@ -1185,7 +1198,7 @@ class PCS(eqx.Module):
                     4 / 3 * A_i * self.G[i],  # shear Y
                     4 / 3 * A_i * self.G[i],  # shear Z
                 ],
-                axis=0
+                axis=0,
             )
         )
 
@@ -1194,9 +1207,7 @@ class PCS(eqx.Module):
     @eqx.filter_jit
     def _stiffness(self, formulate_in_strain_space: bool = False) -> Array:
         # stiffness matrix of shape (num_segments, 6, 6)
-        S_sms = vmap(self._local_stiffness_matrix)(
-            jnp.arange(self.num_segments)
-        )
+        S_sms = vmap(self._local_stiffness_matrix)(jnp.arange(self.num_segments))
         # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
         S = blk_diag(S_sms)
 

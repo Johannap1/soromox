@@ -13,7 +13,10 @@ from IPython.display import HTML
 from matplotlib.widgets import Slider
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.systems.pneumatically_actuated_planar_pcs import PneumaticallyActuatedPlanarPCS
+from soromox.systems.pneumatically_actuated_planar_pcs import (
+    PneumaticallyActuatedPlanarPCS,
+)
+
 
 def draw_robot(
     robot: PneumaticallyActuatedPlanarPCS,
@@ -135,20 +138,23 @@ def animate_robot_matplotlib(
             "Slider animation not implemented in HTML format. Use matplotlib directly to view the slider."
         )  # Slider cannot be converted to HTML
 
+
 def sweep_actuation_mapping(
     robot: PneumaticallyActuatedPlanarPCS,
 ):
     # Actuation mapping for a straight backbone
-    q = jnp.zeros((robot.num_active_strains,)) # straight backbone, no bending or axial strain
+    q = jnp.zeros(
+        (robot.num_active_strains,)
+    )  # straight backbone, no bending or axial strain
     A = robot.actuation_matrix(q)
     print("Evaluating actuation matrix for straight backbone: A =\n", A)
 
     # Curvature and axial strain points to evaluate the actuation mapping
     kappa_be_pts = jnp.linspace(-3 * jnp.pi, 3 * jnp.pi, 500)
-    sigma_ax_pts = jnp.zeros_like(kappa_be_pts) # no axial strain
+    sigma_ax_pts = jnp.zeros_like(kappa_be_pts)  # no axial strain
     q_pts = jnp.stack([kappa_be_pts, sigma_ax_pts], axis=-1)
     A_pts = vmap(robot.actuation_matrix)(q_pts)
-    
+
     # mark the points that are not controllable as the u1 and u2 terms share the same sign
     non_controllable_selector = A_pts[..., 0, 0] * A_pts[..., 0, 1] >= 0.0
     non_controllable_indices = jnp.where(non_controllable_selector)[0]
@@ -262,14 +268,15 @@ def sweep_actuation_mapping(
 
 if __name__ == "__main__":
     num_segments = 1
-    rho = 1070 * jnp.ones((num_segments,))  # Volumetric density of Dragon Skin 20 [kg/m^3]
+    rho = 1070 * jnp.ones(
+        (num_segments,)
+    )  # Volumetric density of Dragon Skin 20 [kg/m^3]
     params = {
-        # "th0": jnp.array(jnp.pi/2),  # initial orientation angle [rad]
-        "th0": jnp.array(0.0),  # initial orientation angle [rad]
+        "th0": jnp.array(jnp.pi / 2),  # initial orientation angle [rad]
         "L": 1e-1 * jnp.ones((num_segments,)),
         "r": 2e-2 * jnp.ones((num_segments,)),
         "rho": rho,
-        "g": jnp.array([0.0, 9.81]),  # gravitational acceleration [m/s^2] UP!
+        "g": jnp.array([0.0, 9.81]),  # gravity vector [m/s^2] UP!
         "E": 2e3 * jnp.ones((num_segments,)),  # Elastic modulus [Pa]
         "G": 1e3 * jnp.ones((num_segments,)),  # Shear modulus [Pa]
         "r_chamber_in": 5e-3 * jnp.ones((num_segments,)),
@@ -285,8 +292,8 @@ if __name__ == "__main__":
 
     strain_selector = (
         jnp.array([True, True, False])[None, :].repeat(num_segments, axis=0).flatten()
-    ) # Select bending and axial strains, no shear strain
-    
+    )  # Select bending and axial strains, no shear strain
+
     # ======================================================
     # Robot initialization
     # ======================================================
@@ -297,14 +304,14 @@ if __name__ == "__main__":
         strain_selector=strain_selector,
         # simplified_actuation_mapping=True,
     )
-    
+
     print("A=", robot.actuation_matrix(q=jnp.zeros(robot.num_active_strains)))
 
     # ======================================================
     # Sweep the actuation mapping
     # ======================================================
 
-    sweep_actuation_mapping(robot)
+    # sweep_actuation_mapping(robot)
 
     # =====================================================
     # Simulation upon time
@@ -313,16 +320,32 @@ if __name__ == "__main__":
     q0 = jnp.repeat(
         jnp.array([-5.0 * jnp.pi, -0.2])[None, :], robot.num_segments, axis=0
     ).flatten()
+
+    # Dessiner la configuration initiale
+    curve = draw_robot(robot, q0, num_points=100)
+    plt.figure()
+    plt.plot(curve[:, 0], curve[:, 1], lw=4, color="blue")
+    plt.plot(curve[0, 0], curve[0, 1], "o", color="blue", label="Proximal end")
+    plt.plot(curve[-1, 0], curve[-1, 1], "o", color="red", label="Distal end")
+    plt.xlabel("X [m]")
+    plt.ylabel("Y [m]")
+    plt.title("Initial robot configuration")
+    plt.axis("equal")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
     # Initial velocities
     qd0 = jnp.zeros_like(q0)
-    
+
     # Actuation parameters
     u = jnp.array(
         [1.2e3, 0e0]
     )  # control inputs (pressures in the right and left chambers)
-    
+
     print("u =\n", u)
-    
+
     # Simulation time parameters
     t0 = 0.0
     t1 = 7.0
@@ -331,7 +354,7 @@ if __name__ == "__main__":
 
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
-    
+
     ts, q_ts, qd_ts = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
@@ -354,7 +377,7 @@ if __name__ == "__main__":
         )
     )
     chi_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
-    
+
     # plot the configuration vs time
     plt.figure()
     for segment_idx in range(robot.num_segments):
@@ -374,19 +397,19 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-    
+
     # plot end-effector position vs time
     plt.figure()
-    plt.plot(ts, chi_ee_ts[:, 0], label="x")
-    plt.plot(ts, chi_ee_ts[:, 1], label="y")
+    plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
+    plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
     plt.xlabel("Time [s]")
-    plt.ylabel("End-effector Position [m]")
+    plt.ylabel("End-effector position [m]")
     plt.legend()
     plt.grid(True)
     plt.box(True)
     plt.tight_layout()
     plt.show()
-    
+
     # end effector orientation vs. time
     plt.figure()
     plt.plot(
@@ -401,10 +424,10 @@ if __name__ == "__main__":
     plt.box(True)
     plt.tight_layout()
     plt.show()
-    
+
     # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
     plt.figure()
-    plt.scatter(chi_ee_ts[:, 0], chi_ee_ts[:, 1], c=ts, cmap="viridis")
+    plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
     plt.axis("equal")
     plt.grid(True)
     plt.xlabel("End-effector x [m]")
@@ -412,7 +435,7 @@ if __name__ == "__main__":
     plt.colorbar(label="Time [s]")
     plt.tight_layout()
     plt.show()
-    
+
     # =====================================================
     # Energy computation upon time
     # =====================================================
@@ -430,7 +453,7 @@ if __name__ == "__main__":
     plt.box(True)
     plt.tight_layout()
     plt.show()
-    
+
     # =====================================================
     # Plot the robot configuration upon time
     # =====================================================
