@@ -5,7 +5,7 @@ import sympy as sp
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
-from .utils import (
+from soromox.utils.basic import (
     concatenate_params_syms,
     compute_strain_basis,
 )
@@ -33,8 +33,8 @@ class PlanarHSA(eqx.Module):
 
     global_eps: float = 1e-6
 
-    consider_hysteresis: bool = eqx.static_field()
-    num_hysteresis: int = eqx.static_field()
+    consider_hysteresis: bool = eqx.field(static=True)
+    num_hysteresis: int = eqx.field(static=True)
     B_hyst: Array
     hyst_alpha: Array
     hyst_A: Array
@@ -42,9 +42,9 @@ class PlanarHSA(eqx.Module):
     hyst_beta: Array
     hyst_gamma: Array
 
-    num_segments: int = eqx.static_field()
-    num_rods_per_segment: int = eqx.static_field()
-    num_dofs: int = eqx.static_field()
+    num_segments: int = eqx.field(static=True)
+    num_rods_per_segment: int = eqx.field(static=True)
+    num_dofs: int = eqx.field(static=True)
 
     B_xi: Array
 

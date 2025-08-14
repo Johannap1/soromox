@@ -6,7 +6,7 @@ import sympy as sp
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Sequence, Tuple, Union
 
-from .utils import concatenate_params_syms
+from soromox.utils.basic import concatenate_params_syms
 
 
 def factory(filepath: Union[str, Path]) -> Tuple[Callable, Callable]:

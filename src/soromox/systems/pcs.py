@@ -5,8 +5,10 @@ from jax import numpy as jnp
 import numpy as onp
 from typing import Callable, Dict, Tuple, Optional
 
-from .utils import (
+from soromox.utils.basic import (
     compute_strain_basis,
+)
+from soromox.utils.integration import (   
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
