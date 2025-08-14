@@ -8,14 +8,80 @@ from .planar_pcs import PlanarPCS
 
 
 class PneumaticallyActuatedPlanarPCS(PlanarPCS):
+    """
+    Pneumatically Actuated Planar Piecewise Constant Strain (PCS) model for 2D soft continuum robots.
+
+    This class implements the geometric and dynamic modeling of a 2D soft robot
+    using the Cosserat rod theory and piecewise constant strain assumption.
+    It supports computation of forward kinematics, Jacobians, dynamical matrices.
+    
+    Attributes:
+    ----------
+    num_segments : int
+        Number of segments (constant strain sections) along the robot.
+    num_actuators : int
+        Number of actuators (control inputs) for the robot (2 per actuated segment in the case of planar pneumatically-actuated PCS).
+    th0 : Array
+        Initial orientation angle of the robot in radians.
+    g : Array
+        Gravitational acceleration vector (embedded in a 3D vector).
+        [0, g_x, g_y]
+    L, r, E, G, rho, D : Array
+        Physical properties of each segment (length, radius, elastic/shear modulus, etc.).
+    num_active_strains : int
+        Number of active strain components (based on strain_selector).
+    num_strains : int
+        Total number of strain components (6 * num_segments).
+    B_xi : Array
+        Basis matrix for projecting active strains.
+    xi_ref : Array
+        Reference strain (reference configuration) of the robot.
+    num_gauss_points : int
+        Number of points used for numerical integration.
+        Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
+    Xs, Ws : Array
+        Gauss-Legendre quadrature nodes and weights for numerical integration.
+    r_chamber_in : Array
+        Inner radius of each segment's pneumatic chamber.
+    r_chamber_out : Array
+        Outer radius of each segment's pneumatic chamber.
+    phi_chamber : Array
+        Sector angle of each segment's pneumatic chamber.
+    num_chambers_per_segment : int
+        Number of pneumatic chambers per segment (default is 4).
+    actuation_basis : Array
+        Actuation basis matrix for mapping control inputs to segment strains.
+    simplified_actuation_mapping : bool
+        If True, uses a simplified actuation mapping (default is False).
+
+    Notes:
+    -----
+    - The strain vector is composed of 3 components per segment:
+      [kappa_z, sigma_x, sigma_y].
+      By default, the rod is assumed to be straight and aligned with the x-axis,
+        so the reference strain is set to [0, 1, 0].
+        Thus:   - kappa_z corresponds to bending around the z-axis,
+                - sigma_x corresponds to axial strain along the x-axis,
+                - sigma_y corresponds to shear along the y-axis.
+                
+    - The actuation mapping assumes that each segment contains four identical and symmetric pneumatic chambers with pressures
+        p1, p2, p3, and p4, where:
+            - p1 and p3 are the right and left chamber pressures respectively,
+            - p2 and p4 are the back and front chamber pressures respectively.
+        The front and back chambers do not exert a level arm (i.e., a bending moment) on the segment.
+        The control inputs u1 and u2 are mapped as follows to the pressures:
+            - p1 = u1 (right chamber)
+            - p2 = (u1 + u2) / 2
+            - p3 = u2 (left chamber)
+            - p4 = (u1 + u2) / 2
+
+    """
     r_chamber_in: Array  # inner radius of each segment's chamber, shape (num_segments,)
     r_chamber_out: (
         Array  # outer radius of each segment's chamber, shape (num_segments,)
     )
     phi_chamber: Array  # sector angle of each segment's chamber, shape (num_segments,)
-    num_chambers: int = eqx.field(
-        static=True, default=4
-    )  # number of pneumatic chambers per segment
+    num_chambers_per_segment: int = eqx.field(static=True, default=4)  # number of pneumatic chambers per segment
 
     actuation_basis: Array  # actuation basis, shape (num_segments * 2, num_actuators)
 
@@ -42,13 +108,9 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         if segment_actuation_selector is None:
             segment_actuation_selector = jnp.ones(num_segments, dtype=bool)
 
-        # self.segment_indices_to_actuate = jnp.array(
-        #     [i for i, act in enumerate(segment_actuation_selector) if act]
-        # )
-
         self.num_actuators = (
             int(jnp.sum(segment_actuation_selector)) * 2
-        )  # each segment has two tendons
+        )  # each segment has two control inputs u1 and u2
 
         actuation_basis = jnp.zeros((2 * self.num_segments, self.num_actuators))
         actuation_basis_cumsum = jnp.cumsum(segment_actuation_selector)
@@ -267,7 +329,7 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         )  # Full cross-sectional area of the i-th segment without chambers
         A_one_chamber_i = self._local_chamber_cross_sectional_area(i)
         A_i = (
-            A_full_i - self.num_chambers * A_one_chamber_i
+            A_full_i - self.num_chambers_per_segment * A_one_chamber_i
         )  # Subtract the area of the four chambers
 
         return A_i
@@ -307,7 +369,7 @@ class PneumaticallyActuatedPlanarPCS(PlanarPCS):
         )  # Full second moment of area of the i-th segment without chambers
         I_one_chamber_i = self._local_chamber_second_moment_of_area(i)
         I_i = (
-            I_full_i - self.num_chambers * I_one_chamber_i
+            I_full_i - self.num_chambers_per_segment * I_one_chamber_i
         )  # Subtract the second moment of area of the four chambers
 
         return I_i
