@@ -268,7 +268,7 @@ class GVS(eqx.Module):
         Mass, stiffness, and damping matrices at integration points.
     V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2 : Array
         Basis matrices for joints and links at quadrature points and intermediate points.
-    V_xi_star_joint, V_xi_star_Xs, V_xi_star_Z1, V_xi_star_Z2 : Array
+    V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2 : Array
         Reference strain vectors for joints and links.
     V_K_joint : Array
         Joint stiffness matrices.
@@ -335,10 +335,10 @@ class GVS(eqx.Module):
     V_B_Z1: Array
     V_B_Z2: Array
 
-    V_xi_star_joint: Array
-    V_xi_star_Xs: Array
-    V_xi_star_Z1: Array
-    V_xi_star_Z2: Array
+    V_xi_ref_joint: Array
+    V_xi_ref_Xs: Array
+    V_xi_ref_Z1: Array
+    V_xi_ref_Z2: Array
 
     V_K_joint: Array  # Joint stiffness matrix (num_segments, max_dof, max_dof)
     g: Array  # Gravity vector (6,)
@@ -394,7 +394,7 @@ class GVS(eqx.Module):
             - Bdof: Array indicating which types of deformation are selected (1) or not (0).
                 e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
             - Bodr: Array indicating the orders of the basis functions for each type of deformation.
-            - xi_star: Reference strain values for each type of deformation.
+            - xi_ref: Reference strain values for each type of deformation.
         n_gauss_list : List[int]
             Number of Gauss-Legendre quadrature points for integration in each segment.
         gravity_vector : List[float]
@@ -496,16 +496,16 @@ class GVS(eqx.Module):
             (self.num_segments, self.max_nip - 1, 6, self.max_dof), dtype=float
         )
 
-        V_xi_star_joint = jnp.empty(
+        V_xi_ref_joint = jnp.empty(
             (
                 self.num_segments,
                 6,
             ),
             dtype=float,
         )
-        V_xi_star_Xs = jnp.empty((self.num_segments, self.max_nip, 6), dtype=float)
-        V_xi_star_Z1 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
-        V_xi_star_Z2 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
+        V_xi_ref_Xs = jnp.empty((self.num_segments, self.max_nip, 6), dtype=float)
+        V_xi_ref_Z1 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
+        V_xi_ref_Z2 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
 
         V_K_joint = jnp.empty(
             (self.num_segments, self.max_dof, self.max_dof), dtype=float
@@ -553,12 +553,12 @@ class GVS(eqx.Module):
             V_B_Z1 = V_B_Z1.at[i_segment].set(segment_attributes.B_Z1)
             V_B_Z2 = V_B_Z2.at[i_segment].set(segment_attributes.B_Z2)
 
-            V_xi_star_joint = V_xi_star_joint.at[i_segment].set(
-                segment_attributes.xi_star_joint
+            V_xi_ref_joint = V_xi_ref_joint.at[i_segment].set(
+                segment_attributes.xi_ref_joint
             )
-            V_xi_star_Xs = V_xi_star_Xs.at[i_segment].set(segment_attributes.xi_star_Xs)
-            V_xi_star_Z1 = V_xi_star_Z1.at[i_segment].set(segment_attributes.xi_star_Z1)
-            V_xi_star_Z2 = V_xi_star_Z2.at[i_segment].set(segment_attributes.xi_star_Z2)
+            V_xi_ref_Xs = V_xi_ref_Xs.at[i_segment].set(segment_attributes.xi_ref_Xs)
+            V_xi_ref_Z1 = V_xi_ref_Z1.at[i_segment].set(segment_attributes.xi_ref_Z1)
+            V_xi_ref_Z2 = V_xi_ref_Z2.at[i_segment].set(segment_attributes.xi_ref_Z2)
 
             V_K_joint = V_K_joint.at[i_segment].set(segment_attributes.K_joint)
 
@@ -585,10 +585,10 @@ class GVS(eqx.Module):
         self.V_B_Xs = V_B_Xs
         self.V_B_Z1 = V_B_Z1
         self.V_B_Z2 = V_B_Z2
-        self.V_xi_star_joint = V_xi_star_joint
-        self.V_xi_star_Xs = V_xi_star_Xs
-        self.V_xi_star_Z1 = V_xi_star_Z1
-        self.V_xi_star_Z2 = V_xi_star_Z2
+        self.V_xi_ref_joint = V_xi_ref_joint
+        self.V_xi_ref_Xs = V_xi_ref_Xs
+        self.V_xi_ref_Z1 = V_xi_ref_Z1
+        self.V_xi_ref_Z2 = V_xi_ref_Z2
         self.V_K_joint = V_K_joint
 
         # Addition to compute forward kinematics at s
@@ -700,7 +700,7 @@ class GVS(eqx.Module):
             ]
         )
 
-        xi_star_joint = jnp.zeros((6,))
+        xi_ref_joint = jnp.zeros((6,))
         K_joint = jnp.asarray(K_joint).reshape((dof_joint, dof_joint))
         K_joint_full = jnp.pad(
             K_joint,
@@ -742,7 +742,7 @@ class GVS(eqx.Module):
         basistype_idx = Basis.BASISTYPE_MAP[basetype]
         Bdof = jnp.asarray(basis_attrs.Bdof).flatten()
         Bodr = jnp.asarray(basis_attrs.Bodr).flatten()
-        xi_star = jnp.asarray(basis_attrs.xi_star).reshape(6, 1)
+        xi_ref = jnp.asarray(basis_attrs.xi_ref).reshape(6, 1)
 
         dof_link = lax.switch(
             index=basistype_idx, branches=Basis.DOF_BRANCHES, operand=(Bdof, Bodr)
@@ -795,10 +795,10 @@ class GVS(eqx.Module):
         )
 
         # Compute the initial strain vectors at the integration points
-        xi_starfn = lambda x: xi_star  # TODO: allow to have an expression for xi_star
-        xi_star_Xs = vmap(xi_starfn)(Xs).squeeze()
-        xi_star_Z1 = vmap(xi_starfn)(Xs[:-1] + self.Z1 * deltas).squeeze()
-        xi_star_Z2 = vmap(xi_starfn)(Xs[:-1] + self.Z2 * deltas).squeeze()
+        xi_reffn = lambda x: xi_ref  # TODO: allow to have an expression for xi_ref
+        xi_ref_Xs = vmap(xi_reffn)(Xs).squeeze()
+        xi_ref_Z1 = vmap(xi_reffn)(Xs[:-1] + self.Z1 * deltas).squeeze()
+        xi_ref_Z2 = vmap(xi_reffn)(Xs[:-1] + self.Z2 * deltas).squeeze()
 
         # Compute the mass, stiffness, and damping matrices at the integration points
         geometric_operand = GeometricOperand(
@@ -838,14 +838,14 @@ class GVS(eqx.Module):
         B_Z1_full = jnp.pad(B_Z1, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
         B_Z2_full = jnp.pad(B_Z2, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
 
-        xi_star_Xs_full = jnp.pad(
-            xi_star_Xs, ((0, max_nip - nip), (0, 0)), mode="constant"
+        xi_ref_Xs_full = jnp.pad(
+            xi_ref_Xs, ((0, max_nip - nip), (0, 0)), mode="constant"
         )
-        xi_star_Z1_full = jnp.pad(
-            xi_star_Z1, ((0, max_nip - nip), (0, 0)), mode="constant"
+        xi_ref_Z1_full = jnp.pad(
+            xi_ref_Z1, ((0, max_nip - nip), (0, 0)), mode="constant"
         )
-        xi_star_Z2_full = jnp.pad(
-            xi_star_Z2, ((0, max_nip - nip), (0, 0)), mode="constant"
+        xi_ref_Z2_full = jnp.pad(
+            xi_ref_Z2, ((0, max_nip - nip), (0, 0)), mode="constant"
         )
 
         dofs_joint_link = jnp.stack([dof_joint, dof_link])
@@ -868,10 +868,10 @@ class GVS(eqx.Module):
             B_Xs=B_Xs_full,
             B_Z1=B_Z1_full,
             B_Z2=B_Z2_full,
-            xi_star_joint=xi_star_joint,
-            xi_star_Xs=xi_star_Xs_full,
-            xi_star_Z1=xi_star_Z1_full,
-            xi_star_Z2=xi_star_Z2_full,
+            xi_ref_joint=xi_ref_joint,
+            xi_ref_Xs=xi_ref_Xs_full,
+            xi_ref_Z1=xi_ref_Z1_full,
+            xi_ref_Z2=xi_ref_Z2_full,
             K_joint=K_joint_full,
         )
 
@@ -995,10 +995,10 @@ class GVS(eqx.Module):
 
             # Joint =======================
             B_joint_i = self.V_B_joint[i_segment]  # shape (6, max_dof)
-            xi_star_joint_i = self.V_xi_star_joint[i_segment]  # shape (6,)
+            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # shape (6,)
             q_joint_i = q_gathered[i_segment, 0]  # shape (max_dof,)
 
-            xi_joint_i = B_joint_i @ q_joint_i + xi_star_joint_i  # shape (6,)
+            xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i  # shape (6,)
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
 
@@ -1006,8 +1006,8 @@ class GVS(eqx.Module):
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]  # shape (max_nip - 1, 6)
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # shape (max_nip - 1, 6)
             length_i = self.V_L[i_segment]  # shape (1,)
             B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
@@ -1019,14 +1019,14 @@ class GVS(eqx.Module):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_star_Z1_j = xi_star_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_star_Z2_j = xi_star_Z2_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
 
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = B_Z1_j @ q_i + xi_star_Z1_j
-                xi_Z2_j = B_Z2_j @ q_i + xi_star_Z2_j
+                xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
+                xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
@@ -1125,19 +1125,19 @@ class GVS(eqx.Module):
 
             # Joint =======================
             B_joint = self.V_B_joint[i_segment]
-            xi_star_joint = self.V_xi_star_joint[i_segment]
+            xi_ref_joint = self.V_xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
 
             g_joint_i = lie.exp_gn_SE3(
-                B_joint @ q_joint_i + xi_star_joint, self.global_eps
+                B_joint @ q_joint_i + xi_ref_joint, self.global_eps
             )
 
             g_j = g_tip @ g_joint_i
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]
             length_i = self.V_L[i_segment]
             B_Z1_i = self.V_B_Z1[i_segment]
             B_Z2_i = self.V_B_Z2[i_segment]
@@ -1150,8 +1150,8 @@ class GVS(eqx.Module):
 
                 H = Xs_i[j + 1] - Xs_i[j]
 
-                xi_Z1_j = (B_Z1_i[j] @ q_i) + xi_star_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2_j = (B_Z2_i[j] @ q_i) + xi_star_Z2_i[j].at[:3].multiply(length_i)
+                xi_Z1_j = (B_Z1_i[j] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
+                xi_Z2_j = (B_Z2_i[j] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
@@ -1193,10 +1193,10 @@ class GVS(eqx.Module):
 
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2, 6, max_dof)
 
-                xi_Z1_j = (Bp[0] @ q_i) + self.V_xi_star_Z1[i_segment][j].at[
+                xi_Z1_j = (Bp[0] @ q_i) + self.V_xi_ref_Z1[i_segment][j].at[
                     :3
                 ].multiply(length_i)
-                xi_Z2_j = (Bp[1] @ q_i) + self.V_xi_star_Z2[i_segment][j].at[
+                xi_Z2_j = (Bp[1] @ q_i) + self.V_xi_ref_Z2[i_segment][j].at[
                     :3
                 ].multiply(length_i)
 
@@ -1260,10 +1260,10 @@ class GVS(eqx.Module):
 
             # Joint ============================
             B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_star_joint_i = self.V_xi_star_joint[i_segment]  # (6,)
+            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]
 
-            xi_joint_i = B_joint_i @ q_joint_i + xi_star_joint_i
+            xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
             T_g_joint = lie.Tangent_gi_se3(
@@ -1285,8 +1285,8 @@ class GVS(eqx.Module):
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]  # shape (max_nip - 1, 6)
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # shape (max_nip - 1, 6)
             length_i = self.V_L[i_segment]  # shape (1,)
             B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
@@ -1303,14 +1303,14 @@ class GVS(eqx.Module):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_star_Z1_j = xi_star_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_star_Z2_j = xi_star_Z2_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
 
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = B_Z1_j @ q_i + xi_star_Z1_j
-                xi_Z2_j = B_Z2_j @ q_i + xi_star_Z2_j
+                xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
+                xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
@@ -1416,10 +1416,10 @@ class GVS(eqx.Module):
 
             # Joint ============================
             B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_star_joint_i = self.V_xi_star_joint[i_segment]  # (6,)
+            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]
 
-            xi_joint_i = B_joint_i @ q_joint_i + xi_star_joint_i
+            xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # (4,4)
             T_g_joint = lie.Tangent_gi_se3(xi_joint_i, 1, self.global_eps)  # (6,6)
@@ -1441,8 +1441,8 @@ class GVS(eqx.Module):
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # (max_nip,)
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]  # (max_nip-1, 6)
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]  # (max_nip-1, 6)
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # (max_nip-1, 6)
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # (max_nip-1, 6)
             length_i = self.V_L[i_segment]
             B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1, 6, max_dof)
@@ -1461,10 +1461,10 @@ class GVS(eqx.Module):
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = (B_Z1_j @ q_i) + xi_star_Z1_i[j_eval].at[:3].multiply(
+                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(
                     length_i
                 )
-                xi_Z2_j = (B_Z2_j @ q_i) + xi_star_Z2_i[j_eval].at[:3].multiply(
+                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(
                     length_i
                 )
 
@@ -1529,8 +1529,8 @@ class GVS(eqx.Module):
 
                 Xp = jnp.array([Xs_i[j] + self.Z1 * Hp, Xs_i[j] + self.Z2 * Hp])
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2,6,max_dof)
-                xi_Z1_j = (Bp[0] @ q_i) + xi_star_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2_j = (Bp[1] @ q_i) + xi_star_Z2_i[j].at[:3].multiply(length_i)
+                xi_Z1_j = (Bp[0] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
+                xi_Z2_j = (Bp[1] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
@@ -1612,11 +1612,11 @@ class GVS(eqx.Module):
 
             # Joint ============================
             B_joint_i = self.V_B_joint[i_segment]  # shape (6, max_dof)
-            xi_star_joint_i = self.V_xi_star_joint[i_segment]  # shape (6,)
+            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # shape (6,)
             q_joint_i = q_gathered[i_segment, 0]  # shape (max_dof,)
             qd_joint_i = qd_gathered[i_segment, 0]  # shape (max_dof,)
 
-            xi_joint_i = B_joint_i @ q_joint_i + xi_star_joint_i  # shape (6,)
+            xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i  # shape (6,)
             xid_joint_i = B_joint_i @ qd_joint_i  # shape (6,)
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
@@ -1648,8 +1648,8 @@ class GVS(eqx.Module):
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]  # shape (max_nip - 1, 6)
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # shape (max_nip - 1, 6)
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # shape (max_nip - 1, 6)
             length_i = self.V_L[i_segment]  # shape (1,)
             B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
@@ -1666,14 +1666,14 @@ class GVS(eqx.Module):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_star_Z1_j = xi_star_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_star_Z2_j = xi_star_Z2_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
 
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = B_Z1_j @ q_i + xi_star_Z1_j
-                xi_Z2_j = B_Z2_j @ q_i + xi_star_Z2_j
+                xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
+                xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
                 xid_Z1_j = B_Z1_j @ qd_i
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
@@ -1801,11 +1801,11 @@ class GVS(eqx.Module):
 
             # Joint ============================
             B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_star_joint_i = self.V_xi_star_joint[i_segment]  # (6,)
+            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]  # (max_dof,)
             qd_joint_i = qd_gathered[i_segment, 0]  # (max_dof,)
 
-            xi_joint_i = B_joint_i @ q_joint_i + xi_star_joint_i  # (6,)
+            xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i  # (6,)
             xid_joint_i = B_joint_i @ qd_joint_i  # (6,)
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # (4,4)
@@ -1836,8 +1836,8 @@ class GVS(eqx.Module):
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # (max_nip,)
-            xi_star_Z1_i = self.V_xi_star_Z1[i_segment]  # (max_nip-1,6)
-            xi_star_Z2_i = self.V_xi_star_Z2[i_segment]  # (max_nip-1,6)
+            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # (max_nip-1,6)
+            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # (max_nip-1,6)
             length_i = self.V_L[i_segment]
             B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1,6,max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1,6,max_dof)
@@ -1854,10 +1854,10 @@ class GVS(eqx.Module):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_Z1 = (B_Z1_i[j_eval] @ q_i) + xi_star_Z1_i[j_eval].at[:3].multiply(
+                xi_Z1 = (B_Z1_i[j_eval] @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(
                     length_i
                 )
-                xi_Z2 = (B_Z2_i[j_eval] @ q_i) + xi_star_Z2_i[j_eval].at[:3].multiply(
+                xi_Z2 = (B_Z2_i[j_eval] @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(
                     length_i
                 )
                 xid_Z1 = B_Z1_i[j_eval] @ qd_i
@@ -1942,8 +1942,8 @@ class GVS(eqx.Module):
                 )  # deux points de Gauss partiels
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2,6,max_dof)
 
-                xi_Z1 = (Bp[0] @ q_i) + xi_star_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2 = (Bp[1] @ q_i) + xi_star_Z2_i[j].at[:3].multiply(length_i)
+                xi_Z1 = (Bp[0] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
+                xi_Z2 = (Bp[1] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
                 xid_Z1 = Bp[0] @ qd_i
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1)

@@ -877,7 +877,7 @@ class PCS(eqx.Module):
         # Jd_global = self._final_size_jacobian(_Jd_global) @ self.B_xi
 
         # TODO:
-        # J_d = d(Ad_g * J_local) / dt
+        # Jd = d(Ad_g * J_local) / dt
         #       = Ad_g * d(J_local) / dt + d(Ad_g) / dt * J_local
         # we need to add the term d(Ad_g) / dt * J_local !!!
         # d(Ad_g) / dt = Ad_g @ adj_eta

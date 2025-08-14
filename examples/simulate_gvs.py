@@ -161,7 +161,7 @@ if __name__ == "__main__":
         basistype="Legendre",
         Bdof=[0, 1, 1, 0, 0, 0],
         Bodr=[0, 0, 0, 0, 0, 0],
-        xi_star=[0, 0, 0, 1, 0, 0],
+        xi_ref=[0, 0, 0, 1, 0, 0],
     )
     List_basis.append(basis1)
     List_nGauss.append(5)  # Number of Gauss points for the first link
@@ -177,7 +177,7 @@ if __name__ == "__main__":
         basistype="Monomial",
         Bdof=[1, 1, 0, 0, 0, 0],
         Bodr=[0, 0, 0, 0, 0, 0],
-        xi_star=[0, 0, 0, 1, 0, 0],
+        xi_ref=[0, 0, 0, 1, 0, 0],
     )
     List_basis.append(basis2)
     List_nGauss.append(6)  # Number of Gauss points for the second link
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     #     basistype='Chebychev',       # Type of basis
     #     Bdof=[0, 1, 0, 1, 0, 0],    # Degrees of freedom for each deformation type
     #     Bodr=[0, 0, 0, 0, 0, 0],    # Order of basis functions for each deformation type
-    #     xi_star=[0, 0, 0, 1, 0, 0], # Reference strain values as vector
+    #     xi_ref=[0, 0, 0, 1, 0, 0], # Reference strain values as vector
     # )
     # List_basis.append(basis3)
     # List_nGauss.append(5)  # Number of Gauss points for the third link

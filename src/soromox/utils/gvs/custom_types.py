@@ -57,7 +57,7 @@ class BasisAttributes:
     Bodr: Union[
         Array, List
     ]  # shape (6,1) indicating the orders of the basis functions for each type of deformation
-    xi_star: Union[
+    xi_ref: Union[
         Array, List
     ]  # shape (6,1) indicating the reference strain values for each type of deformation
 
@@ -124,10 +124,10 @@ class SegmentData:
     B_Xs: Array  # Basis matrix at integration points
     B_Z1: Array  # Basis matrix at Z1 points
     B_Z2: Array  # Basis matrix at Z2 points
-    xi_star_joint: Array  # Joint initial strain vector
-    xi_star_Xs: Array  # Initial strain vector at integration points
-    xi_star_Z1: Array  # Initial strain vector at Z1 points
-    xi_star_Z2: Array  # Initial strain vector at Z2 points
+    xi_ref_joint: Array  # Joint initial strain vector
+    xi_ref_Xs: Array  # Initial strain vector at integration points
+    xi_ref_Z1: Array  # Initial strain vector at Z1 points
+    xi_ref_Z2: Array  # Initial strain vector at Z2 points
     K_joint: Array  # Joint stiffness matrix
 
     def tree_flatten(self):
@@ -144,10 +144,10 @@ class SegmentData:
             self.B_Xs,
             self.B_Z1,
             self.B_Z2,
-            self.xi_star_joint,
-            self.xi_star_Xs,
-            self.xi_star_Z1,
-            self.xi_star_Z2,
+            self.xi_ref_joint,
+            self.xi_ref_Xs,
+            self.xi_ref_Z1,
+            self.xi_ref_Z2,
             self.K_joint,
         )
         return children, None
@@ -173,9 +173,9 @@ class LinkData:
     B_Xs: Array  # Basis matrix at integration points
     B_Z1: Array  # Basis matrix at Z1 points
     B_Z2: Array  # Basis matrix at Z2 points
-    xi_star_Xs: Array  # Initial strain vector at integration points
-    xi_star_Z1: Array  # Initial strain vector at Z1 points
-    xi_star_Z2: Array  # Initial strain vector at Z2 points
+    xi_ref_Xs: Array  # Initial strain vector at integration points
+    xi_ref_Z1: Array  # Initial strain vector at Z1 points
+    xi_ref_Z2: Array  # Initial strain vector at Z2 points
     dof_link: Array  # Degrees of freedom of the segment
 
     def tree_flatten(self):
@@ -190,9 +190,9 @@ class LinkData:
             self.B_Xs,
             self.B_Z1,
             self.B_Z2,
-            self.xi_star_Xs,
-            self.xi_star_Z1,
-            self.xi_star_Z2,
+            self.xi_ref_Xs,
+            self.xi_ref_Z1,
+            self.xi_ref_Z2,
             self.dof_link,
         )
         return children, None
