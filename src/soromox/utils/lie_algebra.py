@@ -191,14 +191,14 @@ def Adjoint_gi_se2(
             A 3x3 matrix representing the adjoint transformation of the input screw vector at the specified position.
     """
     # We suppose here that theta is not zero thanks to a previous use of apply_eps
-    theta = xi_i[0]  # Angular part
+    theta = jnp.linalg.norm(xi_i[0])  # Angular part
     adjoint_xi_i = adjoint_se2(xi_i)  # Adjoint representation of the input vector
 
     cos = jnp.cos(s_i * theta)
     sin = jnp.sin(s_i * theta)
 
     Adjoint = lax.cond(
-        jnp.abs(theta) <= eps,
+        theta <= eps,
         lambda _: jnp.eye(3) + s_i * adjoint_xi_i,  # Avoid division by zero
         lambda _: (
             jnp.eye(3)
@@ -284,14 +284,14 @@ def Tangent_gi_se2(
             A 3x3 matrix representing the tangent transformation of the input screw vector at the specified position.
     """
     # We suppose here that theta is not zero thanks to a previous use of apply_eps
-    theta = xi_i[0]  # Angular part
+    theta = jnp.linalg.norm(xi_i[0])  # Angular part
     adjoint_xi_i = adjoint_se2(xi_i)  # Adjoint representation of the input vector
 
     cos = jnp.cos(s_i * theta)
     sin = jnp.sin(s_i * theta)
 
     Tangent = lax.cond(
-        jnp.abs(theta) <= eps,
+        theta <= eps,
         lambda _: s_i * jnp.eye(3) + s_i**2 / 2 * adjoint_xi_i,
         lambda _: (
             s_i * jnp.eye(3)
@@ -636,7 +636,7 @@ def Adjoint_gi_se3(
     sin = jnp.sin(s_i * theta)
 
     Adjoint = lax.cond(
-        jnp.abs(theta) <= eps,
+        theta <= eps,
         lambda _: jnp.eye(6) + s_i * adjoint_xi_i,  # Avoid division by zero
         lambda _: (
             jnp.eye(6)
@@ -718,8 +718,8 @@ def Tangent_gi_se3(
         eps (float): small value to avoid division by zero
 
     Returns:
-        Array: shape (4, 4)
-            A 4x4 matrix representing the tangent transformation of the input screw vector at the specified position.
+        Tangent (Array): shape (6, 6)
+            A 6x6 matrix representing the tangent transformation of the input screw vector at the specified position.
     """
     # We suppose here that theta is not zero thanks to a previous use of apply_eps
     ang = xi_i[:3].reshape((3, 1))  # Angular as a (3,1) vector
@@ -730,7 +730,7 @@ def Tangent_gi_se3(
     sin = jnp.sin(s_i * theta)
 
     Tangent = lax.cond(
-        jnp.abs(theta) <= eps,
+        theta <= eps,
         lambda _: s_i * jnp.eye(6) + s_i**2 / 2 * adjoint_xi_i,
         lambda _: (
             s_i * jnp.eye(6)
@@ -755,6 +755,101 @@ def Tangent_gi_se3(
     )
 
     return Tangent
+
+
+def Tangent_derivative_gi_se3(
+    xi_i: Array, xid_i: Array, s_i: float, eps: float
+) -> Array:
+    """
+    Computes the tangent derivative representation of a position of a points at s_i (local curvilinear coordinate)
+    along a rod in SE(3) deformed in the current segment according to a strain vector xi_i and its derivative xid_i.
+
+    Args:
+        xi_i (Array): array-like, shape (6,1)
+            A 6-dimensional vector representing the screw in SE(3).
+            The first three elements correspond to the angular component,
+            and the last three elements correspond to the linear component.
+        xid_i (Array): array-like, shape (6,1)
+            A 6-dimensional vector representing the derivative of the screw in SE(3).
+            The first three elements correspond to the angular component,
+            and the last three elements correspond to the linear component.
+        s_i (float):
+            The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
+        eps (float): small value to avoid division by zero
+
+    Returns:
+        Tgd (Array): shape (6, 6)
+            A 6x6 matrix representing the tangent derivative transformation of the input screw vector at the specified position.
+    """
+    k = xi_i[:3]
+    kd = xid_i[:3]
+
+    theta = jnp.linalg.norm(k)  # Compute the norm of the angular part
+    adj_vec6 = adjoint_se3(
+        xi_i
+    )  # Compute the adjoint representation of the screw vector
+
+    thetad = jnp.dot(kd, k) / theta
+    adj_vec6d = adjoint_se3(
+        xid_i
+    )  # Compute the adjoint representation of the derivative screw vector
+
+    costheta = jnp.cos(theta)
+    sintheta = jnp.sin(theta)
+
+    adj_vec6d_2 = adj_vec6d @ adj_vec6 + adj_vec6 @ adj_vec6d
+    adj_vec6d_3 = (
+        adj_vec6d_2 @ adj_vec6 + jnp.linalg.matrix_power(adj_vec6, 2) @ adj_vec6d
+    )
+    adj_vec6d_4 = (
+        adj_vec6d_3 @ adj_vec6 + jnp.linalg.matrix_power(adj_vec6, 3) @ adj_vec6d
+    )
+
+    Tgd = lax.cond(
+        theta <= eps,
+        lambda _: 1 / 2 * adj_vec6d,
+        lambda _: (
+            (thetad / (2 * jnp.power(theta, 3)))
+            * (-8 + (8 - jnp.power(theta, 2)) * costheta + 5 * theta * sintheta)
+            * adj_vec6
+            + 1
+            / (2 * jnp.power(theta, 2))
+            * (4 - 4 * costheta - theta * sintheta)
+            * adj_vec6d
+            + (thetad / (2 * jnp.power(theta, 4)))
+            * (
+                -8 * theta
+                + (15 - jnp.power(theta, 2)) * sintheta
+                - 7 * theta * costheta
+            )
+            * jnp.linalg.matrix_power(adj_vec6, 2)
+            + 1
+            / (2 * jnp.power(theta, 3))
+            * (4 * theta - 5 * sintheta + theta * costheta)
+            * adj_vec6d_2
+            + (thetad / (2 * jnp.power(theta, 5)))
+            * (-8 + (8 - jnp.power(theta, 2)) * costheta + 5 * theta * sintheta)
+            * jnp.linalg.matrix_power(adj_vec6, 3)
+            + 1
+            / (2 * jnp.power(theta, 4))
+            * (2 - 2 * costheta - theta * sintheta)
+            * adj_vec6d_3
+            + (thetad / (2 * jnp.power(theta, 6)))
+            * (
+                -8 * theta
+                + (15 - jnp.power(theta, 2)) * sintheta
+                - 7 * theta * costheta
+            )
+            * jnp.linalg.matrix_power(adj_vec6, 4)
+            + 1
+            / (2 * jnp.power(theta, 5))
+            * (2 * theta - 3 * sintheta + theta * costheta)
+            * adj_vec6d_4
+        ),
+        operand=None,
+    )
+
+    return Tgd
 
 
 # ================================================================================================

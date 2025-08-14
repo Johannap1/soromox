@@ -959,6 +959,7 @@ class PCS(eqx.Module):
         I_i = jnp.pi * self.r[i] ** 4 / 4
         return I_i
 
+    @eqx.filter_jit
     def _local_polar_moment_of_inertia(self, i: int) -> Array:
         """
         Compute the local polar moment of inertia for the i-th segment.
@@ -1111,7 +1112,7 @@ class PCS(eqx.Module):
         return C
 
     @eqx.filter_jit
-    def _gravitational_force_full(self, q: Array) -> Array:
+    def _gravitational_full_force(self, q: Array) -> Array:
         """
         Compute the full gravitational force acting on the robot.
 
@@ -1169,7 +1170,7 @@ class PCS(eqx.Module):
         Returns:
             G (Array): Gravitational force of shape (num_active_strains,).
         """
-        G_full = self._gravitational_force_full(q)
+        G_full = self._gravitational_full_force(q)
 
         G = self.B_xi.T @ G_full
 
@@ -1184,7 +1185,7 @@ class PCS(eqx.Module):
             i (int): index of the segment
 
         Returns:
-            S_i (Array): Local stiffness matrix of shape (3, 3) for the i-th segment.
+            S_i (Array): Local stiffness matrix of shape (6, 6) for the i-th segment.
         """
         I_i = self._local_second_moment_of_area(i)  # Second moment of area
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
@@ -1459,14 +1460,11 @@ class PCS(eqx.Module):
             Jd (Array): Time-derivative of the Jacobian at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
             JB_pinv (Array): Dynamically-consistent pseudo-inverse of the Jacobian, shape (num_active_strains, num_operational_space_dims).
         """
-        # classify the point along the robot to the corresponding segment
-        _, s_local = self.classify_segment(s)
-
         # make operational_space_selector a boolean array
         operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
-        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s_local)
+        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s)
 
         J = J[operational_space_selector, :]
         Jd = Jd[operational_space_selector, :]

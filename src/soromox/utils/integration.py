@@ -5,6 +5,7 @@ from jax import lax
 from jax import Array
 from typing import Tuple
 
+
 def gauss_quadrature(N_GQ: int, a=0.0, b=1.0) -> Tuple[Array, Array, int]:
     """
     Computes the Legendre-Gauss nodes and weights on the interval [0, 1]
