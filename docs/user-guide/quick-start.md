@@ -21,7 +21,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     # Define parameters for a double pendulum
     num_links = 2
     params = {
-        "l": jnp.array([0.5, 0.3]),      # Link lengths [m]
+        "L": jnp.array([0.5, 0.3]),      # Link lengths [m]
         "lc": jnp.array([0.25, 0.15]),   # Center of mass positions [m]
         "m": jnp.array([1.0, 0.5]),      # Masses [kg]
         "I": jnp.array([0.1, 0.05]),     # Moments of inertia [kg⋅m²]
@@ -143,7 +143,7 @@ Each robot system expects a structured parameter dictionary:
 
 ```python title="Parameter Structure"
 params = {
-    "l": link_lengths,        # Physical dimensions
+    "L": link_lengths,        # Physical dimensions
     "m": masses,             # Inertial properties  
     "I": inertias,          # Rotational inertia
     "g": gravity,           # Environmental forces

@@ -105,7 +105,7 @@ Most examples allow easy parameter modification:
 ```python
 # In any example file
 params = {
-    "l": 0.2,  # Change length
+    "L": 0.2,  # Change length
     "r": 0.01,  # Change radius  
     "E": 1e6,  # Change Young's modulus
     # ... other parameters

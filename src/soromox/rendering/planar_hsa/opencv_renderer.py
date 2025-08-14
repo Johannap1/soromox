@@ -3,66 +3,56 @@ from jax import Array, jit, vmap
 import jax.numpy as jnp
 import numpy as onp
 from os import PathLike
-from typing import Callable, Dict
 
+from soromox.systems.planar_hsa import PlanarHSA
 
 def draw_robot(
-    forward_kinematics_virtual_backbone_fn: Callable,
-    forward_kinematics_rod_fn: Callable,
-    forward_kinematics_platform_fn: Callable,
-    params: Dict[str, Array],
+    robot: PlanarHSA,
     q: Array,
-    width: int,
-    height: int,
+    width: int = 700,
+    height: int = 700,
     num_points: int = 50,
+    show: bool = False,
 ) -> onp.ndarray:
     """
     Draw the robot in OpenCV.
     Args:
-        forward_kinematics_virtual_backbone_fn: function to compute the forward kinematics of the virtual backbone
-        forward_kinematics_rod_fn: function to compute the forward kinematics of the rods
-        forward_kinematics_platform_fn: function to compute the forward kinematics of the platforms
-        params: dictionary of parameters
+        robot: PlanarHSA instance
         q: configuration as shape (3, )
         width: image width
         height: image height
         num_points: number of points to plot along the length of the robot
     """
-    num_segments = params["l"].shape[0]
-
     # plotting in OpenCV
     h, w = height, width  # img height and width
-    ppm = h / (
-        2.0 * jnp.sum(params["lpc"] + params["l"] + params["ldc"])
-    )  # pixel per meter
+    ppm = h / (2.0 * jnp.sum(robot.lpc + robot.L + robot.ldc))  # pixel per meter
     base_color = (0, 0, 0)  # black base color in BGR
     backbone_color = (255, 0, 0)  # blue robot color in BGR
     rod_color = (0, 255, 0)  # green rod color in BGR
     platform_color = (0, 0, 255)  # red platform color in BGR
 
     batched_forward_kinematics_virtual_backbone_fn = vmap(
-        forward_kinematics_virtual_backbone_fn, in_axes=(None, None, 0), out_axes=-1
+        robot.forward_kinematics_virtual_backbone_fn, in_axes=(None, 0), out_axes=-1
     )
     batched_forward_kinematics_rod_fn = vmap(
-        forward_kinematics_rod_fn, in_axes=(None, None, 0, None), out_axes=-1
+        robot.forward_kinematics_rod_fn, in_axes=(None, 0, None), out_axes=-1
     )
     batched_forward_kinematics_platform_fn = vmap(
-        forward_kinematics_platform_fn, in_axes=(None, None, 0), out_axes=0
+        robot.forward_kinematics_platform_fn, in_axes=(None, 0), out_axes=0
     )
 
     # we use for plotting N points along the length of the robot
-    s_ps = jnp.linspace(0, jnp.sum(params["l"]), num_points)
+    s_ps = jnp.linspace(0, robot.Lmax, num_points)
 
     # poses along the robot of shape (3, N)
     chiv_ps = batched_forward_kinematics_virtual_backbone_fn(
-        params, q, s_ps
+        q, s_ps
     )  # poses of virtual backbone
-    chiL_ps = batched_forward_kinematics_rod_fn(params, q, s_ps, 0)  # poses of left rod
-    chiR_ps = batched_forward_kinematics_rod_fn(params, q, s_ps, 1)  # poses of left rod
-    # poses of the platforms
+    chiL_ps = batched_forward_kinematics_rod_fn(q, s_ps, 0)  # poses of left rod
+    chiR_ps = batched_forward_kinematics_rod_fn(q, s_ps, 1)  # poses of left rod
     chip_ps = batched_forward_kinematics_platform_fn(
-        params, q, jnp.arange(0, num_segments)
-    )
+        q, jnp.arange(0, robot.num_segments)
+    )  # poses of the platforms
 
     img = 255 * onp.ones((w, h, 3), dtype=jnp.uint8)  # initialize background to white
     uv_robot_origin = onp.array(
@@ -80,7 +70,7 @@ def draw_robot(
         Returns:
             uv: pixel coordinates of shape (2)
         """
-        uv_off = jnp.array((chi[:2] * ppm), dtype=jnp.int32)
+        uv_off = jnp.array((chi[1:] * ppm), dtype=jnp.int32)
         # invert the v pixel coordinate
         uv_off = uv_off.at[1].set(-uv_off[1])
         # invert the v pixel coordinate
@@ -96,15 +86,15 @@ def draw_robot(
     # add the first point of the proximal cap and the last point of the distal cap
     chiv_ps = jnp.concatenate(
         [
-            (chiv_ps[:, 0] - jnp.array([0.0, params["lpc"][0], 0.0])).reshape(3, 1),
+            (chiv_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
             chiv_ps,
             (
                 chiv_ps[:, -1]
                 + jnp.array(
                     [
-                        -jnp.sin(chiv_ps[2, -1]) * params["ldc"][-1],
-                        jnp.cos(chiv_ps[2, -1]) * params["ldc"][-1],
-                        chiv_ps[2, -1],
+                        chiv_ps[0, -1],
+                        -jnp.sin(chiv_ps[0, -1]) * robot.ldc[-1],
+                        jnp.cos(chiv_ps[0, -1]) * robot.ldc[-1],
                     ]
                 )
             ).reshape(3, 1),
@@ -120,15 +110,15 @@ def draw_robot(
     # add the first point of the proximal cap and the last point of the distal cap
     chiL_ps = jnp.concatenate(
         [
-            (chiL_ps[:, 0] - jnp.array([0.0, params["lpc"][0], 0.0])).reshape(3, 1),
+            (chiL_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
             chiL_ps,
             (
                 chiL_ps[:, -1]
                 + jnp.array(
                     [
-                        -jnp.sin(chiL_ps[2, -1]) * params["ldc"][-1],
-                        jnp.cos(chiL_ps[2, -1]) * params["ldc"][-1],
-                        chiL_ps[2, -1],
+                        chiL_ps[0, -1],
+                        -jnp.sin(chiL_ps[0, -1]) * robot.ldc[-1],
+                        jnp.cos(chiL_ps[0, -1]) * robot.ldc[-1],
                     ]
                 )
             ).reshape(3, 1),
@@ -142,20 +132,20 @@ def draw_robot(
         isClosed=False,
         color=rod_color,
         thickness=10,
-        # thickness=2*int(ppm * params["rout"].mean(axis=0)[0])
+        # thickness=2*int(ppm * robot.params["rout"].mean(axis=0)[0])
     )
     # add the first point of the proximal cap and the last point of the distal cap
     chiR_ps = jnp.concatenate(
         [
-            (chiR_ps[:, 0] - jnp.array([0.0, params["lpc"][0], 0.0])).reshape(3, 1),
+            (chiR_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
             chiR_ps,
             (
                 chiR_ps[:, -1]
                 + jnp.array(
                     [
-                        -jnp.sin(chiR_ps[2, -1]) * params["ldc"][-1],
-                        jnp.cos(chiR_ps[2, -1]) * params["ldc"][-1],
-                        chiR_ps[2, -1],
+                        chiR_ps[0, -1],
+                        -jnp.sin(chiR_ps[0, -1]) * robot.ldc[-1],
+                        jnp.cos(chiR_ps[0, -1]) * robot.ldc[-1],
                     ]
                 )
             ).reshape(3, 1),
@@ -170,32 +160,37 @@ def draw_robot(
         # iterate over the platforms
         platform_R = jnp.array(
             [
-                [jnp.cos(chip_ps[i, 2]), -jnp.sin(chip_ps[i, 2])],
-                [jnp.sin(chip_ps[i, 2]), jnp.cos(chip_ps[i, 2])],
+                [1, 0, 0],
+                [0, jnp.cos(chip_ps[i, 0]), -jnp.sin(chip_ps[i, 0])],
+                [0, jnp.sin(chip_ps[i, 0]), jnp.cos(chip_ps[i, 0])],
             ]
         )  # rotation matrix for the platform
-        platform_llc = chip_ps[i, :2] + platform_R @ jnp.array(
+        platform_llc = chip_ps[i, :] + platform_R @ jnp.array(
             [
-                -params["pcudim"][i, 0] / 2,  # go half the width to the left
-                -params["pcudim"][i, 1] / 2,  # go half the height down
+                0,
+                -robot.pcudim[i, 0] / 2,  # go half the width to the left
+                -robot.pcudim[i, 1] / 2,  # go half the height down
             ]
         )  # lower left corner of the platform
-        platform_ulc = chip_ps[i, :2] + platform_R @ jnp.array(
+        platform_ulc = chip_ps[i, :] + platform_R @ jnp.array(
             [
-                -params["pcudim"][i, 0] / 2,  # go half the width to the left
-                +params["pcudim"][i, 1] / 2,  # go half the height down
+                0,
+                -robot.pcudim[i, 0] / 2,  # go half the width to the left
+                +robot.pcudim[i, 1] / 2,  # go half the height down
             ]
         )  # upper left corner of the platform
-        platform_urc = chip_ps[i, :2] + platform_R @ jnp.array(
+        platform_urc = chip_ps[i, :] + platform_R @ jnp.array(
             [
-                +params["pcudim"][i, 0] / 2,  # go half the width to the left
-                +params["pcudim"][i, 1] / 2,  # go half the height down
+                0,
+                +robot.pcudim[i, 0] / 2,  # go half the width to the left
+                +robot.pcudim[i, 1] / 2,  # go half the height down
             ]
         )  # upper right corner of the platform
-        platform_lrc = chip_ps[i, :2] + platform_R @ jnp.array(
+        platform_lrc = chip_ps[i, :] + platform_R @ jnp.array(
             [
-                +params["pcudim"][i, 0] / 2,  # go half the width to the left
-                -params["pcudim"][i, 1] / 2,  # go half the height down
+                0,
+                +robot.pcudim[i, 0] / 2,  # go half the width to the left
+                -robot.pcudim[i, 1] / 2,  # go half the height down
             ]
         )  # lower right corner of the platform
         platform_curve = jnp.stack(
@@ -207,14 +202,21 @@ def draw_robot(
             img, [onp.array(batched_chi2u(platform_curve))], color=platform_color
         )
 
+    if show:
+        win = "Planar HSA"
+        # fenêtre redimensionnable (utile sur macOS/Linux/HiDPI)
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.imshow(win, img)
+        # attend jusqu'à une touche (ferme si on appuie sur ESC ou 'q')
+        key = cv2.waitKey(0) & 0xFF
+        if key in (27, ord("q")):
+            cv2.destroyWindow(win)
+
     return img
 
 
 def animate_robot(
-    forward_kinematics_virtual_backbone_fn: Callable,
-    forward_kinematics_rod_fn: Callable,
-    forward_kinematics_platform_fn: Callable,
-    params: Dict[str, Array],
+    robot: PlanarHSA,
     filepath: PathLike,
     video_ts: Array,
     q_ts: Array,
@@ -224,10 +226,6 @@ def animate_robot(
     """
     Animate the robot and save the video.
     Args:
-        forward_kinematics_virtual_backbone_fn: function to compute the forward kinematics of the virtual backbone
-        forward_kinematics_rod_fn: function to compute the forward kinematics of the rods
-        forward_kinematics_platform_fn: function to compute the forward kinematics of the platforms
-        params: dictionary of parameters
         filepath: path to save the video
         video_ts: time stamps of the video
         q_ts: configuration time series of shape (N, 3)
@@ -249,10 +247,7 @@ def animate_robot(
     for time_idx, t in enumerate(video_ts):
         q = q_ts[time_idx]
         img = draw_robot(
-            forward_kinematics_virtual_backbone_fn,
-            forward_kinematics_rod_fn,
-            forward_kinematics_platform_fn,
-            params,
+            robot,
             q,
             video_width,
             video_height,

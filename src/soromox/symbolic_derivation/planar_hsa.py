@@ -537,7 +537,7 @@ def symbolically_derive_planar_hsa_model(
     sym_exps = {
         "params_syms": {
             "th0": th0,
-            "l": l_syms,
+            "L": l_syms,
             "lpc": lpc_syms,
             "ldc": ldc_syms,
             "h": h_syms,

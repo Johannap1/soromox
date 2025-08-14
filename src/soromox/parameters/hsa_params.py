@@ -25,7 +25,7 @@ def generate_common_base_params(
 
     params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]
-        "l": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
+        "L": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
         # length of the rigid proximal caps of the rods connecting to the base [m]
         "lpc": 25e-3 * jnp.ones((num_segments,)),
         # length of the rig id distal caps of the rods connecting to the platform [m]
@@ -56,7 +56,7 @@ def generate_common_base_params(
 
     if end_effector_attached:
         # the end-effector is moved by 25mm in the y-dir relative to the top surface of the HSA platform
-        params["chiee_off"] = jnp.array([0.0, 0.025, 0.0])
+        params["chiee_off"] = jnp.array([0.0, 0.0, 0.025])
         params["mpl"] = jnp.array(
             0.018
         )  # the end-effector attachment has a mass of 18g
@@ -126,7 +126,7 @@ def generate_base_params_for_fpu(
     # old params (1st ISER submission)
     """ params = {
         "th0": jnp.array(0.0),  # initial orientation angle [rad]
-        "l": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
+        "L": 59e-3 * jnp.ones((num_segments,)),  # length of each rod [m]
         # length of the rigid proximal caps of the rods connecting to the base [m]
         "lpc": 25e-3 * jnp.ones((num_segments,)),
         # length of the rig id distal caps of the rods connecting to the platform [m]

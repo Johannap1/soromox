@@ -1,4 +1,5 @@
 import equinox as eqx
+import jax
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 import numpy as onp
@@ -6,7 +7,6 @@ from typing import Callable, Dict, Tuple, Optional
 
 from .utils import (
     compute_strain_basis,
-    compute_planar_stiffness_matrix,
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
@@ -25,6 +25,7 @@ from diffrax import (
     ConstantStepSize,
     AbstractSolver,
 )
+
 
 class PlanarPCS(eqx.Module):
     """
@@ -103,7 +104,6 @@ class PlanarPCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
-        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_ref: Optional[Array] = None,
@@ -127,14 +127,12 @@ class PlanarPCS(eqx.Module):
                     Density of each segment [kg/m^3]
                 - "g": List/Array of 2 floats [gx, gy]
                     Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats 
+                - "E": List/Array of num_segments floats
                     Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats 
+                - "G": List/Array of num_segments floats
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
-            num_actuators (Optional[int], optional):
-                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -217,19 +215,13 @@ class PlanarPCS(eqx.Module):
         self.xi_ref = xi_ref
 
         # Number of actuators
-        if num_actuators is None:
-            self.num_actuators = int(self.num_active_strains.item())
-        else:
-            self.num_actuators = num_actuators
+        self.num_actuators = int(self.num_active_strains.item())
 
-    def _set_params(
-        self,
-        params: Dict[str, Array],
-    ) -> None:
+    def _set_params(self, params: Dict[str, Array]) -> None:
         """
         Set the parameters of the PCS model.
 
-        Args:    
+        Args:
             params (Dict[str, Array]):
                 Dictionary containing the robot parameters:
                 - "th0": (optional) float
@@ -243,9 +235,9 @@ class PlanarPCS(eqx.Module):
                     Density of each segment [kg/m^3]
                 - "g": List/Array of 2 floats [gx, gy]
                     Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats 
+                - "E": List/Array of num_segments floats
                     Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats 
+                - "G": List/Array of num_segments floats
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
@@ -309,7 +301,9 @@ class PlanarPCS(eqx.Module):
             raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
         rho = jnp.asarray(rho, dtype=jnp.float64)
         if rho.shape != (self.num_segments,):
-            raise ValueError(f"rho must have shape ({self.num_segments},), got {rho.shape}")
+            raise ValueError(
+                f"rho must have shape ({self.num_segments},), got {rho.shape}"
+            )
         self.rho = rho
 
         # Elastic modulus of the segments
@@ -366,16 +360,20 @@ class PlanarPCS(eqx.Module):
                     Density of each segment [kg/m^3]
                 - "g": List/Array of 2 floats [gx, gy]
                     Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats 
+                - "E": List/Array of num_segments floats
                     Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats 
+                - "G": List/Array of num_segments floats
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
+
+        Returns:
+            updated_self (PlanarPCS):
+                A new instance of PlanarPCS with updated parameters.
         """
         # Apply updates sequentially
         updated_self = self
-        
+
         if "th0" in params:
             th0 = params["th0"]
             if not (isinstance(th0, (float, int, jnp.ndarray))):
@@ -384,7 +382,7 @@ class PlanarPCS(eqx.Module):
                 )
             th0 = jnp.asarray(th0, dtype=jnp.float64)
             updated_self = eqx.tree_at(lambda m: m.th0, updated_self, th0)
-        
+
         if "g" in params:
             g = params["g"]
             if not (isinstance(g, (list, jnp.ndarray))):
@@ -392,52 +390,68 @@ class PlanarPCS(eqx.Module):
             g = jnp.asarray(g, dtype=jnp.float64)
             if g.size != 2:
                 raise ValueError(f"g must be a vector of shape (2,), got {g.size}")
-            updated_self = eqx.tree_at(lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(1), g]))
-        
+            updated_self = eqx.tree_at(
+                lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(1), g])
+            )
+
         if "L" in params:
             L = params["L"]
             if not (isinstance(L, (list, jnp.ndarray))):
                 raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
             L = jnp.asarray(L, dtype=jnp.float64)
             if L.shape != (self.num_segments,):
-                raise ValueError(f"L must have shape ({self.num_segments},), got {L.shape}")
+                raise ValueError(
+                    f"L must have shape ({self.num_segments},), got {L.shape}"
+                )
             L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), L]))
-            updated_self = eqx.tree_at(lambda m: (m.L, m.L_cum), updated_self, (L, L_cum))
-        
+            updated_self = eqx.tree_at(
+                lambda m: (m.L, m.L_cum), updated_self, (L, L_cum)
+            )
+
         if "r" in params:
             r = params["r"]
             if not (isinstance(r, (list, jnp.ndarray))):
                 raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
             r = jnp.asarray(r, dtype=jnp.float64)
             if r.shape != (self.num_segments,):
-                raise ValueError(f"r must have shape ({self.num_segments},), got {r.shape}")
+                raise ValueError(
+                    f"r must have shape ({self.num_segments},), got {r.shape}"
+                )
             updated_self = eqx.tree_at(lambda m: m.r, updated_self, r)
-        
+
         if "rho" in params:
             rho = params["rho"]
             if not (isinstance(rho, (list, jnp.ndarray))):
-                raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
+                raise TypeError(
+                    f"rho must be a list or an array, got {type(rho).__name__}"
+                )
             rho = jnp.asarray(rho, dtype=jnp.float64)
             if rho.shape != (self.num_segments,):
-                raise ValueError(f"rho must have shape ({self.num_segments},), got {rho.shape}")
+                raise ValueError(
+                    f"rho must have shape ({self.num_segments},), got {rho.shape}"
+                )
             updated_self = eqx.tree_at(lambda m: m.rho, updated_self, rho)
-        
+
         if "E" in params:
             E = params["E"]
             if not (isinstance(E, (list, jnp.ndarray))):
                 raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
             E = jnp.asarray(E, dtype=jnp.float64)
             if E.shape != (self.num_segments,):
-                raise ValueError(f"E must have shape ({self.num_segments},), got {E.shape}")
+                raise ValueError(
+                    f"E must have shape ({self.num_segments},), got {E.shape}"
+                )
             updated_self = eqx.tree_at(lambda m: m.E, updated_self, E)
-        
+
         if "G" in params:
             G = params["G"]
             if not (isinstance(G, (list, jnp.ndarray))):
                 raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
             G = jnp.asarray(G, dtype=jnp.float64)
             if G.shape != (self.num_segments,):
-                raise ValueError(f"G must have shape ({self.num_segments},), got {G.shape}")
+                raise ValueError(
+                    f"G must have shape ({self.num_segments},), got {G.shape}"
+                )
             updated_self = eqx.tree_at(lambda m: m.G, updated_self, G)
 
         if "D" in params:
@@ -453,10 +467,7 @@ class PlanarPCS(eqx.Module):
         return updated_self
 
     @eqx.filter_jit
-    def classify_segment(
-        self,
-        s: Array,
-    ) -> Tuple[Array, Array]:
+    def classify_segment(self, s: Array) -> Tuple[Array, Array]:
         """
         Classify the point along the robot to the corresponding segment.
 
@@ -477,10 +488,7 @@ class PlanarPCS(eqx.Module):
         return segment_idx, s_local
 
     @eqx.filter_jit
-    def strain(
-        self,
-        q: Array,
-    ) -> Array:
+    def strain(self, q: Array) -> Array:
         """
         Compute the strain vector from the generalized coordinates.
 
@@ -495,11 +503,7 @@ class PlanarPCS(eqx.Module):
         return xi
 
     @eqx.filter_jit
-    def chi(
-        self,
-        xi: Array,
-        s: Array,
-    ) -> Array:
+    def chi(self, xi: Array, s: Array) -> Array:
         """
         Compute the forward kinematics of the robot.
 
@@ -561,11 +565,7 @@ class PlanarPCS(eqx.Module):
         return chi_s
 
     @eqx.filter_jit
-    def forward_kinematics(
-        self,
-        q: Array,
-        s: Array,
-    ) -> Array:
+    def forward_kinematics(self, q: Array, s: Array) -> Array:
         """
         Compute the forward kinematics of the robot at a point s along the robot.
 
@@ -582,6 +582,7 @@ class PlanarPCS(eqx.Module):
 
         return chi
 
+    @eqx.filter_jit
     def _J_local(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a point s along the robot.
@@ -663,6 +664,7 @@ class PlanarPCS(eqx.Module):
 
         return _J_local
 
+    @eqx.filter_jit
     def _final_size_jacobian(self, J_full: Array) -> Array:
         """
         Convert the Jacobian or its derivative from the full computation form to the selected strains form.
@@ -677,6 +679,7 @@ class PlanarPCS(eqx.Module):
 
         return J_final
 
+    @eqx.filter_jit
     def _jacobian_bodyframe_full(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a point s along the robot in the body frame (for every strains)
@@ -745,6 +748,7 @@ class PlanarPCS(eqx.Module):
 
         return J_global
 
+    @eqx.filter_jit
     def _J_Jd(self, q: Array, qd: Array, s: Array) -> Tuple[Array, Array]:
         """
         Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot.
@@ -775,9 +779,7 @@ class PlanarPCS(eqx.Module):
         sum_Jj_xid_j = compute_weighted_sums(
             _J_local, xid, self.num_segments
         )  # shape: (num_segments, 3)
-        adjoint_sum = vmap(lie.adjoint_se2)(
-            sum_Jj_xid_j
-        )  # shape: (num_segments, 3, 3)
+        adjoint_sum = vmap(lie.adjoint_se2)(sum_Jj_xid_j)  # shape: (num_segments, 3, 3)
 
         # Compute the time-derivative of the Jacobian
         _Jd_local = jnp.einsum(
@@ -793,6 +795,7 @@ class PlanarPCS(eqx.Module):
 
         return _J_local, _Jd_local
 
+    @eqx.filter_jit
     def _jacobian_and_derivative_bodyframe_full(
         self, q: Array, qd: Array, s: Array
     ) -> Tuple[Array, Array]:
@@ -868,23 +871,38 @@ class PlanarPCS(eqx.Module):
             Adj_gi,
             _J_local,
         )
-        _Jd_global = jnp.einsum(
-            "ij, njk -> nik",
-            Adj_gi,
-            _Jd_local,
-        )
-
         J_global = self._final_size_jacobian(_J_global) @ self.B_xi
-        Jd_global = self._final_size_jacobian(_Jd_global) @ self.B_xi
+
+        # TODO:
+        # J_d = d(Ad_g * J_local) / dt
+        #       = Ad_g * d(J_local) / dt + d(Ad_g) / dt * J_local
+        # we need to add the term d(Ad_g) / dt * J_local !!!
+
+        # d(Ad_g) / dt = Ad_g @ adj_eta
+
+        # Not working yet, still corrections to be done
+        # J_local = self._final_size_jacobian(_J_local) @ self.B_xi
+        # eta_i = J_local @ qd  # Strain rate vector at point s
+        # print(f"eta_i: {eta_i}")
+        # thetad = eta_i[0]  # Angular velocity component
+        # adj_eta_i = lie.adjoint_se2(jnp.stack([thetad, 0.0, 0.0]))
+        # d_Adj_gi_dt = Adj_gi @ adj_eta_i
+        # _Jd_global = (
+        #     jnp.einsum("ij, njk -> nik", Adj_gi, _Jd_local) +
+        #     jnp.einsum("ij, njk -> nik", d_Adj_gi_dt,  _J_local)
+        # )
+        # Jd_global = self._final_size_jacobian(_Jd_global) @ self.B_xi
+
+        # Meanwhile
+        def J_of_q(q_):
+            return self.jacobian_inertialframe(q_, s)
+
+        _, Jd_global = jax.jvp(J_of_q, (q,), (qd,))
 
         return J_global, Jd_global
 
     @eqx.filter_jit
-    def jacobian(
-        self,
-        q: Array,
-        s: Array,
-    ) -> Array:
+    def jacobian(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a point s along the robot in the inertial frame.
 
@@ -901,10 +919,7 @@ class PlanarPCS(eqx.Module):
 
     @eqx.filter_jit
     def jacobian_and_derivative(
-        self,
-        q: Array,
-        qd: Array,
-        s: Array,
+        self, q: Array, qd: Array, s: Array
     ) -> Tuple[Array, Array]:
         """
         Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot in the inertial frame.
@@ -925,6 +940,7 @@ class PlanarPCS(eqx.Module):
     # ==========================================
     # Useful functions for the system
 
+    @eqx.filter_jit
     def _local_cross_sectional_area(self, i: int) -> Array:
         """
         Compute the local cross-sectional area for the i-th segment.
@@ -935,9 +951,26 @@ class PlanarPCS(eqx.Module):
         Returns:
             A_i (Array): local cross-sectional area of the i-th segment
         """
-        A_i = jnp.pi * self.r[i] ** 2  # Cross-sectional area
+        # Cross-sectional area
+        A_i = jnp.pi * self.r[i] ** 2
         return A_i
 
+    @eqx.filter_jit
+    def _local_second_moment_of_area(self, i: int) -> Array:
+        """
+        Compute the local second moment of area for the i-th segment.
+
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            I_i (Array): local second moment of area of the i-th segment
+        """
+        # Second moment of area
+        I_i = jnp.pi * self.r[i] ** 4 / 4
+        return I_i
+
+    @eqx.filter_jit
     def _local_mass_matrix(self, i: int) -> Array:
         """
         Compute the local mass matrix for the i-th segment.
@@ -949,7 +982,7 @@ class PlanarPCS(eqx.Module):
         """
         rho_i = self.rho[i]
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
-        I_i = A_i**2 / (4 * jnp.pi)  # Second moment of area
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
 
         M_i = rho_i * jnp.diag(jnp.array([I_i, A_i, A_i]))
         return M_i
@@ -957,6 +990,7 @@ class PlanarPCS(eqx.Module):
     # ===========================================
     # Dynamical matrices computation
 
+    @eqx.filter_jit
     def _inertia_full_matrix(self, q: Array) -> Array:
         """
         Compute the full inertia matrix of the robot.
@@ -1001,7 +1035,7 @@ class PlanarPCS(eqx.Module):
         return B_full
 
     @eqx.filter_jit
-    def inertia_matrix(self, q: Array,) -> Array:
+    def inertia_matrix(self, q: Array) -> Array:
         """
         Compute the inertia matrix of the robot.
 
@@ -1017,6 +1051,7 @@ class PlanarPCS(eqx.Module):
 
         return B
 
+    @eqx.filter_jit
     def _coriolis_full_matrix(self, q: Array, qd: Array) -> Array:
         """
         Compute the full Coriolis matrix of the robot.
@@ -1041,10 +1076,7 @@ class PlanarPCS(eqx.Module):
                 J_j, Jd_j = self._jacobian_and_derivative_bodyframe_full(q, qd, Xs_j)
                 return Ws_j * (
                     J_j.T
-                    @ (
-                        M_i @ Jd_j
-                        + lie.coadjoint_se2(J_j @ self.B_xi @ qd) @ M_i @ J_j
-                    )
+                    @ (M_i @ Jd_j + lie.coadjoint_se2(J_j @ self.B_xi @ qd) @ M_i @ J_j)
                 )
 
             C_blocks_i = vmap(C_j)(jnp.arange(self.num_gauss_points))
@@ -1075,7 +1107,8 @@ class PlanarPCS(eqx.Module):
 
         return C
 
-    def _gravitational_force_full(self, q: Array) -> Array:
+    @eqx.filter_jit
+    def _gravitational_full_force(self, q: Array) -> Array:
         """
         Compute the full gravitational force acting on the robot.
 
@@ -1096,13 +1129,11 @@ class PlanarPCS(eqx.Module):
                 Xs_j = Xs_scaled[j]
                 Ws_j = Ws_scaled[j]
                 Ad_g_inv_j = lie.Adjoint_g_inv_SE2(
-                    lie.exp_SE2(
-                        self.forward_kinematics(q, Xs_j)
-                    )
+                    lie.exp_SE2(self.forward_kinematics(q, Xs_j))
                 )
                 J_j = self._jacobian_bodyframe_full(q, Xs_j)
 
-                return - Ws_j * J_j.T @ M_i @ Ad_g_inv_j @ self.g
+                return -Ws_j * J_j.T @ M_i @ Ad_g_inv_j @ self.g
 
             G_blocks_segment_i = vmap(G_j)(jnp.arange(self.num_gauss_points))
 
@@ -1137,20 +1168,44 @@ class PlanarPCS(eqx.Module):
         Returns:
             G (Array): Gravitational force of shape (num_active_strains,).
         """
-        G_full = self._gravitational_force_full(q)
+        G_full = self._gravitational_full_force(q)
 
         G = self.B_xi.T @ G_full
 
         return G
-    
-    def _stiffness(self, formulate_in_strain_space: bool = False,) -> Array:
-        # cross-sectional area and second moment of area
-        A = jnp.pi * self.r**2
-        Ib = A**2 / (4 * jnp.pi)
 
+    @eqx.filter_jit
+    def _local_stiffness_matrix(self, i: int) -> Array:
+        """
+        Compute the local stiffness matrix of a planar system for a rod aligned along the x-axis.
+
+        Args:
+            i (int): index of the segment
+
+        Returns:
+            S_i (Array): Local stiffness matrix of shape (3, 3) for the i-th segment.
+        """
+        I_i = self._local_second_moment_of_area(i)  # Second moment of area
+        A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
+
+        S_i = self.L[i] * jnp.diag(
+            jnp.stack(
+                [
+                    I_i * self.E[i],  # bending Z
+                    A_i * self.E[i],  # axial X
+                    4 / 3 * A_i * self.G[i],  # shear Y
+                ],
+                axis=0,
+            )
+        )
+
+        return S_i
+
+    @eqx.filter_jit
+    def _stiffness(self, formulate_in_strain_space: bool = False) -> Array:
         # stiffness matrix of shape (num_segments, 3, 3)
-        S_sms = vmap(compute_planar_stiffness_matrix)(self.L, A, Ib, self.E, self.G)
-        
+        S_sms = vmap(self._local_stiffness_matrix)(jnp.arange(self.num_segments))
+
         # we define the elastic matrix of shape (num_strains, num_strains) as K(xi) = K @ xi where K is equal to
         S = blk_diag(S_sms)
 
@@ -1159,6 +1214,7 @@ class PlanarPCS(eqx.Module):
 
         return S
 
+    @eqx.filter_jit
     def _stiffness_full_matrix(self) -> Array:
         """
         Compute the full stiffness matrix of the robot.
@@ -1181,7 +1237,7 @@ class PlanarPCS(eqx.Module):
         K = self._stiffness(formulate_in_strain_space=False)
 
         return K
-    
+
     @eqx.filter_jit
     def elastic_force(self, q: Array) -> Array:
         """
@@ -1198,6 +1254,7 @@ class PlanarPCS(eqx.Module):
 
         return tau_el
 
+    @eqx.filter_jit
     def _damping_full_matrix(self) -> Array:
         """
         Compute the full damping matrix of the robot.
@@ -1293,7 +1350,7 @@ class PlanarPCS(eqx.Module):
 
         return U_K
 
-    # @eqx.filter_jit
+    @eqx.filter_jit
     def gravitational_energy(self, q: Array) -> Array:
         """
         Compute the gravitational energy of the robot.
@@ -1318,10 +1375,10 @@ class PlanarPCS(eqx.Module):
                 p_j = (
                     self.forward_kinematics(q, Xs_j).at[0].set(0.0)
                 )  # Set the orientation angle to 0 for gravitational energy computation
-                return - Ws_j * rho_i * A_i * jnp.dot(p_j, self.g)
+                return -Ws_j * rho_i * A_i * jnp.dot(p_j, self.g)
 
             U_G_blocks_segment_i = vmap(U_G_j)(jnp.arange(self.num_gauss_points))
-            
+
             # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
             # U_G_blocks_segment_i = jnp.stack(
             #     [U_G_j(j) for j in range(self.num_gauss_points)], axis=0
@@ -1330,7 +1387,7 @@ class PlanarPCS(eqx.Module):
             return U_G_blocks_segment_i
 
         U_G_blocks_tot = vmap(U_G_i)(jnp.arange(self.num_segments))
-        
+
         # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
         # U_G_blocks_tot = jnp.stack(
         #     [U_G_i(i) for i in range(self.num_segments)], axis=0
@@ -1374,7 +1431,12 @@ class PlanarPCS(eqx.Module):
         return E
 
     @eqx.filter_jit
-    def operational_space_dynamical_matrices(self, q: Array, qd: Array, s: Array, operational_space_selector: Tuple = (True, True, True),
+    def operational_space_dynamical_matrices(
+        self,
+        q: Array,
+        qd: Array,
+        s: Array,
+        operational_space_selector: Tuple = (True, True, True),
     ) -> Tuple[Array, Array, Array, Array, Array]:
         """
         Compute the operational space dynamical matrices for the robot at a point s along the robot.
@@ -1393,14 +1455,11 @@ class PlanarPCS(eqx.Module):
             Jd (Array): Time-derivative of the Jacobian at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
             JB_pinv (Array): Dynamically-consistent pseudo-inverse of the Jacobian, shape (num_active_strains, num_operational_space_dims).
         """
-        # classify the point along the robot to the corresponding segment
-        _, s_local = self.classify_segment(s)
-
         # make operational_space_selector a boolean array
         operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
-        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s_local)
+        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s)
 
         J = J[operational_space_selector, :]
         Jd = Jd[operational_space_selector, :]
@@ -1425,10 +1484,7 @@ class PlanarPCS(eqx.Module):
 
     @eqx.filter_jit
     def forward_dynamics(
-        self,
-        t: float,
-        y: Array,
-        actuation_args: Optional[Tuple] = None,
+        self, t: float, y: Array, actuation_args: Optional[Tuple] = None
     ) -> Array:
         """
         Forward dynamics function.
@@ -1455,11 +1511,11 @@ class PlanarPCS(eqx.Module):
             u, tau_ext = actuation_args
         else:
             raise ValueError("actuation_args must be a tuple of length 1 or 2.")
-        
+
         if u is None:
-            u = jnp.zeros((self.num_actuators, ))
+            u = jnp.zeros((self.num_actuators,))
         if tau_ext is None:
-            tau_ext = jnp.zeros((q.shape[-1], ))
+            tau_ext = jnp.zeros((q.shape[-1],))
 
         # evaluate the dynamical matrices
         B = self.inertia_matrix(q)
@@ -1470,7 +1526,9 @@ class PlanarPCS(eqx.Module):
         tau_u = self.actuation_force(q, u)
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
-        qdd = B_inv @ (tau_u + tau_ext - C @ qd - G - tau_el - D @ qd)  # Compute the acceleration
+        qdd = B_inv @ (
+            tau_u + tau_ext - C @ qd - G - tau_el - D @ qd
+        )  # Compute the acceleration
 
         yd = jnp.concatenate([qd, qdd])
 
@@ -1523,9 +1581,9 @@ class PlanarPCS(eqx.Module):
         """
         y0 = jnp.concatenate([q0, qd0])  # Initial state vector
         if u is None:
-            u = jnp.zeros((self.num_actuators, ))
+            u = jnp.zeros((self.num_actuators,))
         if tau_ext is None:
-            tau_ext = jnp.zeros((q0.shape[-1], ))
+            tau_ext = jnp.zeros((q0.shape[-1],))
 
         term = ODETerm(self.forward_dynamics)
 

@@ -4,13 +4,9 @@ from soromox.systems.planar_pcs import PlanarPCS
 
 from jax import Array
 from jax import numpy as jnp
-from functools import partial
 from numpy.testing import assert_allclose
-from pathlib import Path
 
 from soromox.utils.tolerance import Tolerance
-
-from typing import Optional, Literal
 
 jax.config.update("jax_enable_x64", True)  # double precision
 
@@ -41,8 +37,7 @@ def constant_strain_inverse_kinematics_fn(params, xi_ref, chi, s) -> Array:
     return q
 
 
-def test_planar_cs_num(
-):
+def test_planar_cs_num():
     """
     Test the planar constant strain system with numerical integration and Jacobian for 1 segment.
     """
@@ -56,10 +51,7 @@ def test_planar_cs_num(
         "G": 1e7 * jnp.ones((1,)),  # Shear modulus [Pa]
     }
     params["D"] = 1e-3 * jnp.diag(
-        (
-            jnp.array([[1e0, 1e3, 1e3]])
-            * params["L"][:, None]
-        ).flatten()
+        (jnp.array([[1e0, 1e3, 1e3]]) * params["L"][:, None]).flatten()
     )
     # activate all strains (i.e. bending, shear, and axial)
     strain_selector = jnp.ones((3,), dtype=bool)
@@ -67,7 +59,7 @@ def test_planar_cs_num(
     xi_ref = jnp.array([0.0, 0.0, 1.0])
 
     num_segments = 1
-    
+
     robot = PlanarPCS(
         num_segments=num_segments,
         params=params,
@@ -88,11 +80,7 @@ def test_planar_cs_num(
             params["L"][0] / 2,
             jnp.array([0.0, 0.0, params["L"][0] / 2]),
         ),
-        (
-            jnp.zeros((3,)), 
-            params["L"][0], 
-            jnp.array([0.0, 0.0, params["L"][0]])
-        ),
+        (jnp.zeros((3,)), params["L"][0], jnp.array([0.0, 0.0, params["L"][0]])),
         (
             jnp.array([0.0, 0.0, 1.0]),
             params["L"][0],
@@ -124,7 +112,7 @@ def test_planar_cs_num(
     K = robot.stiffness_matrix()
     D = robot.damping_matrix()
     alpha = robot.actuation_force(q, u)
-    
+
     assert not jnp.isnan(B).any(), "B matrix contains NaN!"
     assert not jnp.isnan(C).any(), "C matrix contains NaN!"
     assert not jnp.isnan(G).any(), "G matrix contains NaN!"
@@ -132,7 +120,7 @@ def test_planar_cs_num(
     assert not jnp.isnan(D).any(), "D matrix contains NaN!"
     assert not jnp.isnan(alpha).any(), "alpha matrix contains NaN!"
     print("testing K")
-    assert_allclose(K@q, jnp.zeros((3,)))
+    assert_allclose(K @ q, jnp.zeros((3,)))
     print("[Valid test]\n")
     print("testing alpha")
     assert_allclose(
@@ -225,7 +213,7 @@ def test_planar_cs_num(
     assert_allclose(qdd, jnp.zeros((3,)), rtol=Tolerance.rtol(), atol=Tolerance.atol())
     assert_allclose(qdres, qd, rtol=Tolerance.rtol(), atol=Tolerance.atol())
     print("[Valid test]\n")
-    
+
     # test inverse kinematics
     print("\nTesting inverse kinematics... ------------------------")
     params_ik = params.copy()
@@ -240,12 +228,12 @@ def test_planar_cs_num(
     for ik_th0 in ik_th0_ls:
         params_ik["th0"] = jnp.array(ik_th0)
         robot_ik = PlanarPCS(
-                num_segments=1,
-                params=params_ik,
-                order_gauss=5,
-                strain_selector=strain_selector,
-                xi_ref=xi_ref,
-            )
+            num_segments=1,
+            params=params_ik,
+            order_gauss=5,
+            strain_selector=strain_selector,
+            xi_ref=xi_ref,
+        )
         for q in ik_q_ls:
             s = params_ik["L"][0]
             print("q = ", q, "s = ", s, "th0 = ", ik_th0)
@@ -255,7 +243,8 @@ def test_planar_cs_num(
             assert not jnp.isnan(q_ik).any(), "Inverse kinematics output contains NaN!"
             assert_allclose(q, q_ik, rtol=Tolerance.rtol(), atol=Tolerance.atol())
             print("[Valid test]\n")
-            
+
+
 def test_individual_call():
     """
     Test the individual call of the PlanarPCS class.
@@ -270,15 +259,14 @@ def test_individual_call():
         "G": 1e7 * jnp.ones((1,)),  # Shear modulus [Pa]
     }
     params["D"] = 1e-3 * jnp.diag(
-        (
-            jnp.array([[1e0, 1e3, 1e3]])
-            * params["L"][:, None]
-        ).flatten()
+        (jnp.array([[1e0, 1e3, 1e3]]) * params["L"][:, None]).flatten()
     )
     strain_selector = jnp.ones((3,), dtype=bool)
-    strain_selector = strain_selector.at[2].set(False)  # disable axial strain for this test
+    strain_selector = strain_selector.at[2].set(
+        False
+    )  # disable axial strain for this test
     xi_ref = jnp.array([0.0, 0.0, 1.0])
-    
+
     robot = PlanarPCS(
         num_segments=1,
         params=params,
@@ -290,7 +278,7 @@ def test_individual_call():
     # Test individual calls
     q = jnp.zeros((2,))
     s = params["L"][0]
-    
+
     print("\nTest robot.forward_kinematics(q, s)-------------------------")
     try:
         chi = robot.forward_kinematics(q=q, s=s)
@@ -298,7 +286,7 @@ def test_individual_call():
         print("[Valid test] Forward kinematics successful.")
     except Exception as e:
         print(f"[Error] Forward kinematics failed: {e}")
-    
+
     print("\nTest robot.jacobian(q, s)-------------------------")
     try:
         J = robot.jacobian(q=q, s=s)
@@ -306,7 +294,7 @@ def test_individual_call():
         print("[Valid test] Jacobian computation successful.")
     except Exception as e:
         print(f"[Error] Jacobian computation failed: {e}")
-    
+
     print("\nTest robot.jacobian_and_derivative(q, qd, s)-------------------------")
     try:
         J, Jd = robot.jacobian_and_derivative(q=q, qd=jnp.zeros((2,)), s=s)
@@ -315,7 +303,7 @@ def test_individual_call():
         print("[Valid test] Jacobian and derivative computation successful.")
     except Exception as e:
         print(f"[Error] Jacobian and derivative computation failed: {e}")
-    
+
     print("\nTest robot.jacobian_bodyframe(q, s)-------------------------")
     try:
         J_local = robot.jacobian_bodyframe(q=q, s=s)
@@ -323,7 +311,7 @@ def test_individual_call():
         print("[Valid test] Local Jacobian computation successful.")
     except Exception as e:
         print(f"[Error] Local Jacobian computation failed: {e}")
-    
+
     print("\nTest robot.jacobian_inertialframe(q, s)-------------------------")
     try:
         J_global = robot.jacobian_inertialframe(q=q, s=s)
@@ -331,25 +319,35 @@ def test_individual_call():
         print("[Valid test] Global Jacobian computation successful.")
     except Exception as e:
         print(f"[Error] Global Jacobian computation failed: {e}")
-    
-    print("\nTest robot.jacobian_and_derivative_bodyframe(q, qd, s)-------------------------")
+
+    print(
+        "\nTest robot.jacobian_and_derivative_bodyframe(q, qd, s)-------------------------"
+    )
     try:
-        J_local, Jd_local = robot.jacobian_and_derivative_bodyframe(q=q, qd=jnp.zeros((2,)), s=s)
+        J_local, Jd_local = robot.jacobian_and_derivative_bodyframe(
+            q=q, qd=jnp.zeros((2,)), s=s
+        )
         assert not jnp.isnan(J_local).any(), "Local Jacobian contains NaN!"
         assert not jnp.isnan(Jd_local).any(), "Local Jacobian derivative contains NaN!"
         print("[Valid test] Local Jacobian and derivative computation successful.")
     except Exception as e:
         print(f"[Error] Local Jacobian and derivative computation failed: {e}")
-    
-    print("\nTest robot.jacobian_and_derivative_inertialframe(q, qd, s)-------------------------")
+
+    print(
+        "\nTest robot.jacobian_and_derivative_inertialframe(q, qd, s)-------------------------"
+    )
     try:
-        J_global, Jd_global = robot.jacobian_and_derivative_inertialframe(q=q, qd=jnp.zeros((2,)), s=s)
+        J_global, Jd_global = robot.jacobian_and_derivative_inertialframe(
+            q=q, qd=jnp.zeros((2,)), s=s
+        )
         assert not jnp.isnan(J_global).any(), "Global Jacobian contains NaN!"
-        assert not jnp.isnan(Jd_global).any(), "Global Jacobian derivative contains NaN!"
+        assert not jnp.isnan(Jd_global).any(), (
+            "Global Jacobian derivative contains NaN!"
+        )
         print("[Valid test] Global Jacobian and derivative computation successful.")
     except Exception as e:
         print(f"[Error] Global Jacobian and derivative computation failed: {e}")
-        
+
     print("\nTest robot.inertia_matrix(q)-------------------------")
     try:
         B = robot.inertia_matrix(q=q)
@@ -357,7 +355,7 @@ def test_individual_call():
         print("[Valid test] Inertia matrix computation successful.")
     except Exception as e:
         print(f"[Error] Inertia matrix computation failed: {e}")
-    
+
     print("\nTest robot.coriolis_matrix(q, qd)-------------------------")
     try:
         C = robot.coriolis_matrix(q=q, qd=jnp.zeros((2,)))
@@ -365,7 +363,7 @@ def test_individual_call():
         print("[Valid test] Coriolis matrix computation successful.")
     except Exception as e:
         print(f"[Error] Coriolis matrix computation failed: {e}")
-        
+
     print("\nTest robot.gravitational_force(q)-------------------------")
     try:
         G = robot.gravitational_force(q=q)
@@ -373,7 +371,7 @@ def test_individual_call():
         print("[Valid test] Gravitational force computation successful.")
     except Exception as e:
         print(f"[Error] Gravitational force computation failed: {e}")
-        
+
     print("\nTest robot.stiffness_matrix()-------------------------")
     try:
         K = robot.stiffness_matrix()
@@ -381,7 +379,7 @@ def test_individual_call():
         print("[Valid test] Stiffness matrix computation successful.")
     except Exception as e:
         print(f"[Error] Stiffness matrix computation failed: {e}")
-        
+
     print("\nTest robot.damping_matrix()-------------------------")
     try:
         D = robot.damping_matrix()
@@ -389,7 +387,7 @@ def test_individual_call():
         print("[Valid test] Damping matrix computation successful.")
     except Exception as e:
         print(f"[Error] Damping matrix computation failed: {e}")
-        
+
     print("\nTest robot.actuation_force(q, u)-------------------------")
     try:
         u = jnp.zeros((2,))  # no external forces
@@ -398,7 +396,7 @@ def test_individual_call():
         print("[Valid test] Actuation force computation successful.")
     except Exception as e:
         print(f"[Error] Actuation force computation failed: {e}")
-    
+
     print("\nTest robot.forward_dynamics(t, y, u)-------------------------")
     try:
         t = 0.0
@@ -410,6 +408,7 @@ def test_individual_call():
         print("[Valid test] Forward dynamics computation successful.")
     except Exception as e:
         print(f"[Error] Forward dynamics computation failed: {e}")
+
 
 if __name__ == "__main__":
     print("Running tests for Planar Constant Strain (1 segment)...")

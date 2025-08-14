@@ -1,59 +1,47 @@
 import jax
 
-jax.config.update("jax_enable_x64", True)  # double precision
-from jax import Array, jacfwd, jacrev, jit, random, vmap
+from jax import Array, jacfwd, jacrev, jit, random
 from jax import numpy as jnp
-from functools import partial
-import numpy as onp
 from pathlib import Path
 import scipy as sp
 from typing import Callable, Dict, Tuple
 
-import soromox
-from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL
-from soromox.systems import planar_hsa
 from soromox.utils.numerical_jacobian import approx_derivative
 
-num_segments = 1
-num_rods_per_segment = 2
+import soromox
+from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL
 
-# filepath to symbolic expressions
-sym_exp_filepath = (
-    Path(soromox.__file__).parent
-    / "symbolic_expressions"
-    / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
-)
+jax.config.update("jax_enable_x64", True)  # double precision
+from soromox.systems.planar_hsa import PlanarHSA
 
 
 def factory_fn(
-    params: Dict[str, Array], verbose: bool = False
+    sym_exp_filepath: Path,
+    params: Dict[str, Array],
+    strain_selector: Array,
+    verbose: bool = False,
 ) -> Tuple[Callable, Callable]:
     """
     Factory function for the planar HSA.
     Args:
+        sym_exp_filepath: path to the symbolic expressions file
         params: dictionary with robot parameters
+        strain_selector: boolean array to select the strains to be activated
         verbose: flag to print additional information
     Returns:
         phi2chi_static_model_fn: function that maps motor angles to the end-effector pose
         jac_phi2chi_static_model_fn: function that computes the Jacobian between the actuation space and the task-space
     """
-    (
-        forward_kinematics_virtual_backbone_fn,
-        forward_kinematics_end_effector_fn,
-        jacobian_end_effector_fn,
-        inverse_kinematics_end_effector_fn,
-        dynamical_matrices_fn,
-        sys_helpers,
-    ) = planar_hsa.factory(sym_exp_filepath, strain_selector)
-    dynamical_matrices_fn = partial(dynamical_matrices_fn, params)
-    forward_kinematics_end_effector_fn = jit(
-        partial(forward_kinematics_end_effector_fn, params)
+    robot = PlanarHSA(
+        sym_exp_filepath=sym_exp_filepath,
+        params=params,
+        strain_selector=strain_selector,
     )
-    jacobian_end_effector_fn = jit(partial(jacobian_end_effector_fn, params))
 
     def residual_fn(q: Array, phi: Array) -> Array:
-        qd = jnp.zeros_like(q)
-        _, _, G, K, _, alpha = dynamical_matrices_fn(q, qd, phi=phi)
+        G = robot.gravitational_force(q)
+        K = robot.stiffness_vector(q)
+        alpha = robot.actuation_matrix(q, phi)
         res = alpha - G - K
         return jnp.square(res).mean()
 
@@ -118,7 +106,7 @@ def factory_fn(
             aux: dictionary with auxiliary data
         """
         q, aux = phi2q_static_model_fn(phi, q0=q0)
-        chi = forward_kinematics_end_effector_fn(q)
+        chi = robot.forward_kinematics_end_effector_fn(q)
         aux["chi"] = chi
         return chi, aux
 
@@ -140,7 +128,7 @@ def factory_fn(
         )
 
         # evaluate the closed-form, analytical jacobian of the forward kinematics
-        J_q2chi = jacobian_end_effector_fn(q)
+        J_q2chi = robot.jacobian_end_effector_fn(q)
 
         # evaluate the Jacobian between the actuation and the task-space
         J_phi2chi = J_q2chi @ J_phi2q
@@ -151,13 +139,28 @@ def factory_fn(
 
 
 if __name__ == "__main__":
+    num_segments = 1
+    num_rods_per_segment = 2
+
+    # filepath to symbolic expressions
+    sym_exp_filepath = (
+        Path(soromox.__file__).parent
+        / "symbolic_expressions"
+        / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
+    )
+
     # activate all strains (i.e. bending, shear, and axial)
     strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
     params = PARAMS_FPU_CONTROL
-    phi_max = params["phi_max"].flatten()
 
     # call the factory function
-    phi2chi_static_model_fn, jac_phi2chi_static_model_fn = factory_fn(params)
+    phi2chi_static_model_fn, jac_phi2chi_static_model_fn = factory_fn(
+        sym_exp_filepath=sym_exp_filepath,
+        params=params,
+        strain_selector=strain_selector,
+    )
+
+    phi_max = params["phi_max"].flatten()
 
     # define initial configuration
     q0 = jnp.array([0.0, 0.0, 0.0])

@@ -125,7 +125,7 @@ def symbolically_derive_pendulum_model(
         "params_syms": {
             "m": m_syms,
             "I": I_syms,
-            "l": l_syms,
+            "L": l_syms,
             "lc": lc_syms,
             "g": g_syms,
         },
