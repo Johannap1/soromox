@@ -1182,7 +1182,7 @@ class PCS(eqx.Module):
             i (int): index of the segment
 
         Returns:
-            S_i (Array): Local stiffness matrix of shape (3, 3) for the i-th segment.
+            S_i (Array): Local stiffness matrix of shape (6, 6) for the i-th segment.
         """
         I_i = self._local_second_moment_of_area(i)  # Second moment of area
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
@@ -1457,14 +1457,11 @@ class PCS(eqx.Module):
             Jd (Array): Time-derivative of the Jacobian at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
             JB_pinv (Array): Dynamically-consistent pseudo-inverse of the Jacobian, shape (num_active_strains, num_operational_space_dims).
         """
-        # classify the point along the robot to the corresponding segment
-        _, s_local = self.classify_segment(s)
-
         # make operational_space_selector a boolean array
         operational_space_selector = onp.array(operational_space_selector, dtype=bool)
 
         # Jacobian and its time-derivative
-        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s_local)
+        J, Jd = self.jacobian_and_derivative_inertialframe(q, qd, s)
 
         J = J[operational_space_selector, :]
         Jd = Jd[operational_space_selector, :]
