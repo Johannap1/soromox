@@ -441,7 +441,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
 
         return I_i
 
-    # @eqx.filter_jit
+    @eqx.filter_jit
     def actuation_matrix(self, q: Array) -> Array:
         """
         Compute the actuation matrix of the robot.
