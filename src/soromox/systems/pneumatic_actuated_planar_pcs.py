@@ -132,7 +132,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
             segment_actuation_selector = jnp.ones(num_segments, dtype=bool)
 
         self.num_actuators = (
-            int(jnp.sum(segment_actuation_selector)) * 2
+            int(jnp.sum(segment_actuation_selector)) * self.num_chambers_per_segment
         )  # each segment has two control inputs u1 and u2
 
         actuation_basis = jnp.zeros((2 * self.num_segments, self.num_actuators))
