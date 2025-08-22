@@ -76,13 +76,15 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
             - p2 = u2 (left chamber)
 
     """
+    num_actuators: int = eqx.field(static=True)  # number of actuators (control inputs) for the robot (2 per actuated segment in the case of planar pneumatically-actuated PCS)
+    num_chambers_per_segment: int = eqx.field(static=True, default=2)  # number of pneumatic chambers per segment
+    
     r_chamber_in: Array  # inner radius of each segment's chamber, shape (num_segments,)
     r_chamber_out: (
         Array  # outer radius of each segment's chamber, shape (num_segments,)
     )
     phi_chamber: Array  # sector angle of each segment's chamber, shape (num_segments,)
     d_chamber: Array  # radial distance of the center of the chambers from the centerline of the backbone, shape (num_segments,)
-    num_chambers_per_segment: int = eqx.field(static=True, default=2)  # number of pneumatic chambers per segment
 
     actuation_basis: Array  # actuation basis, shape (num_segments * 2, num_actuators)
 
