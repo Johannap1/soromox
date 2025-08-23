@@ -458,7 +458,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
             A (Array): Actuation matrix of shape (num_active_strains, num_actuators)
         """
 
-        def A_segment_i(i: int) -> Array:
+        def _actuation_matrix_segment_i(i: int) -> Array:
             # Area of one pneumatic chamber
             A_one_chamber = self._local_chamber_cross_sectional_area(i)
 
@@ -527,7 +527,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
 
             return A_segment_i
 
-        A_blocks_tot = vmap(A_segment_i)(
+        A_blocks_tot = vmap(_actuation_matrix_segment_i)(
             jnp.arange(self.num_segments),
         )
 
