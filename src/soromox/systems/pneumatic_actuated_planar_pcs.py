@@ -153,7 +153,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
 
     def _set_params(self, params: Dict[str, Array]):
         """
-        Set the parameters of the tendon-driven planar PCS.
+        Set the parameters of the PneumaticallyActuatedPlanarPCS.
 
         Args:
             params (Dict[str, Array]): Dictionary containing the parameters of the robot.
@@ -246,7 +246,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
         self, params: Dict[str, Array]
     ) -> "PneumaticActuatedPlanarPCS":
         """
-        Update the parameters of the tendon-driven planar PCS.
+        Update the parameters of the PneumaticallyActuatedPlanarPCS.
 
         Args:
             params (Dict[str, Array]):
