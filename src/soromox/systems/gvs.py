@@ -1,17 +1,47 @@
+__all__ = ["GVS", "Basis", "Joint", "Link"]
+from diffrax import (
+    diffeqsolve,
+    ODETerm,
+    SaveAt,
+    Tsit5,
+    PIDController,
+    ConstantStepSize,
+    AbstractSolver,
+)
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap, lax, Array
 import math
+from typing import List, Tuple, Callable, Optional
+from typing import cast
 
-import equinox as eqx
 
+from soromox.systems.dynamical_system import DynamicalSystem
 from soromox.utils.basic import compute_strain_basis
 from soromox.utils.integration import (
     gauss_quadrature,
 )
-
 import soromox.utils.lie_algebra as lie
 
+from soromox.utils.gvs.custom_types import (
+    LinkAttributes,
+    JointAttributes,
+    BasisAttributes,
+    SegmentData,
+    JointOperand,
+    GeometricOperand,
+)
+from soromox.utils.gvs.joint_basis import (
+    B_Fixed,
+    B_Revolute,
+    B_Prismatic,
+    B_Helical,
+    B_Cylindrical,
+    B_Planar,
+    B_Spherical,
+    B_Free,
+)
 from soromox.utils.gvs.strain_basis import (
     B_Monomial,
     dof_Monomial,
@@ -25,38 +55,6 @@ from soromox.utils.gvs.strain_basis import (
     dof_Gaussian,
     B_IMQ,
     dof_IMQ,
-)
-from soromox.utils.gvs.joint_basis import (
-    B_Fixed,
-    B_Revolute,
-    B_Prismatic,
-    B_Helical,
-    B_Cylindrical,
-    B_Planar,
-    B_Spherical,
-    B_Free,
-)
-
-# For documentation
-from typing import List, Tuple, Callable, Optional
-from typing import cast
-from soromox.utils.gvs.custom_types import (
-    LinkAttributes,
-    JointAttributes,
-    BasisAttributes,
-    SegmentData,
-    JointOperand,
-    GeometricOperand,
-)
-
-from diffrax import (
-    diffeqsolve,
-    ODETerm,
-    SaveAt,
-    Tsit5,
-    PIDController,
-    ConstantStepSize,
-    AbstractSolver,
 )
 
 
@@ -230,7 +228,7 @@ class Link:
         return Ix_p, Iy_p, Iz_p, A_p
 
 
-class GVS(eqx.Module):
+class GVS(DynamicalSystem):
     """
     Generalized Variable Strain (GVS) model for 3D soft continuum robots.
 

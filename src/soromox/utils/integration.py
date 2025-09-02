@@ -6,15 +6,15 @@ from jax import Array
 from typing import Tuple
 
 
-def gauss_quadrature(N_GQ: int, a=0.0, b=1.0) -> Tuple[Array, Array, int]:
+def gauss_quadrature(N_GQ: int, a: Array = jnp.zeros(()), b: Array = jnp.ones(())) -> Tuple[Array, Array, int]:
     """
     Computes the Legendre-Gauss nodes and weights on the interval [0, 1]
     using Legendre-Gauss Quadrature with truncation order N_GQ.
 
     Args:
         N_GQ (int): order of the truncature.
-        a (float, optional): The lower bound of the interval. Default is 0.0.
-        b (float, optional): The upper bound of the interval. Default is 1.0.
+        a (Array, optional): The lower bound of the interval. Default is 0.0.
+        b (Array, optional): The upper bound of the interval. Default is 1.0.
 
     Returns:
         Xs (Array): The Gauss nodes on [a, b].
@@ -79,7 +79,7 @@ def gauss_quadrature(N_GQ: int, a=0.0, b=1.0) -> Tuple[Array, Array, int]:
 
 
 def scale_gaussian_quadrature(
-    Xs: Array, Ws: Array, a: float = 0.0, b: float = 1.0
+    Xs: Array, Ws: Array, a: Array = jnp.zeros(()), b: Array = jnp.ones(())
 ) -> Tuple[Array, Array]:
     """
     Scale the Gauss nodes and weights from [0, 1] to the interval [a, b].
@@ -87,8 +87,8 @@ def scale_gaussian_quadrature(
     Args:
         Xs (Array): The Gauss nodes on [0, 1].
         Ws (Array): The Gauss weights on [0, 1].
-        a (float): The lower bound of the interval.
-        b (float): The upper bound of the interval.
+        a (Array): The lower bound of the interval.
+        b (Array): The upper bound of the interval.
 
     Returns:
         Xs_scaled (Array): The scaled Gauss nodes on [a, b].

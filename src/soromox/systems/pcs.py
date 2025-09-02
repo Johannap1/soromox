@@ -1,9 +1,10 @@
+__all__ = ["PCS"]
 import equinox as eqx
 import jax
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 import numpy as onp
-from typing import Callable, Dict, Tuple, Optional
+from typing import Callable, ClassVar, Dict, Tuple, Optional
 
 from soromox.utils.basic import (
     compute_strain_basis,
@@ -16,20 +17,13 @@ from soromox.math_utils import (
     blk_diag,
     compute_weighted_sums,
 )
+from soromox.utils.basic import compute_strain_basis
+from soromox.utils.integration import gauss_quadrature, scale_gaussian_quadrature
 import soromox.utils.lie_algebra as lie
-
-from diffrax import (
-    diffeqsolve,
-    ODETerm,
-    SaveAt,
-    Tsit5,
-    PIDController,
-    ConstantStepSize,
-    AbstractSolver,
-)
+from .dynamical_system import DynamicalSystem
 
 
-class PCS(eqx.Module):
+class PCS(DynamicalSystem):
     """
     Piecewise Constant Strain (PCS) model for 3D soft continuum robots.
 
@@ -91,7 +85,8 @@ class PCS(eqx.Module):
     G: Array  # Shear modulus of the segments
     D: Array  # Damping coefficient of the segments
 
-    global_eps: float = jnp.finfo(jnp.float64).eps
+    # Not a dataclass field: avoid default/non-default ordering issues in subclasses
+    global_eps: ClassVar[float] = float(jnp.finfo(jnp.float64).eps)
 
     num_segments: int = eqx.field(static=True)
     num_actuators: int = eqx.field(static=True)  # Number of actuators
@@ -109,7 +104,6 @@ class PCS(eqx.Module):
         self,
         num_segments: int,
         params: Dict[str, Array],
-        num_actuators: Optional[int] = None,
         order_gauss: int = 5,
         strain_selector: Optional[Array] = None,
         xi_ref: Optional[Array] = None,
@@ -145,8 +139,6 @@ class PCS(eqx.Module):
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
-            num_actuators (Optional[int], optional):
-                Number of actuators (control inputs) for the robot. If None, we default to a fully actuated robot (i.e. num_actuators = num_active_strains).
             order_gauss (int, optional):
                 Order of the Gauss-Legendre quadrature for integration over each segment.
                 Defaults to 5.
@@ -230,10 +222,7 @@ class PCS(eqx.Module):
         self.xi_ref = xi_ref
 
         # Number of actuators
-        if num_actuators is None:
-            self.num_actuators = int(self.num_active_strains.item())
-        else:
-            self.num_actuators = num_actuators
+        self.num_actuators = int(self.num_active_strains.item())
 
     def _set_params(self, params: Dict[str, Array]) -> None:
         """
@@ -987,8 +976,9 @@ class PCS(eqx.Module):
         rho_i = self.rho[i]
         A_i = self._local_cross_sectional_area(i)  # Cross-sectional area
         I_i = self._local_second_moment_of_area(i)  # Second moment of area
+        J_i = self._local_polar_moment_of_inertia(i)  # Polar moment of inertia
 
-        M_i = rho_i * jnp.diag(jnp.array([I_i, I_i, I_i, A_i, A_i, A_i]))
+        M_i = rho_i * jnp.diag(jnp.array([J_i, I_i, I_i, A_i, A_i, A_i]))
         return M_i
 
     # ===========================================
@@ -1538,79 +1528,3 @@ class PCS(eqx.Module):
         yd = jnp.concatenate([qd, qdd])
 
         return yd
-
-    @eqx.filter_jit
-    def resolve_upon_time(
-        self,
-        q0: Array,
-        qd0: Array,
-        u: Optional[Array] = None,
-        tau_ext: Optional[Array] = None,
-        t0: Optional[float] = 0.0,
-        t1: Optional[float] = 10.0,
-        dt: Optional[float] = 1e-4,
-        skip_steps: Optional[int] = 0,
-        solver: Optional[AbstractSolver] = Tsit5(),
-        stepsize_controller: Optional[PIDController] = ConstantStepSize(),
-        max_steps: Optional[int] = None,
-    ) -> Tuple[Array, Array, Array]:
-        """
-        Resolve the system dynamics over time using Diffrax.
-
-        Args:
-            q0 (Array): Initial configuration (strains).
-            qd0 (Array): Initial velocity (strains).
-            u (Array, optional): Actuation/control input.
-                Default is None (no actuation).
-            tau_ext (Array, optional): External forces/torques applied to the system.
-            t0 (float, optionnal): Initial time.
-                Default is 0.0.
-            t1 (float, optionnal): Final time.
-                Default is 10.0.
-            dt (float, optionnal): Time step for the solver.
-                Default is 1e-4.
-            skip_steps (int, optionnal): Number of steps to skip in the output.
-                This allows to reduce the number of saved time points.
-                Default is 0.
-            solver (AbstractSolver, optional): Solver to use for the ODE integration.
-                Default is Tsit5() (Runge-Kutta 5(4) method).
-            stepsize_controller (PIDController, optional): Stepsize controller for the solver.
-                Default is ConstantStepSize().
-            max_steps (int, optional): Maximum number of steps for the solver.
-                Default is None (no limit).
-
-        Returns:
-            ts (Array): Time points at which the solution is saved.
-            qs (Array): Configuration (strains) at the saved time points.
-            qds (Array): Velocity (strains) at the saved time points.
-        """
-        y0 = jnp.concatenate([q0, qd0])  # Initial state vector
-        if u is None:
-            u = jnp.zeros((self.num_actuators,))
-        if tau_ext is None:
-            tau_ext = jnp.zeros((q0.shape[-1],))
-
-        term = ODETerm(self.forward_dynamics)
-
-        t = jnp.arange(t0, t1, dt)  # Time points for the solution
-        saveat = SaveAt(ts=t[::skip_steps])  # Save at specified time points
-
-        sol = diffeqsolve(
-            terms=term,
-            solver=solver,
-            t0=t[0],
-            t1=t[-1],
-            dt0=dt,
-            y0=y0,
-            args=(u, tau_ext),
-            saveat=saveat,
-            stepsize_controller=stepsize_controller,
-            max_steps=max_steps,
-        )
-
-        ts = sol.ts
-        # Extract the configuration and velocity from the solution
-        y_out = sol.ys
-        qs, qds = jnp.split(y_out, 2, axis=1)
-
-        return ts, qs, qds

@@ -1,8 +1,5 @@
 import jax.numpy as jnp
-from jax import lax
-
-# for documentation
-from jax import Array
+from jax import Array, lax
 
 # ================================================================================================
 # SE(2) operators
