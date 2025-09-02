@@ -1479,13 +1479,13 @@ class PlanarPCS(DynamicalSystem):
 
     @eqx.filter_jit
     def forward_dynamics(
-        self, t: float, y: Array, actuation_args: Optional[Tuple] = None
+        self, t: Array, y: Array, actuation_args: Optional[Tuple] = None
     ) -> Array:
         """
         Forward dynamics function.
 
         Args:
-            t (float): Current time.
+            t (Array): Current time.
             y (Array): State vector containing configuration and velocity.
                 Shape is (2 * num_strains,).
             actuation_args (Tuple, optional): Additional arguments for the actuation mapping function.
