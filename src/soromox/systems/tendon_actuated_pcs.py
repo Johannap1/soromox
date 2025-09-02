@@ -8,7 +8,7 @@ from typing import Callable, Dict, Optional
 import soromox.utils.lie_algebra as lie
 import soromox.actuation.tendon_actuation as act
 
-from .pcs import PCS
+from soromox.systems.pcs import PCS
 from soromox.utils.integration import scale_gaussian_quadrature
 
 

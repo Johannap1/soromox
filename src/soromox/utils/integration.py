@@ -1,3 +1,4 @@
+__all__ = ["gauss_quadrature", "scale_gaussian_quadrature"]
 from jax import numpy as jnp
 from jax import lax
 

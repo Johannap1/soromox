@@ -6,7 +6,7 @@ from jax import numpy as jnp
 import numpy as onp
 from typing import Dict, List, Tuple, Union, Optional
 
-from .dynamical_system import DynamicalSystem
+from soromox.systems.dynamical_system import DynamicalSystem
 
 
 class Pendulum(DynamicalSystem):

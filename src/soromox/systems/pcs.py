@@ -6,6 +6,11 @@ from jax import numpy as jnp
 import numpy as onp
 from typing import Callable, ClassVar, Dict, Tuple, Optional
 
+from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.utils.array_math import (
+    blk_diag,
+    compute_weighted_sums,
+)
 from soromox.utils.basic import (
     compute_strain_basis,
 )
@@ -13,14 +18,7 @@ from soromox.utils.integration import (
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
-from soromox.math_utils import (
-    blk_diag,
-    compute_weighted_sums,
-)
-from soromox.utils.basic import compute_strain_basis
-from soromox.utils.integration import gauss_quadrature, scale_gaussian_quadrature
 import soromox.utils.lie_algebra as lie
-from .dynamical_system import DynamicalSystem
 
 
 class PCS(DynamicalSystem):

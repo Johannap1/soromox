@@ -19,11 +19,6 @@ from typing import cast
 
 from soromox.systems.dynamical_system import DynamicalSystem
 from soromox.utils.basic import compute_strain_basis
-from soromox.utils.integration import (
-    gauss_quadrature,
-)
-import soromox.utils.lie_algebra as lie
-
 from soromox.utils.gvs.custom_types import (
     LinkAttributes,
     JointAttributes,
@@ -56,6 +51,10 @@ from soromox.utils.gvs.strain_basis import (
     B_IMQ,
     dof_IMQ,
 )
+from soromox.utils.integration import (
+    gauss_quadrature,
+)
+import soromox.utils.lie_algebra as lie
 
 
 class Basis:

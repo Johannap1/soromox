@@ -6,20 +6,11 @@ from jax import numpy as jnp
 import numpy as onp
 from typing import Callable, Dict, Tuple, Optional, ClassVar
 
-from soromox.utils.basic import (
-    compute_strain_basis,
-)
-from soromox.utils.integration import (   
-    gauss_quadrature,
-    scale_gaussian_quadrature,
-)
-from soromox.math_utils import (
+from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.utils.array_math import (
     blk_diag,
     compute_weighted_sums,
 )
-import soromox.utils.lie_algebra as lie
-
-from soromox.systems.dynamical_system import DynamicalSystem
 from soromox.utils.basic import (
     compute_strain_basis,
 )
@@ -27,6 +18,7 @@ from soromox.utils.integration import (
     gauss_quadrature,
     scale_gaussian_quadrature,
 )
+import soromox.utils.lie_algebra as lie
 
 
 class PlanarPCS(DynamicalSystem):
