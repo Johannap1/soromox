@@ -303,7 +303,7 @@ def Adjoint_g_inv_SE3(mat4: Array) -> Array:
 
 def Adjoint_gi_se3(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -315,7 +315,7 @@ def Adjoint_gi_se3(
             A 6-dimensional vector representing the screw in the current segment.
             The first three elements correspond to the angular component,
             and the last three elements correspond to the linear component.
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the current segment.
         eps (float): small value to avoid division by zero
 
@@ -358,7 +358,7 @@ def Adjoint_gi_se3(
 
 def Adjoint_gi_se3_inv(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -370,7 +370,7 @@ def Adjoint_gi_se3_inv(
             A 6-dimensional vector representing the screw in SE(3).
             The first three elements correspond to the angular component,
             and the last three elements correspond to the linear component.
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
         eps (float): small value to avoid division by zero
 
@@ -397,7 +397,7 @@ def Adjoint_gi_se3_inv(
 
 def Tangent_gi_se3(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -409,7 +409,7 @@ def Tangent_gi_se3(
             A 6-dimensional vector representing the screw in SE(3).
             The first three elements correspond to the angular component,
             and the last three elements correspond to the linear component.
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
         eps (float): small value to avoid division by zero
 
@@ -454,7 +454,7 @@ def Tangent_gi_se3(
 
 
 def Tangent_derivative_gi_se3(
-    xi_i: Array, xid_i: Array, s_i: float, eps: float
+    xi_i: Array, xid_i: Array, s_i: Array, eps: float
 ) -> Array:
     """
     Computes the tangent derivative representation of a position of a points at s_i (local curvilinear coordinate)
@@ -469,7 +469,7 @@ def Tangent_derivative_gi_se3(
             A 6-dimensional vector representing the derivative of the screw in SE(3).
             The first three elements correspond to the angular component,
             and the last three elements correspond to the linear component.
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
         eps (float): small value to avoid division by zero
 

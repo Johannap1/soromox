@@ -179,7 +179,7 @@ def Adjoint_g_inv_SE2(mat3: Array) -> Array:
 
 def Adjoint_gi_se2(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -189,7 +189,7 @@ def Adjoint_gi_se2(
     Args:
         xi_i (Array): array-like, shape (3,1)
             A 3-dimensional vector representing the screw in the current segment.
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the current segment.
         eps (float): small value to avoid division by zero
 
@@ -231,7 +231,7 @@ def Adjoint_gi_se2(
 
 def Adjoint_gi_se2_inv(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -241,7 +241,7 @@ def Adjoint_gi_se2_inv(
     Args:
         xi_i (Array): array-like, shape (3,1)
             A 3-dimensional vector representing the screw in SE(2).
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
         eps (float): small value to avoid division by zero
 
@@ -272,7 +272,7 @@ def Adjoint_gi_se2_inv(
 
 def Tangent_gi_se2(
     xi_i: Array,
-    s_i: float,
+    s_i: Array,
     eps: float,
 ) -> Array:
     """
@@ -282,7 +282,7 @@ def Tangent_gi_se2(
     Args:
         xi_i (Array): array-like, shape (3,1)
             A 3-dimensional vector representing the screw in SE(2).
-        s_i (float):
+        s_i (Array):
             The curvilinear coordinate along the rod, representing the position of a point in the n-th segment.
         eps (float): small value to avoid division by zero
 
