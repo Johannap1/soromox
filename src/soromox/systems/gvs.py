@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 from jax import vmap, lax, Array
 import math
-from typing import List, Tuple, Callable, Optional
+from typing import Callable, ClassVar, List, Optional, Tuple
 from typing import cast
 
 
@@ -314,7 +314,7 @@ class GVS(DynamicalSystem):
 
     B_select: Array  # Strain basis functions for the robot (6, max_dof)
 
-    global_eps: float = jnp.finfo(jnp.float64).eps
+    global_eps: ClassVar[float] = float(jnp.finfo(jnp.float64).eps)
 
     # Dynamic attributes
     V_L: Array  # List of lengths for each link (num_segments, )
@@ -352,9 +352,9 @@ class GVS(DynamicalSystem):
         basis_list: List[BasisAttributes,],
         n_gauss_list: List[int],
         gravity_vector: List[float],
-        max_dof: int = None,
-        max_nGauss: int = None,
-    ) -> "GVS":
+        max_dof: Optional[int] = None,
+        max_nGauss: Optional[int] = None,
+    ) -> None:
         """
         Initialize the GVS class.
 
@@ -610,6 +610,10 @@ class GVS(DynamicalSystem):
 
         # Cumulative lengths =========================================================
         self.V_L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), V_L]))
+
+        # Number of actuators
+        self.num_actuators = self.dof_tot_system
+
 
     def _build_segment_i(
         self,
