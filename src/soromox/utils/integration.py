@@ -34,26 +34,54 @@ def gauss_quadrature(N_GQ: int, a: Array = jnp.zeros(()), b: Array = jnp.ones(()
         0.27 / N1
     ) * jnp.sin(jnp.pi * xu * N / N2)
 
-    def legendre_iteration(y):
-        L = [jnp.ones_like(y), y]
-        for k in range(2, N1 + 1):
-            Lk = ((2 * k - 1) * y * L[-1] - (k - 1) * L[-2]) / k
-            L.append(Lk)
-        L = jnp.stack(L, axis=1)
-        Lp = N2 * (L[:, N1 - 1] - y * L[:, N1]) / (1 - y**2)
-        return y - L[:, N1] / Lp
+    def legendre_iteration(y: Array) -> Array:
+        """
+        Perform one Newton–Raphson update for the Legendre roots.
 
-    def convergence_condition(y):
-        L = [jnp.ones_like(y), y]
-        for k in range(2, N1 + 1):
-            Lk = ((2 * k - 1) * y * L[-1] - (k - 1) * L[-2]) / k
-            L.append(Lk)
-        L = jnp.stack(L, axis=1)
-        Lp = N2 * (L[:, N1 - 1] - y * L[:, N1]) / (1 - y**2)
-        y_new = y - L[:, N1] / Lp
-        return jnp.max(jnp.abs(y_new - y)) > jnp.finfo(jnp.float32).eps
+        Builds Legendre polynomials up to order `N1` at the current points `y`,
+        evaluates their derivative via the stable identity using `N2`, and
+        returns the refined estimate `y_new = y - P_N(y)/P_N'(y)`.
 
-    y = lax.while_loop(  # TODO
+        Args:
+            y (Array): Current estimates of the roots (shape: [...]).
+
+        Returns:
+            y_next (Array): Updated root estimates after a single iteration (same shape as `y`).
+        """
+        _L_ls = [jnp.ones_like(y), y]
+        for k in range(2, N1 + 1):
+            Lk = ((2 * k - 1) * y * _L_ls[-1] - (k - 1) * _L_ls[-2]) / k
+            _L_ls.append(Lk)
+        _L = jnp.stack(_L_ls, axis=1)
+        Lp = N2 * (_L[:, N1 - 1] - y * _L[:, N1]) / (1 - y**2)
+        y_next = y - _L[:, N1] / Lp
+        return y_next
+
+    def convergence_condition(y: Array) -> Array:
+        """
+        Convergence predicate for the Newton iterations in Gauss–Legendre.
+
+        Computes the next Newton update and checks if the maximum absolute
+        change across all entries is larger than machine epsilon (float32).
+        Used as the loop condition in `lax.while_loop`.
+
+        Args:
+            y (Array): Current estimates of the roots (shape: [...]).
+
+        Returns:
+            needs_more_its (Array): Boolean array of shape () that contains True if another iteration is required; False otherwise.
+        """
+        _L_ls = [jnp.ones_like(y), y]
+        for k in range(2, N1 + 1):
+            Lk = ((2 * k - 1) * y * _L_ls[-1] - (k - 1) * _L_ls[-2]) / k
+            _L_ls.append(Lk)
+        _L = jnp.stack(_L_ls, axis=1)
+        Lp = N2 * (_L[:, N1 - 1] - y * _L[:, N1]) / (1 - y**2)
+        y_new = y - _L[:, N1] / Lp
+        needs_more_its = jnp.max(jnp.abs(y_new - y)) > jnp.finfo(jnp.float32).eps
+        return needs_more_its
+
+    y = lax.while_loop(
         convergence_condition, legendre_iteration, y
     )
 
@@ -65,16 +93,16 @@ def gauss_quadrature(N_GQ: int, a: Array = jnp.zeros(()), b: Array = jnp.ones(()
     Xs = jnp.concatenate([jnp.array([a]), Xs, jnp.array([b])])
 
     # Compute the weights
-    L = [jnp.ones_like(y), y]
+    L_ls = [jnp.ones_like(y), y]
     for k in range(2, N1 + 1):
-        Lk = ((2 * k - 1) * y * L[-1] - (k - 1) * L[-2]) / k
-        L.append(Lk)
-    L = jnp.stack(L, axis=1)
+        Lk = ((2 * k - 1) * y * L_ls[-1] - (k - 1) * L_ls[-2]) / k
+        L_ls.append(Lk)
+    L = jnp.stack(L_ls, axis=1)
     Lp = N2 * (L[:, N1 - 1] - y * L[:, N1]) / (1 - y**2)
     Ws = (b - a) / ((1 - y**2) * Lp**2) * (N2 / N1) ** 2
 
     # Add the boundary points
-    Ws = jnp.concatenate([jnp.array([0.0]), Ws, jnp.array([0.0])])
+    Ws = jnp.concatenate([jnp.zeros((1, )), Ws, jnp.zeros((1, ))], axis=0)
 
     return Xs, Ws, N_GQ + 2
 
