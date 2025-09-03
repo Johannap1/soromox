@@ -185,7 +185,10 @@ class GVS(DynamicalSystem):
             - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
             - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
             - pitch: Pitch for helical joints.
-            - K_joint: Joint stiffness matrix (optional, defaults to identity).
+            - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
+              must have shape (dof_joint, dof_joint); otherwise it is ignored and a
+              zero matrix is used. Units match the active DOFs: rotational terms
+              [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
         basis_list : List[BasisAttributes]
             List of strain basis attributes (one per segment) defining the parametrization
             of the variable strain field along the link:

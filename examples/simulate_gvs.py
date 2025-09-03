@@ -1,6 +1,4 @@
-from diffrax import Tsit5
 from functools import partial
-
 from IPython.display import HTML
 import jax
 from jax import Array
@@ -248,9 +246,6 @@ if __name__ == "__main__":
     dt = 1e-4
     skip_step = 100  # how many time steps to skip in between video frames
 
-    # Solver
-    solver = Tsit5()  # Runge-Kutta 5(4) method
-
     ts, q_ts, qd_ts = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
@@ -259,7 +254,6 @@ if __name__ == "__main__":
         t1=t1,
         dt=dt,
         skip_steps=skip_step,
-        solver=solver,
         max_steps=None,
     )
     print(f"Simulation completed with {len(ts)} time steps.")
