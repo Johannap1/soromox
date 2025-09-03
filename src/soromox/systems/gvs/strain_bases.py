@@ -1,3 +1,17 @@
+__all__ = [
+    "B_Monomial",
+    "B_LegendrePolynomial",
+    "B_Chebychev",
+    "B_Fourier",
+    "B_Gaussian",
+    "B_IMQ",
+    "dof_Monomial",
+    "dof_LegendrePolynomial",
+    "dof_Chebychev",
+    "dof_Fourier",
+    "dof_Gaussian",
+    "dof_IMQ"
+]
 import jax.numpy as jnp
 from jax import Array, lax
 

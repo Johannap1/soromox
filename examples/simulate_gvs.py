@@ -12,12 +12,7 @@ import numpy as onp
 from typing import List
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.systems.gvs import GVS
-from soromox.utils.gvs.custom_types import (
-    LinkAttributes,
-    JointAttributes,
-    BasisAttributes,
-)
+from soromox.systems.gvs import *
 
 jnp.set_printoptions(
     threshold=jnp.inf,

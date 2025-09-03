@@ -1,8 +1,9 @@
+__all__ = ["B_Fixed", "B_Free", "B_Spherical", "B_Planar", "B_Cylindrical", "B_Helical", "B_Prismatic", "B_Revolute"]
 import jax.numpy as jnp
 from jax import Array
 from jax import lax
 
-from soromox.utils.gvs.custom_types import JointOperand
+from soromox.systems.gvs.operands import JointOperand
 
 
 def unit_vector_6(index) -> Array:
