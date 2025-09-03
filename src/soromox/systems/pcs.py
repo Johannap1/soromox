@@ -87,7 +87,6 @@ class PCS(DynamicalSystem):
     global_eps: ClassVar[float] = float(jnp.finfo(jnp.float64).eps)
 
     num_segments: int = eqx.field(static=True)
-    num_actuators: int = eqx.field(static=True)  # Number of actuators
     num_gauss_points: int = eqx.field(static=True)  #
     num_strains: int = eqx.field(static=True)  # Number of strains (6 * num_segments)
 
