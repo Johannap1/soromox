@@ -194,3 +194,6 @@ def test_gvs_autodiff_checks(num_segments: int):
     Jpos_impl = Ji_gvs[3:6, :]  # translational rows
     assert_allclose(Jpos_impl, Jpos_ad, rtol=Tolerance.rtol(), atol=Tolerance.atol())
 
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-s"])
