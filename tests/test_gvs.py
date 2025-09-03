@@ -120,7 +120,7 @@ def test_gvs_equals_pcs_constant_strain(num_segments: int):
 
     # forward kinematics comparisons at a few points along the rod
     L_total = float(jnp.sum(robot_gvs.V_L))
-    s_values = jnp.array([0.0, 0.33 * L_total, L_total])
+    s_values = jnp.array([0.0, 0.33 * L_total, 0.75 * L_total,  L_total])
     for s in onp.array(s_values):
         g_gvs = robot_gvs.forward_kinematics(q, s)
         g_pcs = robot_pcs.forward_kinematics(q, s)
