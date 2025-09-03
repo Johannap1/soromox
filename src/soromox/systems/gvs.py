@@ -898,17 +898,34 @@ class GVS(DynamicalSystem):
         start_indices = start_indices_flat.reshape(m, n_groups)
 
         # Function for obtaining indexes
-        def get_indices(start, length):
-            idx = jnp.arange(self.max_dof)
-            return start + idx
+        def get_indices(start: Array) -> Array:
+            """Return absolute indices for a block.
+
+            Args:
+                start (Array): Starting index in the flattened vector (scalar int/Array).
+
+            Returns:
+                indices (Array): Indices of shape (max_dof,) into the flattened vector.
+            """
+            indices = start + jnp.arange(self.max_dof)
+            return indices
 
         # Vectorization: apply to (m, 2)
-        get_indices_vmap = vmap(vmap(get_indices, in_axes=(0, 0)), in_axes=(0, 0))
-        all_indices = get_indices_vmap(start_indices, self.V_dof)
+        get_indices_vmap = vmap(vmap(get_indices, in_axes=(0, )), in_axes=(0, ))
+        all_indices = get_indices_vmap(start_indices)
 
         # Creating masks
-        def get_mask(length):
-            return jnp.arange(self.max_dof) < length
+        def get_mask(length) -> Array:
+            """Boolean mask of valid entries for a given `length`.
+
+            Args:
+                length: Actual number of valid entries (scalar int/Array).
+
+            Returns:
+                mask (Array): Boolean mask of shape (max_dof,), True where index < length.
+            """
+            mask = jnp.arange(self.max_dof) < length
+            return mask
 
         get_mask_vmap = vmap(vmap(get_mask, in_axes=(0,)), in_axes=(0,))
         mask = get_mask_vmap(self.V_dof)
@@ -935,12 +952,12 @@ class GVS(DynamicalSystem):
         return vec_gathered
 
     @eqx.filter_jit
-    def _eval_B_segment(self, i_segment: int, X: Array) -> Array:
+    def _eval_B_segment(self, i_segment: Array, X: Array) -> Array:
         """
         Evaluate the basis functions for a given segment at specified points.
 
         Args:
-            i_segment (int): Index of the segment to evaluate.
+            i_segment (Array): Index of the segment to evaluate.
             X (Array): shape (len(X),) JAX array of points at which to evaluate the basis functions.
 
         Returns:
@@ -991,7 +1008,17 @@ class GVS(DynamicalSystem):
                 Forward kinematics transformation matrices at all significant points
         """
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Array, Array]:
+            """Propagate transforms for a segment and collect frames.
+
+            Args:
+                carry (Array): Current tip transform `g_tip`, shape (4, 4).
+                i_segment (Array): Segment index.
+
+            Returns:
+                g_tip_link (Array): Updated tip transform after this segment, shape (4, 4).
+                g_link (Array): Per-point transforms for this segment, shape (max_nip, 4, 4).
+            """
             g_tip = carry
 
             # Joint =======================
@@ -1016,6 +1043,16 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
 
             def body_eval_points(carry, j_eval):
+                """Advance one cell via Magnus and accumulate the frame.
+
+                Args:
+                    carry: Previous transform `g_j_prev`, shape (4, 4).
+                    j_eval: Cell index (int).
+
+                Returns:
+                    g_j (Array): New transform after the cell, shape (4, 4) (carry).
+                    g_j (Array): Same transform as scan output, shape (4, 4).
+                """
                 g_j_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
@@ -1121,7 +1158,17 @@ class GVS(DynamicalSystem):
         # Compute the point coordinate along the segment in the interval [0, l_segment]
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Array, Array]:
+            """Compose joint transform and integrate the link up to `s`.
+
+            Args:
+                carry: Current tip transform `g_tip`, shape (4, 4).
+                i_segment: Segment index (int).
+
+            Returns:
+                g_out (Array): Updated tip transform (carry), shape (4, 4).
+                g_out (Array): Same transform as scan output, shape (4, 4).
+            """
             g_tip = carry
 
             # Joint =======================
@@ -1146,7 +1193,16 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
 
             # advance on complete cells if i < seg_idx
-            def full_cell(carry, j):
+            def full_cell(carry: Array, j: Array) -> Tuple[Array, None]:
+                """Integrate one full cell `j` of the link using Magnus.
+
+                Args:
+                    carry: Previous transform, shape (4, 4).
+                    j (Array): Cell index.
+
+                Returns:
+                    Tuple[Array, None]: Next transform (4, 4) and dummy output.
+                """
                 g_prev = carry
 
                 H = Xs_i[j + 1] - Xs_i[j]
@@ -1166,18 +1222,39 @@ class GVS(DynamicalSystem):
                 return g_prev @ g_step, None
 
             # if segment before s: make entire link and return
-            def do_full_link():
+            def do_full_link() -> Array:
+                """Integrate the entire link (segment before the target `s`).
+
+                Returns:
+                    g_tip_link (Array): Tip transform after this link, shape (4, 4).
+                """
                 g_tip_link, _ = lax.scan(full_cell, g_j, jnp.arange(self.max_nip - 1))
                 return g_tip_link
 
             # if segment is the one where s is located, we need to do a partial link
-            def do_partial_link():
+            def do_partial_link() -> Array:
+                """Integrate up to location `s` within this segment.
+
+                Consumes complete cells up to j-1, then a partial cell j.
+
+                Returns:
+                    g_out (Array): Tip transform at `s` within this segment, shape (4, 4).
+                """
                 x = s_local / length_i
                 # idx of cell j such that Xs[j] <= x <= Xs[j+1]
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # compose complete cells up to j-1 without dynamic-length arange
-                def full_cell_masked(carry, idx):
+                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Array, None]:
+                    """Advance a cell only if `idx < j`, keep state otherwise.
+
+                    Args:
+                        carry (Array): Current transform, shape (4, 4).
+                        idx (Array): Cell index being processed.
+
+                    Returns:
+                        Tuple[Array, None]: Next transform (or unchanged), and dummy output.
+                    """
                     g_prev = carry
                     g_next, _ = full_cell(g_prev, idx)
                     return lax.select(idx < j, g_next, g_prev), None
@@ -1210,7 +1287,8 @@ class GVS(DynamicalSystem):
 
                 g_p = lie.exp_gn_SE3(Magnus_p, self.global_eps)
 
-                return g_in @ g_p
+                g_out = g_in @ g_p
+                return g_out
 
             g_out = lax.cond(
                 i_segment < segment_idx,
@@ -1224,7 +1302,16 @@ class GVS(DynamicalSystem):
         g0 = jnp.eye(4)
 
         # we scan *at least* up to segment seg_idx; for subsequent segments, we don't change a thing
-        def step(carry, i):
+        def step(carry: Array, i: Array) -> Tuple[Array, None]:
+            """Scan over segments; freeze state after the target segment.
+
+            Args:
+                carry (Array): Current transform, shape (4, 4).
+                i (Array): Segment index.
+
+            Returns:
+                Tuple[Array, None]: Next transform and dummy output.
+            """
             g_curr = carry
             g_next, _ = body_segment_i(g_curr, i)
             return jnp.where(i <= segment_idx, g_next, g_curr), None
@@ -1256,7 +1343,21 @@ class GVS(DynamicalSystem):
                     d ∈ {0..max_dof-1} : partial derivative with respect to the d-th DoF of the link k_link
         """
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array], Array]:
+            """Accumulate transforms/Jacobians for a segment.
+
+            Args:
+                carry: Tuple (g_tip, J_tip) with shapes (4, 4) and
+                    (num_segments, 2, 6, max_dof).
+                i_segment: Segment index (int).
+
+            Returns:
+                Tuple[Tuple[Array, Array], Array]:
+                    - (g_tip_link_scaled, J_tip_link_scaled): scaled tip state with
+                      shapes (4, 4) and (num_segments, 2, 6, max_dof).
+                    - J_link: per-point Jacobians for this segment, shape
+                      (max_nip, num_segments, 2, 6, max_dof).
+            """
             g_tip, J_tip = carry
 
             # Joint ============================
@@ -1299,7 +1400,20 @@ class GVS(DynamicalSystem):
 
             q_i = q_gathered[i_segment, 1]
 
-            def body_eval_points(carry, j_eval):
+            def body_eval_points(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array], Array]:
+                """Advance one cell and update the Jacobian via Magnus terms.
+
+                Args:
+                    carry (Array): Tuple (g_prev, J_prev) with shapes (4, 4) and
+                        (num_segments, 2, 6, max_dof).
+                    j_eval (Array): Cell index (int).
+
+                Returns:
+                    Tuple[Tuple[Array, Array], Array]:
+                        - (g_next, J_next): updated carry with same shapes as input.
+                        - J_next_scaled: scaled Jacobian, shape
+                          (num_segments, 2, 6, max_dof).
+                """
                 g_prev, J_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
@@ -1412,7 +1526,19 @@ class GVS(DynamicalSystem):
         # classify where s lies
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
+            """Propagate body-frame Jacobian across a segment up to `s`.
+
+            Args:
+                carry (Array): Tuple (g_tip, J_tip) with shapes (4, 4) and
+                    (num_segments, 2, 6, max_dof).
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
+                    - (g_pass, J_pass): scaled tip state to pass forward.
+                    - (g_pass, J_pass): same as scan output.
+            """
             g_tip, J_tip = carry
 
             # Joint ============================
@@ -1454,7 +1580,17 @@ class GVS(DynamicalSystem):
 
             q_i = q_gathered[i_segment, 1]
 
-            def full_cell(carry, j_eval):
+            def full_cell(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array], None]:
+                """Consume a full cell; update g and J in body frame.
+
+                Args:
+                    carry (Array): Tuple (g_prev, J_prev) with shapes (4, 4) and
+                        (num_segments, 2, 6, max_dof).
+                    j_eval (Array): Cell index.
+
+                Returns:
+                    Tuple[Tuple[Array, Array], None]: Updated carry and dummy output.
+                """
                 g_prev, J_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
@@ -1500,19 +1636,39 @@ class GVS(DynamicalSystem):
                 return (g_next, J_next), None
 
             # If this segment is before the target, consume all cells.
-            def do_full_link():
+            def do_full_link() -> Tuple[Array, Array]:
+                """Segment before target `s`: consume all its cells.
+
+                Returns:
+                    Tuple[Array, Array]: (g_end, J_end), shapes (4, 4) and
+                    (num_segments, 2, 6, max_dof).
+                """
                 (g_end, J_end), _ = lax.scan(
                     full_cell, (g_j, J_j), jnp.arange(self.max_nip - 1)
                 )
                 return g_end, J_end
 
             # If this segment is the one containing s, step up to the cell j-1 (masked), then do a partial cell of size Hp.
-            def do_partial_link():
+            def do_partial_link() -> Tuple[Array, Array]:
+                """Segment containing `s`: consume up to j-1, then partial cell.
+
+                Returns:
+                    Tuple[Array, Array]: (g_out, J_out) at location `s`.
+                """
                 x = s_local / length_i
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # masked full cells up to j-1
-                def full_cell_masked(carry, idx):
+                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Tuple[Array, Array], None]:
+                    """Advance only while idx < j; otherwise keep state unchanged.
+
+                    Args:
+                        carry: Tuple (g_prev, J_prev).
+                        idx: Cell index being processed.
+
+                    Returns:
+                        Tuple[Tuple[Array, Array], None]: Updated or kept carry and dummy output.
+                    """
                     (g_prev, J_prev), _ = full_cell(carry, idx)
                     # keep state unchanged once idx >= j
                     g_keep, J_keep = carry
@@ -1570,7 +1726,16 @@ class GVS(DynamicalSystem):
             return (g_pass, J_pass), (g_pass, J_pass)
 
         # walk the chain, but freeze state after we pass the segment that contains s
-        def step(carry, i):
+        def step(carry: Array, i: Array) -> Tuple[Tuple[Array, Array], None]:
+            """Walk segments; freeze state after the one containing `s`.
+
+            Args:
+                carry: Tuple (g_curr, J_curr).
+                i: Segment index.
+
+            Returns:
+                Tuple[Tuple[Array, Array], None]: Next carry and dummy output.
+            """
             (g_curr, J_curr), _ = body_segment_i(carry, i)
             g_next = jnp.where(i <= segment_idx, g_curr, carry[0])
             J_next = jnp.where(i <= segment_idx, J_curr, carry[1])
@@ -1608,7 +1773,21 @@ class GVS(DynamicalSystem):
                 Jacobian derivative matrices at all significant points
         """
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array, Array], Array]:
+            """Accumulate transforms/Jacobian derivatives for a segment.
+
+            Args:
+                carry: Tuple (g_tip, Jd_tip, eta_tip) with shapes (4, 4),
+                    (num_segments, 2, 6, max_dof), and (6,).
+                i_segment: Segment index (int).
+
+            Returns:
+                Tuple[Tuple[Array, Array, Array], Array]:
+                    - (g_tip_link_scaled, Jd_tip_link_scaled, eta_tip_link_scaled)
+                      with shapes (4, 4), (num_segments, 2, 6, max_dof), (6,).
+                    - Jd_link: per-point Jdot blocks, shape
+                      (max_nip, num_segments, 2, 6, max_dof).
+            """
             g_tip, Jd_tip, eta_tip = carry
 
             # Joint ============================
@@ -1662,8 +1841,18 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
-            def body_eval_points(carry, j_eval):
-                g_prev, Jd_prev, eta_prev = carry
+            def body_eval_points(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array, Array], Array]:
+                """Advance one cell; update Jdot using Magnus/Tangent terms.
+
+                Args:
+                    carry: Tuple (g_prev, Jd_prev, eta_prev).
+                    j_eval: Cell index (int).
+
+                Returns:
+                    Tuple[Tuple[Array, Array, Array], Array]: Updated carry and
+                    scaled Jdot block.
+                """
+                # g_prev, Jd_prev, eta_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
@@ -1797,7 +1986,18 @@ class GVS(DynamicalSystem):
         # Segment contenant s et abscisse locale
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry, i_segment):
+        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
+            """Propagate body-frame Jdot across a segment up to `s`.
+
+            Args:
+                carry (Array): Tuple (g_tip, Jd_tip, eta_tip).
+                i_segment (Array): Segment index.
+
+            Returns:
+                Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
+                    - (g_pass, Jd_pass, eta_pass): scaled tip state to pass forward.
+                    - (g_pass, Jd_pass, eta_pass): same as scan output.
+            """
             g_tip, Jd_tip, eta_tip = carry
 
             # Joint ============================
@@ -1850,7 +2050,16 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
-            def full_cell(carry, j_eval):
+            def full_cell(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+                """Consume a full cell; update g, Jdot and convective term.
+
+                Args:
+                    carry (Array): Tuple (g_prev, Jd_prev, eta_prev).
+                    j_eval (Array): Cell index (int).
+
+                Returns:
+                    Tuple[Tuple[Array, Array, Array], None]: Updated carry and dummy output.
+                """
                 g_prev, Jd_prev, eta_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
@@ -1909,19 +2118,38 @@ class GVS(DynamicalSystem):
                 return (g_next, Jd_next, eta_next), None
 
             # Cas 1 : segment entièrement avant s → on consomme toutes les cellules
-            def do_full_link():
+            def do_full_link() -> Tuple[Array, Array, Array]:
+                """Segment before target `s`: integrate all its cells (Jdot).
+
+                Returns:
+                    Tuple[Array, Array, Array]: (g_end, Jd_end, eta_end).
+                """
                 (g_end, Jd_end, eta_end), _ = lax.scan(
                     full_cell, (g_j, Jd_j, eta_j), jnp.arange(self.max_nip - 1)
                 )
                 return g_end, Jd_end, eta_end
 
             # Cas 2 : segment contenant s → cellules complètes jusqu'à j-1 puis cellule partielle Hp
-            def do_partial_link():
+            def do_partial_link() -> Tuple[Array, Array, Array]:
+                """Segment containing `s`: consume up to j-1, then partial cell.
+
+                Returns:
+                    Tuple[Array, Array, Array]: (g_out, Jd_out, eta_out) at `s`.
+                """
                 x = s_local / length_i
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # consomme jusqu'à j-1 (masqué)
-                def full_cell_masked(carry, idx):
+                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+                    """Advance only for idx < j; keep state otherwise.
+
+                    Args:
+                        carry (Array): Tuple (g_p, Jd_p, eta_p).
+                        idx (Array): Cell index (int).
+
+                    Returns:
+                        Tuple[Tuple[Array, Array, Array], None]: Updated or kept carry; dummy output.
+                    """
                     (g_p, Jd_p, eta_p), _ = full_cell(carry, idx)
                     g_keep, Jd_keep, eta_keep = carry
                     return (
@@ -2002,7 +2230,16 @@ class GVS(DynamicalSystem):
             return (g_pass, Jd_pass, eta_pass), (g_pass, Jd_pass, eta_pass)
 
         # Parcours de la chaîne, on fige l'état après le segment contenant s
-        def step(carry, i):
+        def step(carry: Array, i: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+            """Walk segments; freeze state after the segment containing `s`.
+
+            Args:
+                carry (Array): Tuple (g_curr, Jd_curr, eta_curr).
+                i (Array): Segment index (int).
+
+            Returns:
+                Tuple[Tuple[Array, Array, Array], None]: Next carry and dummy output.
+            """
             (g_curr, Jd_curr, eta_curr), _ = body_segment_i(carry, i)
             g_next = jnp.where(i <= segment_idx, g_curr, carry[0])
             Jd_next = jnp.where(i <= segment_idx, Jd_curr, carry[1])
@@ -2045,13 +2282,30 @@ class GVS(DynamicalSystem):
         )  # (num_segments, max_nip, 6, num_segments * 2 * max_dof)
 
         # Define function for each quadrature point
-        def B_segment_i(i_segment):
+        def B_segment_i(i_segment: Array) -> Array:
+            """Assemble inertia contributions for one segment by quadrature.
+
+            Args:
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Array: Blocks over quadrature points, shape
+                    (max_nip, num_segments*2*max_dof, num_segments*2*max_dof).
+            """
             length_i = self.V_L[i_segment]
             Ws_i = self.V_Ws[i_segment]  # (max_nip, 1, )
             J_i = V_J[i_segment]  # (max_nip, 6, num_segments * 2 * max_dof)
             Ms_i = self.V_Ms[i_segment]  # (max_nip, 6, 6)
 
-            def B_eval_points(i_eval):
+            def B_eval_points(i_eval: Array) -> Array:
+                """Inertia block at a single quadrature point.
+
+                Args:
+                    i_eval (Array): Quadrature point index (int).
+
+                Returns:
+                    Array: Block of shape (num_segments*2*max_dof, num_segments*2*max_dof).
+                """
                 Ws_j = Ws_i[i_eval]
                 J_j = J_i[i_eval]  # (6, num_segments * 2 * max_dof)
                 Ms_j = Ms_i[i_eval]  # (6, 6)
@@ -2125,14 +2379,31 @@ class GVS(DynamicalSystem):
         qd_flat = qd_gathered.reshape(-1)
 
         # Define function for each quadrature point
-        def C_segment_i(i_segment):
+        def C_segment_i(i_segment: Array) -> Array:
+            """Assemble Coriolis contributions for one segment by quadrature.
+
+            Args:
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Array: Blocks over quadrature points, shape
+                    (max_nip, num_segments*2*max_dof, num_segments*2*max_dof).
+            """
             length_i = self.V_L[i_segment]
             Ws_i = self.V_Ws[i_segment]  # (max_nip, 1, )
             J_i = V_J[i_segment]  # (max_nip, 6, num_segments * 2 * max_dof)
             Jd_i = V_Jd[i_segment]  # (max_nip, 6, num_segments * 2 * max_dof)
             Ms_i = self.V_Ms[i_segment]  # (max_nip, 6, 6)
 
-            def C_eval_points(i_eval):
+            def C_eval_points(i_eval: Array) -> Array:
+                """Coriolis block at a single quadrature point.
+
+                Args:
+                    i_eval (Array): Quadrature point index (int).
+
+                Returns:
+                    Array: Block of shape (num_segments*2*max_dof, num_segments*2*max_dof).
+                """
                 Ws_j = Ws_i[i_eval]
                 J_j = J_i[i_eval]  # (6, num_segments * 2 * max_dof)
                 Jd_j = Jd_i[i_eval]  # (6, num_segments * 2 * max_dof)
@@ -2205,14 +2476,30 @@ class GVS(DynamicalSystem):
             q_gathered
         )  # (num_segments, max_nip, 4, 4)
 
-        def G_segment_i(i_segment):
+        def G_segment_i(i_segment: Array) -> Array:
+            """Assemble gravitational force contributions for one segment.
+
+            Args:
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Array: Blocks over quadrature points, shape (max_nip, num_segments*2*max_dof, 1).
+            """
             length_i = self.V_L[i_segment]
             Ws_i = self.V_Ws[i_segment]  # (max_nip, 1, )
             g_i = V_g[i_segment]  # (max_nip, 4, 4)
             J_i = V_J[i_segment]  # (max_nip, 6, num_segments * 2 * max_dof)
             M_i = self.V_Ms[i_segment]  # (max_nip, 6, 6)
 
-            def G_eval_points(i_eval):
+            def G_eval_points(i_eval: Array) -> Array:
+                """Gravitational block at a single quadrature point.
+
+                Args:
+                    i_eval (Array): Quadrature point index (int).
+
+                Returns:
+                    Array: Block of shape (num_segments*2*max_dof, 1).
+                """
                 Ws_j = Ws_i[i_eval]  # ()
                 g_j = g_i[i_eval]  # (4, 4)
                 Ad_g_j_inv = lie.Adjoint_g_inv_SE3(g_j)  # (6, 6)
@@ -2273,7 +2560,15 @@ class GVS(DynamicalSystem):
             K_full (Array): Full stiffness matrix, shape (num_segments * 2 * max_dof, num_segments * 2 * max_dof)
         """
 
-        def K_segment_i(i_segment):
+        def K_segment_i(i_segment: Array) -> Array:
+            """Assemble stiffness contributions for one segment by quadrature.
+
+            Args:
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Array: Two blocks (joint/link) of shape (2, max_dof, max_dof).
+            """
             # Joint ==============================
             K_joint_i = jnp.zeros(
                 (self.max_dof, self.max_dof)
@@ -2285,7 +2580,15 @@ class GVS(DynamicalSystem):
             Es_i = self.V_Es[i_segment]  # (max_nip, 6, 6)
             B_Xs_i = self.V_B_Xs[i_segment]  # (max_nip, 6, max_dof)
 
-            def K_eval_points(i_eval):
+            def K_eval_points(i_eval: Array) -> Array:
+                """Stiffness block at a single quadrature point.
+
+                Args:
+                    i_eval (Array): Quadrature point index (int).
+
+                Returns:
+                    Array: Block of shape (max_dof, max_dof).
+                """
                 Ws_j = Ws_i[i_eval]
                 Es_j = Es_i[i_eval]  # (6, 6)
                 B_Xs_j = B_Xs_i[i_eval]  # (6, max_dof)
@@ -2361,7 +2664,15 @@ class GVS(DynamicalSystem):
             D_full (Array): Full damping matrix, shape (num_segments * 2 * max_dof, num_segments * 2 * max_dof)
         """
 
-        def D_segment_i(i_segment):
+        def D_segment_i(i_segment: Array) -> Array:
+            """Assemble damping contributions for one segment by quadrature.
+
+            Args:
+                i_segment (Array): Segment index (int).
+
+            Returns:
+                Array: Two blocks (joint/link) of shape (2, max_dof, max_dof).
+            """
             # Joint ============================== TODO
             D_joint_i = jnp.zeros(
                 (self.max_dof, self.max_dof)
@@ -2373,7 +2684,15 @@ class GVS(DynamicalSystem):
             Gs_i = self.V_Gs[i_segment]  # (max_nip, 6, 6)
             B_Xs_i = self.V_B_Xs[i_segment]  # (max_nip, 6, max_dof)
 
-            def D_eval_points(i_eval):
+            def D_eval_points(i_eval: Array) -> Array:
+                """Damping block at a single quadrature point.
+
+                Args:
+                    i_eval (Array): Quadrature point index (int).
+
+                Returns:
+                    Array: Block of shape (max_dof, max_dof).
+                """
                 Ws_j = Ws_i[i_eval]
                 Gs_j = Gs_i[i_eval]  # (6, 6)
                 B_Xs_j = B_Xs_i[i_eval]  # (6, max_dof)
