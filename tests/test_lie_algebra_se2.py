@@ -27,7 +27,7 @@ jax.config.update("jax_enable_x64", True)
 
 RTOL = Tolerance.rtol()
 ATOL = Tolerance.atol()
-EPS = 1e-6
+EPS = float(jnp.finfo(jnp.float64).eps)
 J = jnp.array([[0.0, -1.0], [1.0, 0.0]])
 
 
@@ -56,6 +56,62 @@ def test_log_se2_inverts_exp_se2_zero_angle():
     recovered = log_SE2(g, eps=EPS)
 
     assert_allclose(recovered, vec, rtol=RTOL, atol=ATOL)
+
+
+def test_log_se2_pure_translation():
+    translation = jnp.array([0.35, -0.27])
+    g = jnp.array(
+        [
+            [1.0, 0.0, translation[0]],
+            [0.0, 1.0, translation[1]],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    recovered = log_SE2(g, eps=EPS)
+    expected = jnp.array([0.0, translation[0], translation[1]])
+
+    assert_allclose(recovered, expected, rtol=RTOL, atol=ATOL)
+
+
+def test_log_se2_pure_rotation():
+    theta = jnp.pi / 7.0
+    c = jnp.cos(theta)
+    s = jnp.sin(theta)
+    g = jnp.array(
+        [
+            [c, -s, 0.0],
+            [s, c, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    recovered = log_SE2(g, eps=EPS)
+    expected = jnp.array([theta, 0.0, 0.0])
+
+    assert_allclose(recovered, expected, rtol=RTOL, atol=ATOL)
+
+
+def test_log_se2_handles_near_identity_transform():
+    vec = jnp.array([1e-10, 2e-4, -3e-4])
+    g = exp_SE2(vec)
+
+    recovered = log_SE2(g, eps=EPS)
+
+    assert not jnp.isnan(recovered).any()
+    assert_allclose(recovered, vec, rtol=RTOL, atol=ATOL)
+
+
+def test_log_se2_round_trip_random_vectors():
+    key = jax.random.PRNGKey(123)
+
+    for _ in range(5):
+        key, subkey = jax.random.split(key)
+        vec = jax.random.uniform(subkey, shape=(3,), minval=-0.9, maxval=0.9)
+        g = exp_SE2(vec)
+        recovered = log_SE2(g, eps=EPS)
+
+        assert_allclose(recovered, vec, rtol=RTOL, atol=ATOL)
 
 
 @pytest.mark.parametrize(
@@ -220,6 +276,7 @@ def test_tangent_derivative_gi_se2_zero_theta_matches_truncated_series():
 
     assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
 
+
 def test_tangent_derivative_matches_autodiff(N: int = 10):
     key = jax.random.PRNGKey(0)
     for _i in range(N):
@@ -240,6 +297,49 @@ def test_tangent_derivative_matches_autodiff(N: int = 10):
         closed_form = Tangent_derivative_gi_se2(xi, xid, s, eps=EPS)
 
         assert_allclose(autodiff, closed_form, rtol=RTOL, atol=ATOL)
+
+
+def test_se2_helpers_are_autodiff_finite_at_zero():
+    xi_zero = jnp.zeros((3,))
+    xid_zero = jnp.zeros((3,))
+    s = jnp.array(0.4)
+
+    def assert_autodiff_finite(fn, arg, fn_name=None):
+        jac_rev = jax.jacrev(fn)(arg)
+        jac_fwd = jax.jacfwd(fn)(arg)
+        assert jnp.isfinite(jac_rev).all(), (
+            "Jacobian (reverse) is not finite of fn {}".format(fn_name)
+        )
+        assert jnp.isfinite(jac_fwd).all(), (
+            "Jacobian (forward) is not finite of fn {}".format(fn_name)
+        )
+
+    def tangent_fn(xi):
+        return Tangent_gi_se2(xi, s, eps=EPS).reshape(-1)
+
+    assert_autodiff_finite(tangent_fn, xi_zero, fn_name="Tangent_gi_se2")
+
+    def tangent_dot_wrt_xi(xi):
+        return Tangent_derivative_gi_se2(xi, xid_zero, s, eps=EPS).reshape(-1)
+
+    def tangent_dot_wrt_xid(xid):
+        return Tangent_derivative_gi_se2(xi_zero, xid, s, eps=EPS).reshape(-1)
+
+    for fn, arg in ((tangent_dot_wrt_xi, xi_zero), (tangent_dot_wrt_xid, xid_zero)):
+        assert_autodiff_finite(fn, arg, fn_name=fn.__name__)
+
+    def exp_gn_fn(xi):
+        return exp_gn_SE2(xi, eps=EPS).reshape(-1)
+
+    assert_autodiff_finite(exp_gn_fn, xi_zero, fn_name="exp_gn_SE2")
+
+    def log_fn(g_flat):
+        g = g_flat.reshape((3, 3))
+        return log_SE2(g, eps=EPS)
+
+    g_identity = jnp.eye(3).reshape(-1)
+    assert_autodiff_finite(log_fn, g_identity, fn_name="log_SE2")
+
 
 if __name__ == "__main__":
     # run pytest with activated stdout

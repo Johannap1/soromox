@@ -174,6 +174,10 @@ def _planar_pcs_context(system: PlanarPCS) -> MutableMapping[str, Array]:
     dof = system.num_actuators
     q = jnp.linspace(-0.2, 0.2, dof)
     qd = jnp.linspace(0.25, -0.25, dof)
+    s_vals = system.L_cum[1:]
+    def _forward_kinematics_at_s(s):
+        return system.forward_kinematics(q, s)
+    chi_tips = jax.vmap(_forward_kinematics_at_s)(s_vals)
     ctx: MutableMapping[str, Array] = {
         "q": q,
         "qd": qd,
@@ -182,6 +186,7 @@ def _planar_pcs_context(system: PlanarPCS) -> MutableMapping[str, Array]:
         "u": jnp.zeros((system.num_actuators,)),
         "tau_ext": jnp.zeros((dof,)),
         "s_tip": jnp.sum(system.L),
+        "chi_tips": chi_tips,
     }
     return ctx
 
@@ -211,6 +216,12 @@ def _pcs_context(system: PCS) -> MutableMapping[str, Array]:
     dof = system.num_actuators
     q = jnp.linspace(-0.15, 0.15, dof)
     qd = jnp.linspace(0.18, -0.18, dof)
+    s_vals = system.L_cum[1:]
+    g_tips = jax.vmap(lambda s: system.forward_kinematics(q, s))(s_vals)
+    midpoints = system.L_cum[:-1] + 0.5 * system.L
+    s_points = jnp.concatenate(
+        [jnp.array([0.0], dtype=q.dtype), midpoints, system.L_cum[1:]]
+    )
     ctx: MutableMapping[str, Array] = {
         "q": q,
         "qd": qd,
@@ -219,6 +230,8 @@ def _pcs_context(system: PCS) -> MutableMapping[str, Array]:
         "u": jnp.zeros((system.num_actuators,)),
         "tau_ext": jnp.zeros((dof,)),
         "s_tip": jnp.sum(system.L),
+        "g_tips": g_tips,
+        "s_points": s_points,
     }
     return ctx
 
@@ -288,6 +301,11 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (sys.forward_kinematics, (ctx["q"], ctx["s_tip"])),
         ),
         BenchmarkCase(
+            name="inverse_kinematics",
+            description="Recover strains from planar tip poses",
+            builder=lambda sys, ctx, _: (sys.inverse_kinematics, (ctx["chi_tips"],)),
+        ),
+        BenchmarkCase(
             name="jacobian",
             builder=lambda sys, ctx, _: (sys.jacobian, (ctx["q"], ctx["s_tip"])),
         ),
@@ -340,6 +358,18 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         BenchmarkCase(
             name="forward_kinematics",
             builder=lambda sys, ctx, _: (sys.forward_kinematics, (ctx["q"], ctx["s_tip"])),
+        ),
+        BenchmarkCase(
+            name="forward_kinematics_batched",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_batched,
+                (ctx["q"], ctx["s_points"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="inverse_kinematics",
+            description="Recover strains from spatial tip transforms",
+            builder=lambda sys, ctx, _: (sys.inverse_kinematics, (ctx["g_tips"],)),
         ),
         BenchmarkCase(
             name="jacobian",
@@ -573,7 +603,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fn, call_args = case.builder(system, ctx, runtime)
                 print(f"  -> {case.name} ...", end=" ", flush=True)
                 compile_time, exec_time = _measure_jitted_call(fn, call_args, runtime.execution_repeats)
-                print(f"compile {compile_time:.4f}s | exec {exec_time:.4f}s")
+
+                per_point_note = ""
+                if case.name == "forward_kinematics_batched" and len(call_args) >= 2:
+                    s_arg = call_args[1]
+                    num_points = None
+                    if hasattr(s_arg, "shape") and s_arg.shape:
+                        num_points = int(s_arg.shape[0])
+                    else:
+                        try:
+                            num_points = int(len(s_arg))
+                        except TypeError:
+                            num_points = None
+                    if num_points and num_points > 0:
+                        compile_time /= num_points
+                        exec_time /= num_points
+                        per_point_note = f" (per point over {num_points})"
+
+                print(f"compile {compile_time:.4f}s | exec {exec_time:.4f}s{per_point_note}")
                 results.append(
                     {
                         "system": system_name,
