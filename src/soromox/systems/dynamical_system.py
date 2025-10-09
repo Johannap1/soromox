@@ -29,7 +29,8 @@ class DynamicalSystem(eqx.Module):
         t0: Optional[float] = 0.0,
         t1: Optional[float] = 10.0,
         dt: Optional[float] = 1e-4,
-        save_every_n_steps: int = 1,
+        saveat_ts: Optional[Array] = None,
+        save_dt: Optional[Union[float]] = 0.01,
         solver: Optional[AbstractSolver] = Tsit5(),
         stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
         max_steps: Optional[int] = None,
@@ -49,10 +50,10 @@ class DynamicalSystem(eqx.Module):
                 Default is 10.0.
             dt (float, optional): Time step for the solver.
                 Default is 1e-4.
-            save_every_n_steps (int, optional): Determines how many time steps to skip
-                when saving the output. For example, if set to 1, every time step is saved;
-                if set to 10, every 10th time step is saved.
-                Default is 1 (save every step).
+            saveat_ts (Array, optional): Array of time steps to be saved in the output.
+                If not provided, falls back to `save_dt`.
+            save_dt (float, optional): Time interval at which to save the solution.
+                If saveat_ts is provided, this is ignored. Default is 0.01 (i.e., save every 10 ms).
             solver (AbstractSolver, optional): Solver to use for the ODE integration.
                 Default is Tsit5() (Runge-Kutta 5(4) method).
             stepsize_controller (PIDController, optional): Stepsize controller for the solver.
@@ -70,20 +71,20 @@ class DynamicalSystem(eqx.Module):
             u = jnp.zeros((self.num_actuators,))
         if tau_ext is None:
             tau_ext = jnp.zeros((q0.shape[-1],))
+        if saveat_ts is None:
+            assert save_dt is not None, "Either saveat_ts or save_dt must be provided."
+            assert save_dt > 0.0, "save_dt must be positive."
+            assert save_dt >= dt, "save_dt must be greater than or equal to the simulation dt."
+            saveat_ts = jnp.arange(t0, t1 + save_dt, save_dt)
 
         term = ODETerm(self.forward_dynamics)
-
-        t = jnp.arange(t0, t1, dt)  # Time points for the solution
-        
-        assert save_every_n_steps > 0, "save_every_n_steps must be a positive integer."
-        assert isinstance(save_every_n_steps, int), "save_every_n_steps must be an integer."
-        saveat = SaveAt(ts=t[::save_every_n_steps])  # Save at specified time points
+        saveat = SaveAt(ts=saveat_ts)  # Save at specified time points
 
         sol = diffeqsolve(
             terms=term,
             solver=solver,
-            t0=t[0],
-            t1=t[-1],
+            t0=t0,
+            t1=t1,
             dt0=dt,
             y0=y0,
             args=(u, tau_ext),
