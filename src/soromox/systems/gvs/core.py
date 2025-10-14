@@ -2350,9 +2350,8 @@ class GVS(DynamicalSystem):
                 J_j = J_i[i_eval]  # (6, num_segments * 2 * max_dof)
                 M_j = M_i[i_eval]  # (6, 6)
 
-                return (
-                    Ws_j * J_j.T @ M_j @ Ad_g_j_inv @ self.g
-                )  # (num_segments * 2 * max_dof, 1)
+                G_j = - Ws_j * J_j.T @ M_j @ Ad_g_j_inv @ self.g  # (num_segments * 2 * max_dof, 1)
+                return G_j
 
             # we can skip the first and last quadrature points since their weight is zero
             G_blocks_segment_i = vmap(G_eval_points)(
@@ -2669,7 +2668,7 @@ class GVS(DynamicalSystem):
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
         qdd = B_inv @ (
-            tau_u + tau_ext - C @ qd + G - tau_el - D @ qd
+            tau_u + tau_ext - C @ qd - G - tau_el - D @ qd
         )  # Compute the acceleration
 
         yd = jnp.concatenate([qd, qdd])
