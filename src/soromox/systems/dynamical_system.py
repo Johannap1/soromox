@@ -1,6 +1,6 @@
 __all__ = ["DynamicalSystem"]
 import equinox as eqx
-from jax import Array, jit, lax
+from jax import Array, jit, lax, vmap
 from jax import numpy as jnp
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple, Type, Union, Optional
@@ -15,6 +15,9 @@ from diffrax import (
     ConstantStepSize,
     AbstractSolver,
 )
+
+# Optimistix (for root finding)
+import optimistix as optx
 
 
 class DynamicalSystem(eqx.Module):
@@ -99,3 +102,36 @@ class DynamicalSystem(eqx.Module):
         qs, qds = jnp.split(y_out, 2, axis=1)
 
         return ts, qs, qds
+
+    def solve_statics(
+        self,
+        q_guess: Array,
+        u: Optional[Array] = None,
+        tau_ext: Optional[Array] = None,
+        solver: Optional[optx.AbstractRootFinder] = optx.Newton(rtol=1e-5, atol=1e-5),
+    ) -> optx.Solution:
+        """
+        Solve the system statics using Optimistix.
+
+        Args:
+            q_guess (Array): Set of initial guess configurations (strains).
+            u (Array, optional): Actuation/control input.
+                Default is None (no actuation).
+            tau_ext (Array, optional): External forces/torques applied to the system.
+            solver (AbstractRootFinder, optional): Solver to use for the root finding.
+                Default is Newton(rtol=1e-5, atol=1e-5) (Newton-Raphson method).
+
+        Returns:
+            sol (optx.Solution): Solution object of the root finder.
+        """
+        if u is None:
+            u = jnp.zeros((self.num_actuators,))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((self.num_links,))
+        
+        sol = vmap(
+            lambda fn, s, y0, args: optx.root_find(fn, s, y0, args, max_steps=256, throw=False),
+            in_axes=(None, None, 0, None),
+            out_axes=0
+        )(self.statics_residual, solver, jnp.atleast_2d(q_guess), (u, tau_ext))
+        return sol

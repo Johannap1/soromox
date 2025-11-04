@@ -692,6 +692,50 @@ class Pendulum(DynamicalSystem):
         qdd = jnp.linalg.solve(B, rhs)
         return jnp.concatenate([qd, qdd])
 
+    @eqx.filter_jit
+    def statics_residual(
+        self,
+        q: Array,
+        actuation_args: Optional[Tuple] = None,
+    ) -> Array:
+        """
+        Compute the statics for the pendulum system in state space form.
+
+        Solves the equation of motion: G(q) + K(q) - tau_u - τ_ext = 0
+        and returns the roots.
+
+        Args:
+            q (Array): initial guess of the residual, shape (N,) [rad]
+            actuation_args (Optional[Tuple]): Actuation specification:
+                - None: u=0, tau_ext=0 (free motion)
+                - (u,): control torques u, tau_ext=0
+                - (u, tau_ext): both control and external torques
+
+        Returns:
+            residual (Array): residual, shape (N,) [N]
+        """
+
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u, tau_ext = actuation_args[0], None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be None, (u,), or (u, tau_ext)")
+
+        if u is None:
+            u = jnp.zeros((self.num_actuators,))
+        if tau_ext is None:
+            tau_ext = jnp.zeros((self.num_links,))
+
+        G = self.gravitational_force(q)
+        tau_el = self.elastic_force(q)
+        tau_u = self.actuation_force(q, u)
+        residual = tau_el + G - tau_u - tau_ext
+        return residual
+
+
     # ---------------------
     # Energy methods
     # ---------------------
