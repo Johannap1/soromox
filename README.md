@@ -15,7 +15,7 @@
 
 </div>
 
-> **📢 Note**: SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). It introduces significant improvements including support for an extended set of systems (General/3D PCS and GVS), replacement of symbolic derivations with numerical implementations for better scalability and faster JIT compilation, and migration from a functional to an object-oriented architecture using Equinox dataclasses for enhanced extendability.
+> **📢 Note**: SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). It introduces significant improvements including support for an extended set of systems (Spatial PCS and GVS), replacement of symbolic derivations with numerical implementations for better scalability and faster JIT compilation, and migration from a functional to an object-oriented architecture using Equinox dataclasses for enhanced extendability.
 
 We provide implementations of several popular and expressive soft robot models in JAX for fast, parallelizable, and differentiable simulations. Specifically, we focus on strain-based models that are suitable for modeling slender structures like soft robots (i.e., robots with a large length compared to their diameter often referred to as Cosserat rods).
 So far, we have implemented the following systems:
