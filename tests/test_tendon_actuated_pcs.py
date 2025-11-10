@@ -1,4 +1,5 @@
 import jax
+import pytest
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from jax import Array
@@ -53,6 +54,31 @@ def _create_robot(
         robot_kwargs["strain_selector"] = strain_selector
 
     return TendonActuatedPCS(**robot_kwargs)
+
+
+def _stacked_tendon_params(num_segments: int, num_tendons: int) -> Dict[str, Array]:
+    """
+    Build a set of tendon routing parameters covering multiple attachments and slopes.
+    """
+    if num_tendons < 1:
+        raise ValueError("num_tendons must be at least 1.")
+    idx = jnp.arange(num_tendons, dtype=jnp.int32)
+    attachment = jnp.minimum(idx % num_segments, num_segments - 1)
+    base = idx.astype(jnp.float64) + 1.0
+    alternating = jnp.where(idx % 2 == 0, 1.0, -1.0)
+
+    ry = 0.02 * base * alternating
+    rz = -0.015 * (base + 0.5)
+    my = 0.01 * (jnp.mod(idx, 3).astype(jnp.float64) - 1.0)
+    mz = 0.012 * (jnp.mod(idx + 1, 3).astype(jnp.float64) - 1.0)
+
+    return {
+        "ry": ry,
+        "rz": rz,
+        "my": my,
+        "mz": mz,
+        "idx_seg_att": attachment,
+    }
 
 
 def reference_actuation_matrix(
@@ -301,9 +327,156 @@ def test_actuation_matrix_with_inactive_strains():
         expected,
         rtol=Tolerance.rtol(),
         atol=Tolerance.atol(),
+        )
+
+
+def test_constant_curvature_segment_actuation_matches_closed_form_expression_from_pustina2024():
+    """
+    Validate Equation (15) and the following y expression from
+    Pustina et al. (2024) for a single-segment constant-curvature rod.
+
+    For a single segment with only bending (kappa_y, kappa_z) and axial strain
+    active, Eq. (15) predicts a constant actuation matrix whose entries depend
+    only on the tendon radius d and the segment length L. The subsequent
+    expression for y states that tendon lengths equal the rest length plus
+    A(q)^T q. We check both statements here.
+
+    The PCC coordinates (kappa_i, phi_i, delta_L_i) used in the paper relate
+    to SoRoMoX strains (kappa_y, kappa_z, sigma_x) as
+        kappa_i = sqrt(kappa_y^2 + kappa_z^2),
+        phi_i   = atan2(kappa_y, -kappa_z)   (bending angle measured from +z),
+        delta_L_i = (sigma_x - 1) * L,
+    where L is the segment length (also the tendon rest length in this test).
+    """
+
+    segment_lengths = jnp.array([1.0], dtype=jnp.float64)
+    d = 1.0e-2  # tendon distance/radius from centerline
+    tendon_angles = jnp.array([0.0, 2 * jnp.pi / 3, 4 * jnp.pi / 3], dtype=jnp.float64)
+    tendon_params = {
+        "ry": d * jnp.cos(tendon_angles),
+        "rz": d * jnp.sin(tendon_angles),
+        "my": jnp.zeros_like(tendon_angles),
+        "mz": jnp.zeros_like(tendon_angles),
+        "idx_seg_att": jnp.zeros((3,), dtype=jnp.int32),
+    }
+    # activate bending about y and z plus axial elongation
+    strain_selector = jnp.array(
+        [False, True, True, True, False, False], dtype=bool
+    )
+
+    robot = _create_robot(
+        segment_lengths, tendon_params, strain_selector=strain_selector
+    )
+    q = jnp.array([0.12, -0.07, 0.03], dtype=jnp.float64)
+
+    A_numeric = robot.actuation_matrix(q)
+
+    segment_length = segment_lengths[0]
+    sqrt_three = jnp.sqrt(3.0)
+    expected_A = jnp.array(
+        [
+            [
+                0.0,
+                (sqrt_three * d * segment_length) / 2.0,
+                -(sqrt_three * d * segment_length) / 2.0,
+            ],
+            [
+                -d * segment_length,
+                0.5 * d * segment_length,
+                0.5 * d * segment_length,
+            ],
+            [
+                segment_length,
+                segment_length,
+                segment_length,
+            ],
+        ],
+        dtype=jnp.float64,
+    )
+
+    assert_allclose(
+        A_numeric,
+        expected_A,
+        rtol=Tolerance.rtol(),
+        atol=Tolerance.atol(),
+    )
+
+    tendon_lengths = robot.tendon_length(q)
+
+    # Map SoRoMoX strains (kappa_y, kappa_z, sigma_x) to the PCC coordinates
+    # used in Pustina et al. (2024), Example 5.
+    kappa_y, kappa_z = q[0], q[1]
+    sigma_x = q[2] + 1.0  # xi_ref adds 1.0 to axial strain
+    kappa_mag = jnp.sqrt(kappa_y**2 + kappa_z**2)
+    # Paper’s bending direction is measured from +z, so swapping arctan2
+    # arguments guarantees cos(q2) = -kappa_z / kappa_mag and sin(q2) =
+    # kappa_y / kappa_mag as in Eq. (15).
+    phi = jnp.arctan2(kappa_y, -kappa_z)
+    delta_L = (sigma_x - 1.0) * segment_length
+    # q1 stores kappa_i * L to match the notation in the paper.
+    q1, q2, q3 = segment_length * kappa_mag, phi, delta_L
+    q4 = q5 = q6 = 0.0  # Only one segment is active in this scenario.
+    cos_q2, sin_q2 = jnp.cos(q2), jnp.sin(q2)
+    cos_q5, sin_q5 = jnp.cos(q5), jnp.sin(q5)
+
+    common_cos = q1 * cos_q2 + q4 * cos_q5
+    common_sin = q1 * sin_q2 + q4 * sin_q5
+    y_expr = jnp.array(
+        [
+            q3 + q6 + d * common_cos,
+            q3
+            + q6
+            - 0.5 * d * common_cos
+            + (jnp.sqrt(3.0) / 2.0) * d * common_sin,
+            q3
+            + q6
+            - 0.5 * d * common_cos
+            - (jnp.sqrt(3.0) / 2.0) * d * common_sin,
+        ],
+        dtype=jnp.float64,
+    )
+    expected_lengths = segment_length + y_expr
+
+    assert_allclose(
+        tendon_lengths,
+        expected_lengths,
+        rtol=Tolerance.rtol(),
+        atol=Tolerance.atol(),
     )
 
 
+@pytest.mark.parametrize("num_tendons", [1, 2, 4])
+@pytest.mark.parametrize("num_segments", [1, 2, 3])
+def test_tendon_length_gradient_matches_actuation_matrix_random_configs(
+    num_segments: int, num_tendons: int
+):
+    """Ensure tendon_length Jacobian equals actuation matrix transpose."""
+
+    segment_lengths = jnp.linspace(
+        0.2, 0.2 + 0.05 * (num_segments - 1), num_segments, dtype=jnp.float64
+    )
+    tendon_params = _stacked_tendon_params(num_segments, num_tendons)
+    robot = _create_robot(segment_lengths, tendon_params)
+
+    key = jax.random.PRNGKey(42 + num_segments * 10 + num_tendons)
+
+    for _ in range(10):
+        key, subkey = jax.random.split(key)
+        q = 0.05 * jax.random.normal(
+            subkey, (robot.num_active_strains,), dtype=jnp.float64
+        )
+        lengths = robot.tendon_length(q)
+        assert lengths.shape == (robot.num_actuators,)
+        jac = jax.jacrev(robot.tendon_length)(q)
+        A = robot.actuation_matrix(q)
+        assert_allclose(
+            jac,
+            A.T,
+            rtol=Tolerance.rtol(),
+            atol=Tolerance.atol(),
+        )
+
+
 if __name__ == "__main__":
-    print("Running tests for tendon actuated Piecewise Constant Strain...")
-    test_actuation_matrix_pcs()
+    # run pytest with activated stdout
+    pytest.main([__file__])

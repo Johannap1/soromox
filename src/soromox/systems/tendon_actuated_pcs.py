@@ -14,7 +14,7 @@ from soromox.utils.integration import scale_gaussian_quadrature
 
 class TendonActuatedPCS(PCS):
     """
-    Piecewise Constant Strain (PCS) model for 3D soft continuum robots.
+    Piecewise Constant Strain (PCS) model for 3D soft continuum robots with tendon actuation.
 
     This class implements the geometric and dynamic modeling of a 3D soft robot
     using the Cosserat rod theory and piecewise constant strain assumption.
@@ -70,6 +70,11 @@ class TendonActuatedPCS(PCS):
                 - sigma_y corresponds to shear along the y-axis,
                 - sigma_z corresponds to shear along the z-axis.
 
+    References:
+    ----------
+    - [PCS model] Renda, Federico, Frédéric Boyer, Jorge Dias, and Lakmal Seneviratne. "Discrete cosserat approach for multisection soft manipulator dynamics." IEEE Transactions on Robotics 34, no. 6 (2018): 1518-1533.
+    - [Actuation matrix for tendon-actuated soft robots] Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020). A geometric variable-strain approach for static modeling of soft manipulators with tendon and fluidic actuation. IEEE Robotics and Automation Letters, 5(3), 4006-4013.
+    - [Tendon lengths] Pustina, P., Della Santina, C., Boyer, F., De Luca, A., & Renda, F. (2024). Input decoupling of lagrangian systems via coordinate transformation: General characterization and its application to soft robotics. IEEE transactions on robotics, 40, 2098-2110.
     """
 
     tendon_routing_params: Dict[str, Array]
@@ -284,6 +289,7 @@ class TendonActuatedPCS(PCS):
         Compute the actuation matrix contribution of one tendon k at s contained in segment i.
 
         Args:
+            i (Array): index of the segment ()
             xi_i (Array): strain at segment i (6,)
             tendon_routing_params_k (Dict[str, Array]): parameters of the tendon k
             s (Array): abscissa points (num_gauss_points,)
@@ -292,7 +298,7 @@ class TendonActuatedPCS(PCS):
             Phi_a_k (Array): local actuation matrix contribution of one tendon of shape (6,).
         """
         attachment_segment_idx = tendon_routing_params_k["idx_seg_att"]  # ()
-        cond = attachment_segment_idx >= i  # ()
+        is_tendon_active = attachment_segment_idx >= i  # ()
 
         # extract tendon routing evolution in the cross-sectional plane
         d_s = jnp.append(self.d_s(tendon_routing_params_k, s), 1.0)  # (4,)
@@ -304,7 +310,7 @@ class TendonActuatedPCS(PCS):
         norm = jnp.linalg.norm(term)  # ()
         t = term / norm  # (3,)
 
-        Phi_a_k = cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  # (6,)
+        Phi_a_k = is_tendon_active * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  # (6,)
 
         return Phi_a_k
 
@@ -312,6 +318,8 @@ class TendonActuatedPCS(PCS):
     def actuation_matrix(self, q: Array) -> Array:
         """
         Compute the actuation matrix of the robot.
+        This implementation is based on the formulation presented in:
+        Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020). A geometric variable-strain approach for static modeling of soft manipulators with tendon and fluidic actuation. IEEE Robotics and Automation Letters, 5(3), 4006-4013.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
@@ -390,6 +398,105 @@ class TendonActuatedPCS(PCS):
         A = self.B_xi.T @ A  # (num_active_strains, num_actuators)
 
         return A
+    
+    @eqx.filter_jit
+    def tendon_length(self, q: Array) -> Array:
+        """
+        Compute the length of all tendons of the robot.
+        This implementation is based on the formulation presented in:
+        Pustina, P., Della Santina, C., Boyer, F., De Luca, A., & Renda, F. (2024). Input decoupling of lagrangian systems via coordinate transformation: General characterization and its application to soft robotics. IEEE transactions on robotics, 40, 2098-2110.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            l (Array): Lengths of all tendons of shape (num_actuators,).
+        """
+        # extract strains
+        xi = self.strain(q).reshape((self.num_segments, 6))
+
+        def tendon_length_density_segment_i(i: Array):
+            """
+            Compute the tendon length density at all Gauss points of segment i.
+
+            Args:
+                i (Array): segment index.
+
+            Returns:
+                dl_ds_i (Array): tendon length density values at Gauss points,
+                    shape (num_gauss_points, num_actuators).
+            """
+            xi_i = xi[i]
+
+            def tendon_length_density_point_j(j: Array):
+                """
+                Evaluate the tendon length density at the Gauss point j inside segment i.
+
+                Args:
+                    j (Array): Gauss point index.
+
+                Returns:
+                    dl_ds_j (Array): local tendon length density of shape (num_actuators,)
+                        at Gauss point j.
+                """
+                # extract gaussian point and weight
+                Xs_j = Xs_scaled[j]
+                Ws_j = Ws_scaled[j]
+
+                def tendon_length_density_tendon_k(
+                    tendon_routing_params_k: Dict[str, Array]
+                ) -> Array:
+                    """
+                    Compute the tendon length density contribution of one tendon at the
+                    current Gauss point.
+
+                    Args:
+                        tendon_routing_params_k (Dict[str, Array]): parameters of the tendon.
+                    
+                    Returns:
+                        dl_ds_k (Array): scalar tendon length density contribution.
+                    """
+                    # extract tendon routing evolution in the cross-sectional plane
+                    dd_s = jnp.append(
+                        self.dd_s_ds(tendon_routing_params_k, Xs_j), 1.0
+                    )  # (4,)
+
+                    # compute local actuation basis
+                    Phi_a_k = self._local_actuation_basis(
+                        i, xi_i, Xs_j, tendon_routing_params_k
+                    )  # (6,)
+
+                    # compute tendon length density contribution
+                    dl_ds_k = jnp.dot(Phi_a_k.T, xi_i + jnp.concat([jnp.zeros((3,)), dd_s[:3]], axis=-1))  # ()
+
+                    return dl_ds_k
+
+                # Vectorize the tendon length density computation for all tendons
+                dl_ds_j = vmap(tendon_length_density_tendon_k)(
+                    self.tendon_routing_params
+                )  # (num_actuators,)
+
+                return Ws_j * dl_ds_j
+            
+            Xs_scaled, Ws_scaled = scale_gaussian_quadrature(
+                self.Xs, self.Ws, self.L_cum[i], self.L_cum[i + 1]
+            )
+
+            # Vectorize the tendon length density evaluation for all Gauss points
+            dl_ds_i = vmap(tendon_length_density_point_j)(
+                jnp.arange(self.num_gauss_points)
+            )  # (num_gauss_points, num_actuators)
+
+            return dl_ds_i
+
+        # Vectorize the tendon length density evaluation for all segments
+        dl_ds_blocks = vmap(tendon_length_density_segment_i)(
+            jnp.arange(self.num_segments)
+        )  # (num_segments, num_gauss_points, num_actuators)
+
+        l = jnp.sum(dl_ds_blocks, axis=(0, 1))  # Sum over the segments and Gauss points
+
+        return l
 
     @eqx.filter_jit
     def forward_kinematics_tendons(self, q: Array, s: Array) -> Array:
