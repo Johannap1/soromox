@@ -7,10 +7,19 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import shutil
 from typing import Any, Dict, List, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 
+if shutil.which("latex"):
+    plt.rcParams.update(
+        {
+            "text.usetex": True,
+            "font.family": "serif",
+            "font.serif": ["Computer Modern Romand"],
+        }
+    )
 
 NUMERIC_FIELDS = {
     "size_value": int,
@@ -118,10 +127,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("input", type=Path, help="Path to the benchmark JSON or CSV file")
     parser.add_argument("--systems", nargs="*", help="Optional list of systems to include")
     parser.add_argument("--functions", nargs="*", help="Optional list of function names to include")
-    parser.add_argument("--output", type=Path, help="Optional output image path")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional output image path (defaults to CSV input with .pdf suffix)",
+    )
     parser.add_argument("--show", action="store_true", help="Display the plot window")
     parser.add_argument("--title", help="Optional figure title")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.output is None and args.input.suffix.lower() == ".csv":
+        args.output = args.input.with_suffix(".pdf")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
