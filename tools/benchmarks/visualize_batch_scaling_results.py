@@ -158,7 +158,7 @@ def _plot_total_throughput(
         ax = axes[0, col]
         subset = [row for row in rows if row["system"] == system]
         size_label = subset[0]["size_label"]
-        if size_label == "num_segments":
+        if size_label in ["num_segments", "num_links"]:
             size_label = r"$N$"
         segment_values = sorted({row["segment_count"] for row in subset})
         for seg in segment_values:
