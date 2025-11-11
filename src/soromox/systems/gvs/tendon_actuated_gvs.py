@@ -1,0 +1,468 @@
+__all__ = ["TendonActuatedGVS"]
+import equinox as eqx
+import jax
+from jax import Array, lax, vmap
+from jax import numpy as jnp
+from typing import Callable, Dict, Optional, List
+
+import soromox.utils.lie_algebra as lie
+import soromox.actuation.tendon_actuation as act
+
+from soromox.systems.gvs.attributes import LinkAttributes, JointAttributes, BasisAttributes
+from soromox.systems.gvs.core import GVS
+from soromox.utils.integration import scale_gaussian_quadrature
+
+
+class TendonActuatedGVS(GVS):
+    """
+    Geometric Variable Strain (GVS) model for 3D soft continuum robots.
+
+    This class implements the geometric and dynamic modeling of a 3D soft robot
+    using the Cosserat rod theory with generalized variable strain parametrizations.
+    It supports computation of forward kinematics, Jacobians, and dynamic matrices
+    for robots with arbitrary combinations of link cross-sections, joint types, and
+    strain basis functions. Additionally, it includes tendon actuation capabilities.
+
+  Attributes
+    ----------
+    num_segments : int
+        Number of segments (links) in the robot.
+    max_dof : int
+        Maximum number of degrees of freedom (DOFs) per link or joint.
+    max_nGauss : int
+        Maximum number of Gauss points per link used for integration.
+    max_nip : int
+        Maximum number of integration points per link (= max_nGauss + 2).
+    dof_tot_system : int
+        Total number of DOFs for the robot (sum of joint + link DOFs).
+    dof_tot_max : int
+        Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
+    B_select : Array
+        Strain basis selection matrix mapping active DOFs to the full strain space.
+    V_L, V_L_cum : Array
+        Length of each link, and cumulative link lengths.
+    V_nip : Array
+        Number of integration/evaluation points for each link.
+    V_dof : Array
+        Number of DOFs for each link/joint pair (shape: num_segments x 2).
+    V_Xs, V_Ws : Array
+        Gauss quadrature nodes and weights for each link.
+    V_Ms, V_Es, V_Gs : Array
+        Mass, stiffness, and damping matrices at integration points.
+    V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2 : Array
+        Basis matrices for joints and links at quadrature points and intermediate points.
+    V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2 : Array
+        Reference strain vectors for joints and links.
+    V_K_joint : Array
+        Joint stiffness matrices.
+    g : Array
+        Gravitational acceleration vector in 6D wrench form.
+    V_basistype_idx : Array
+        Index of the strain basis type used for each segment.
+    V_Bdof_params, V_Bodr_params : Array
+        Parameters controlling the strain basis DOFs and orders.
+
+    Notes
+    -----
+    - The GVS model generalizes PCS by allowing the strain distribution in each segment
+      to be expressed in arbitrary basis functions (monomials, Fourier, Gaussian, etc.),
+      rather than assuming it to be constant.
+    - The strain vector per segment is composed of 6 components:
+      [kappa_x, kappa_y, kappa_z, sigma_x, sigma_y, sigma_z].
+    - The joint and link strain contributions are treated separately, with their DOFs
+      padded or truncated to `max_dof` for consistent computation.
+    - Link cross-section geometry can vary along the length and supports circular,
+      rectangular, and elliptical shapes.
+
+    """
+
+    tendon_routing_params: Dict[str, Array]
+    # B_xi_segments: Array
+    d_s: Callable
+    dd_s_ds: Callable
+
+    def __init__(
+        self,
+        links_list: List[LinkAttributes,],
+        joints_list: List[JointAttributes,],
+        basis_list: List[BasisAttributes,],
+        n_gauss_list: List[int],
+        gravity_vector: List[float],
+        max_dof: Optional[int] = None,
+        max_nGauss: Optional[int] = None,
+        *args,
+        tendon_routing_basis: Optional[Dict[str, Callable]] = None,
+        tendon_routing_params: Dict[str, Array],
+        **kwargs,
+    ):
+        """
+        Initialize the TendonActuatedGVS class.
+
+        Args:
+        ----
+        links_list : List[LinkAttributes]
+            List of link property objects (one per segment) containing geometric and
+            material attributes:
+            - section: Type of cross-section ('Circular', 'Rectangular', 'Elliptical').
+            - E: Young's modulus [N/m²].
+            - nu: Poisson's ratio [-1, 0.5].
+            - rho: Density [kg/m³].
+            - eta: Material damping [N·s/m].
+            - L: Length of the link [m].
+            - One of the following geometric parameters must be provided based on the section type:
+                - r_i, r_f: Initial and final radius for circular sections.
+                - h_i, h_f: Initial and final height for rectangular sections.
+                - w_i, w_f: Initial and final width for rectangular sections.
+                - a_i, a_f: Initial and final semi-major axis for elliptical sections.
+                - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
+        joints_list : List[JointAttributes]
+            List of joint property objects (one per segment) describing the connection
+            between segments :
+            - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
+                'Planar', 'Spherical', 'Free', 'Fixed').
+            - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
+            - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
+            - pitch: Pitch for helical joints.
+            - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
+              must have shape (dof_joint, dof_joint); otherwise it is ignored and a
+              zero matrix is used. Units match the active DOFs: rotational terms
+              [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
+        basis_list : List[BasisAttributes]
+            List of strain basis attributes (one per segment) defining the parametrization
+            of the variable strain field along the link:
+            - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
+            - Bdof: Array indicating which types of deformation are selected (1) or not (0).
+                e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
+            - Bodr: Array indicating the orders of the basis functions for each type of deformation.
+            - xi_ref: Reference strain values for each type of deformation.
+        n_gauss_list : List[int]
+            Number of Gauss-Legendre quadrature points for integration in each segment.
+        gravity_vector : List[float]
+            3-element gravity vector [gx, gy, gz] in m/s².
+        max_dof : int, optional
+            Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
+        max_nGauss : int, optional
+            Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
+        tendon_routing_basis (Optional[Dict[str, Callable]]):
+            Dictionary with the tendon routing functions. If None, a linear routing is used.
+            Expected keys and signatures:
+            - "d_s": Callable[[Dict[str, Array], Array], Array]
+                Returns the 3D vector [d_x, d_y, d_z] giving the tendon position
+                with respect to the local cross-section at abscissa s. For typical routing,
+                d_x = 0 as the offset lies in the cross-sectional plane.
+            - "dd_s_ds": Callable[[Dict[str, Array], Array], Array]
+                Returns the derivative over s of d_s.
+        tendon_routing_params (Dict[str, Array]):
+            Dictionary describing the tendon routing parameters for each actuator (length n_actuators).
+            When using the default linear routing, the following keys are expected:
+            - "ry": Array (n_actuators,)
+                y-intercept of the tendon line at the base [m].
+            - "my": Array (n_actuators,)
+                Slope in the x–y plane [-].
+            - "rz": Array (n_actuators,)
+                z-intercept of the tendon line at the base [m].
+            - "mz": Array (n_actuators,)
+                Slope in the x–z plane [-].
+            - "idx_seg_att": Array (n_actuators,)
+                Attachment segment index for each tendon (0-based, inclusive). The tendon contributes
+                along the backbone up to and including this segment’s distal end.
+        """
+
+        super().__init__(
+            links_list,
+            joints_list,
+            basis_list,
+            n_gauss_list,
+            gravity_vector,
+            max_dof,
+            max_nGauss,
+            *args,
+            **kwargs,
+        )
+
+        # Set default tendon routing basis to linear routing if not provided
+        if tendon_routing_basis is None:
+            tendon_routing_basis = {
+                "d_s": act.linear_routing,
+                "dd_s_ds": act.linear_routing_derivative,
+            }
+        self._set_tendon_routing_basis(tendon_routing_basis)
+        self._set_tendon_routing_params(tendon_routing_params)
+
+    def _set_tendon_routing_params(self, tendon_routing_params: Dict[str, Array]):
+        """
+        This internal function stores as attributes of the class the parameters of
+        the tendon routings specified by the user.
+
+        Args:
+            tendon_routing_params (Dict[str, Array]): parameters of the tendons
+        """
+        if not isinstance(tendon_routing_params, (dict)):
+            raise TypeError(
+                "The parameter 'tendon_routing_params' must be a dictionary of jax.Array."
+            )
+        self.num_actuators = len(list(tendon_routing_params.values())[0])
+        for key, val in tendon_routing_params.items():
+            if len(val) != self.num_actuators:
+                raise ValueError(
+                    f"The arrays in 'tendon_routing_params' must have the same length. Mismatch found in {key}."
+                )
+        for idx in tendon_routing_params["idx_seg_att"]:
+            if idx >= self.num_segments:
+                raise ValueError(
+                    f'The indexes of the segments of attachment (tendon_routing_params["idx_seg_att"]) must be strictly '
+                    + "lower than the number of segments of the robot. Got {idx}; num_segments = {self.num_segments}."
+                )
+        # if self._check_tendon_routing_in_body(tendon_routing_params):
+        #     raise UserWarning(f"Tendon(s) exit the robot body.")
+        self.tendon_routing_params = tendon_routing_params
+
+    def _set_tendon_routing_basis(self, tendon_routing_basis: Dict[str, Callable]):
+        """
+        This internal function stores as attributes of the class the basis functions of
+        the tendon routings specified by the user.
+
+        Args:
+            tendon_routing_basis (Dict[str, Callable]): basis functions of the tendons
+        """
+        self.d_s = tendon_routing_basis["d_s"]
+        self.dd_s_ds = tendon_routing_basis["dd_s_ds"]
+
+
+    def update_tendon_routing_params(
+        self, tendon_routing_params: Dict[str, Array]
+    ) -> "TendonActuatedGVS":
+        """
+        This function updates the parameters of the tendon routings of the object.
+
+        Args:
+            tendon_routing_params (Dict[str, Array]): parameters of the tendons
+
+        Returns:
+            updated self (TendonActuatedGVS): self object with updated parameters
+        """
+        updated_self = self
+
+        # Recompute derived parameters
+        tendon_routing_params = dict(tendon_routing_params)
+        num_actuators = len(list(tendon_routing_params.values())[0])
+
+        # update all fields
+        updated_self = eqx.tree_at(
+            lambda x: x.tendon_routing_params, updated_self, tendon_routing_params
+        )
+        updated_self = eqx.tree_at(
+            lambda x: x.num_actuators, updated_self, num_actuators
+        )
+
+        return updated_self
+
+    @eqx.filter_jit
+    def _local_actuation_basis(self, q: Array, s: Array, i: Array, j: Array) -> Array:
+        """
+        Compute the local actuation basis at current abscissa s.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,)
+            s (Array): abscissa points (num_gauss_points,)
+            i (Array): index of the segment ()
+            j (Array): index of the abscissa points (num_gauss_points,)
+            
+
+        Returns:
+            Phi_a_s (Array): actuation basis at s of shape (6, num_actuators)
+        """
+
+        def Phi_a_ki(single_tendon_routing_params: Dict[str, Array]):
+            """
+            Compute the actuation basis of one tendon at the segment i of the robot.
+
+            Args:
+                single_tendon_routing_params (Dict[str, Array]): parameters of one tendon (6,)
+
+            Returns:
+                Phi_a_ki (Array): actuation basis of one tendon at one segment of shape (6,)
+            """
+            attachment_segment_idx = single_tendon_routing_params["idx_seg_att"]  # ()
+            cond = attachment_segment_idx >= i  # ()
+
+            V_flat = self.V_dof.reshape(-1)
+            starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
+          
+          
+            start_col_link = starts[(2 * i + 1)].astype(jnp.int64)
+            n_active = self.B_select.shape[1]
+            B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
+            BXs = self.V_B_Xs[i, j]  # (6, max_dof)
+            dof_link = self.V_dof[i, 1].astype(jnp.int64)
+            
+            # cols = jnp.arange(dof_link)
+            # BXs_slice = jnp.take(BXs, cols, axis=1)  # (6, dof_link)
+            max_dof = int(self.max_dof)                       # concrete Python int
+            cols_full = jnp.arange(max_dof)                   # concrete array [0..max_dof-1]
+            mask = (cols_full < dof_link).astype(BXs.dtype)   # dynamic comparison -> tracer OK
+            BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
+        
+            B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
+            
+            B_xi_i = B_xi_i.at[:3, :].multiply(1.0 / self.V_L[i])
+
+            # xi_ref = self.V_xi_ref_Xs[i,j]
+            xi_ref = self.V_xi_ref_Xs[i,0]
+            xi_i = B_xi_i @ q + xi_ref
+
+            d_s = jnp.append(self.d_s(single_tendon_routing_params, s), 1.0)  # (4,)
+            dd_s = jnp.append(self.dd_s_ds(single_tendon_routing_params, s), 1.0)  # (4,)
+
+            term = (dd_s + lie.hat_SE3(xi_i) @ d_s)[:-1]  # (3,)
+            norm = jnp.linalg.norm(term)  # ()
+            t = term / norm  # (3,)
+            
+            # print("Phi_a_ki", cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t]))
+            return cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  # (6,)
+
+
+        Phi_a_s = vmap(Phi_a_ki, in_axes=(0), out_axes=1)(self.tendon_routing_params)
+        # print("Phi_a_s", Phi_a_s)
+       
+        return Phi_a_s
+
+    @eqx.filter_jit
+    def actuation_matrix(self, q: Array) -> Array:
+        """
+        Compute the actuation matrix of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+
+        Returns:
+            A (Array): Actuation matrix of shape (num_active_strains, num_actuators).
+        """
+
+        def A_segment_i(i: Array):
+            """
+            Compute the actuation matrix at the gaussian points of segment i of the robot.
+
+            Args:
+                i (Array): index of the segment ()
+
+            Returns:
+                A_i (Array): stack of actuation matrices of shape (num_gauss_points, num_active_strains, num_actuators).
+            """
+
+            def A_point_j(j: Array):
+                """
+                Compute the actuation matrix at the abscissa point corresponding to the gaussian point j.
+
+                Args:
+                    j (Array): index of the gaussian point ()
+
+                Returns:
+                    A_j (Array): local actuation matrix of shape (num_active_strains, num_actuators).
+                """
+                Xs_j = Xs_scaled[j]
+                Ws_j = Ws_scaled[j]
+                Phi_a_j = self._local_actuation_basis(q, Xs_j,i,j)
+
+                
+                V_flat = self.V_dof.reshape(-1)
+                starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
+                
+                start_col_link = starts[(2 * i + 1)].astype(jnp.int64)
+                n_active = self.B_select.shape[1]
+
+                B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
+                BXs = self.V_B_Xs[i, j]  # (6, max_dof)
+                dof_link = self.V_dof[i, 1].astype(jnp.int64)
+                max_dof = int(self.max_dof)                       # concrete Python int
+                cols_full = jnp.arange(max_dof)                   # concrete array [0..max_dof-1]
+                mask = (cols_full < dof_link).astype(BXs.dtype)   # dynamic comparison -> tracer OK
+                BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
+            
+                B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
+                B_xi_i = B_xi_i.at[:3, :].multiply(1.0 / self.V_L[i])
+
+                # print ('B_xi_i =\n', B_xi_i)
+                # print ('Phi_a_j =\n', Phi_a_j)
+
+
+                A_j = B_xi_i.T @ Phi_a_j  # A_s = B_xi.T @ Phi_a
+                return Ws_j * A_j
+
+
+            Xs_scaled, Ws_scaled = scale_gaussian_quadrature(
+                self.V_Xs[i], self.V_Ws[i], self.V_L_cum[i], self.V_L_cum[i + 1]
+            )
+            # Retrieve strain basis of the current segment
+            # B_xi_i = self.B_xi_segments[i]  # (num_active_strains, num_active_strains)
+
+            # Vectorize the actuation matrix computation for all gaussian points
+            A_i = vmap(A_point_j)(
+                jnp.arange(self.max_nGauss+2)
+            )  # (num_gauss_points, num_active_strains, num_actuators)
+
+            # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
+            # A_blocks_i = jnp.stack([A_point_j(j) for j in range(self.max_nGauss)], axis=0)
+            # print('A_blocks_i =\n', A_blocks_i.shape)
+
+            return A_i
+
+        # Vectorize the actuation matrix computation for all segments
+        A_blocks = vmap(A_segment_i)(
+            jnp.arange(self.num_segments)
+        )  # (num_segments, num_gauss_points, num_active_strains, num_actuators)
+
+        # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
+        # A_blocks_tot = jnp.stack([A_segment_i(i) for i in range(self.num_segments)], axis=0)
+        # print('A_blocks_tot =\n', A_blocks_tot.shape)
+
+        A = jnp.sum(A_blocks, axis=(0, 1))  # Sum over segments and Gauss points
+        # print('Actuation matrix A =\n', A)
+        return A
+
+    @eqx.filter_jit
+    def forward_kinematics_tendons(self, q: Array, s: Array) -> Array:
+        """
+        Compute the forward kinematics of the tendon actuators at a point s along the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,)
+            s (Array): point coordinate along the robot ()
+
+        Returns:
+            t_s (Array): cartesian position of the tendons at s, shape (n_actuators, 3)
+        """
+
+        def forward_kinematics_tendon_k(
+            single_tendon_routing_params: Dict[str, Array], q: Array, s: Array
+        ) -> Array:
+            """
+            Compute the forward kinematics of one tendon actuator at a point s along the robot.
+            If s is greater than the length of the tendon, the function returns the last valid
+            position of tendon (i.e., its attachement point).
+
+            Args:
+                single_tendon_routing_params (Dict[str, Array]): parameters of one tendon (6,)
+                q (Array): generalized coordinates of shape (num_active_strains,)
+                s (Array): point coordinate along the robot ()
+
+            Returns:
+                t_k_s (Array): cartesian position of the tendons at s, shape (3,)
+            """
+            lt = self.V_L_cum[single_tendon_routing_params["idx_seg_att"] + 1]  # ()
+            s_val = jnp.clip(s, 0.0, lt)  # ()
+
+            g_s = self.forward_kinematics(q, s_val)  # (4,4)
+            t_k_s = g_s @ jnp.append(
+                self.d_s(single_tendon_routing_params, s_val), 1.0
+            )  # (4,)
+            t_k_s = t_k_s[:-1]  # (3,)
+
+            return t_k_s
+
+        # Vectorize the forward kinematics computation for all tendons
+        t_s = vmap(forward_kinematics_tendon_k, in_axes=(0, None, None))(
+            self.tendon_routing_params, q, s
+        )  # (n_actuators, 3)
+
+        return t_s

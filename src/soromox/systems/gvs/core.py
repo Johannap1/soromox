@@ -911,7 +911,14 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_ini = jnp.eye(4)  # Initial transformation matrix (identity)
+        # g_ini = jnp.eye(4)  # Initial transformation matrix (identity)
+        # Initial transform with custom base rotation Rot_in and zero translation
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g_ini = jnp.eye(4).at[:3, :3].set(Rot_in)
+
+
 
         _, g_list = lax.scan(f=body_segment_i, init=g_ini, xs=indices_link)
 
@@ -1107,7 +1114,12 @@ class GVS(DynamicalSystem):
 
             return g_out, g_out
 
-        g0 = jnp.eye(4)
+        # g0 = jnp.eye(4)
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
+        
 
         # we scan *at least* up to segment seg_idx; for subsequent segments, we don't change a thing
         def step(carry: Array, i: Array) -> Tuple[Array, None]:
@@ -1295,7 +1307,11 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_init = jnp.eye(4)
+        # g_init = jnp.eye(4)
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g_init = jnp.eye(4).at[:3, :3].set(Rot_in)
         J_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
 
         _, J_list = lax.scan(f=body_segment_i, init=(g_init, J_init), xs=indices_link)
@@ -1549,7 +1565,12 @@ class GVS(DynamicalSystem):
             J_next = jnp.where(i <= segment_idx, J_curr, carry[1])
             return (g_next, J_next), None
 
-        g0 = jnp.eye(4)
+        # g0 = jnp.eye(4)
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
+
         J0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         (g_s, J_full), _ = lax.scan(step, (g0, J0), jnp.arange(self.num_segments))
 
@@ -1751,7 +1772,11 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_init = jnp.eye(4)
+        # g_init = jnp.eye(4)
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g_init = jnp.eye(4).at[:3, :3].set(Rot_in)
         Jd_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta_init = jnp.zeros((6,))
 
@@ -2054,7 +2079,11 @@ class GVS(DynamicalSystem):
             eta_next = jnp.where(i <= segment_idx, eta_curr, carry[2])
             return (g_next, Jd_next, eta_next), None
 
-        g0 = jnp.eye(4)
+        # g0 = jnp.eye(4)
+        Rot_in = jnp.array([[0.0, 0.0, 1.0],
+                            [0.0, 1.0, 0.0],
+                            [-1.0, 0.0, 0.0]])
+        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
         Jd0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta0 = jnp.zeros((6,))
         (g_s, Jd_full, _), _ = lax.scan(
@@ -2635,7 +2664,7 @@ class GVS(DynamicalSystem):
 
         B_inv = jnp.linalg.inv(B)  # Inverse of the inertia matrix
         qdd = B_inv @ (
-            tau_u + tau_ext - C @ qd - G - tau_el - D @ qd
+            tau_u + tau_ext - C @ qd + G - tau_el - D @ qd
         )  # Compute the acceleration
 
         yd = jnp.concatenate([qd, qdd])

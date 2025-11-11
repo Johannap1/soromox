@@ -78,6 +78,7 @@ class DynamicalSystem(eqx.Module):
             saveat_ts = jnp.arange(t0, t1 + save_dt, save_dt)
 
         term = ODETerm(self.forward_dynamics)
+        saveat_ts = jnp.clip(saveat_ts, t0, t1)
         saveat = SaveAt(ts=saveat_ts)  # Save at specified time points
 
         sol = diffeqsolve(
