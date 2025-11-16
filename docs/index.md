@@ -12,7 +12,7 @@
     
     SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). The main improvements include:
     
-    - **🎯 Extended System Support**: General/3D PCS and GVS systems
+    - **🎯 Extended System Support**: Spatial PCS and GVS systems
     - **⚡ Numerical Implementation**: Replaced symbolic derivations with numerical implementations for better scalability and significantly reduced JIT compilation times
     - **🏗️ Object-Oriented Architecture**: Migration from functional to Equinox dataclasses-based design enabling easy extendability and modification of methods (e.g., changing actuation mapping)
 

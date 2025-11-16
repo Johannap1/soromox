@@ -11,7 +11,7 @@
     - **Package Name**: `import jsrm` → `import soromox`
     - **Architecture**: Functional approach → Object-oriented Equinox dataclasses
     - **Performance**: Symbolic derivations → Numerical implementations
-    - **New Features**: Support for General/3D PCS and GVS systems
+    - **New Features**: Support for Spatial PCS and GVS systems
     
     See the [User Guide](user-guide/quick-start.md) for migration examples.
 

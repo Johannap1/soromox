@@ -44,7 +44,7 @@ class PCS(DynamicalSystem):
     num_strains : int
         Total number of strain components (6 * num_segments).
     B_xi : Array
-        Basis matrix for projecting active strains.
+        Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
     xi_ref : Array
         Reference strain (reference configuration) of the robot.
     num_gauss_points : int
@@ -65,6 +65,10 @@ class PCS(DynamicalSystem):
                 - sigma_x corresponds to axial strain along the x-axis,
                 - sigma_y corresponds to shear along the y-axis,
                 - sigma_z corresponds to shear along the z-axis.
+
+    References:
+    ----------
+    - Renda, Federico, Frédéric Boyer, Jorge Dias, and Lakmal Seneviratne. "Discrete cosserat approach for multisection soft manipulator dynamics." IEEE Transactions on Robotics 34, no. 6 (2018): 1518-1533.
 
     """
 

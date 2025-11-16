@@ -80,7 +80,7 @@ nav:
         - Classical Pendulum: api/pendulum/pendulum.md
         - Tendon Actuated Pendulum: api/pendulum/tendon-actuated-pendulum.md
       - PCS Systems:
-        - General PCS: api/pcs.md
+        - Spatial PCS: api/pcs.md
         - Planar PCS: api/planar-pcs.md
         - Pneumatic Actuated Planar PCS: api/pneumatic-actuated-planar-pcs.md
         - Tendon Actuated Planar PCS: api/tendon-actuated-planar-pcs.md

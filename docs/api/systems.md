@@ -39,7 +39,7 @@ N-link pendulum systems with active and passive tendon actuation
 
 Multiple implementations of continuum soft robots using piecewise constant strain modeling.
 
-#### [General PCS](pcs.md)
+#### [Spatial PCS](pcs.md)
 
 Core PCS implementation providing the fundamental framework.
 
