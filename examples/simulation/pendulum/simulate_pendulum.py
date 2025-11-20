@@ -29,7 +29,8 @@ q0 = jnp.array([jnp.pi / 8, -jnp.pi / 4])
 
 # set simulation parameters
 solver_dt = 1e-4  # time step
-ts = jnp.arange(0.0, 5, solver_dt)  # time steps
+t0 = 0.0
+t1 = 5.0
 save_dt = 0.01
 
 # video settings
@@ -82,21 +83,21 @@ if __name__ == "__main__":
     print("Lambda:\n", Lambda)
 
     # call the forward dynamics
-    yd = robot.forward_dynamics(ts[0], jnp.concatenate([q0, qd0]), (u,))
+    yd = robot.forward_dynamics(t0, jnp.concatenate([q0, qd0]), (u,))
     print("yd0:\n", yd)
 
     # Integrate using the model's built-in solver
-    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]))
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
     trajectory = robot.rollout_to(
         initial_state=initial_state,
         u=u,
-        t1=ts[-1],
+        t1=t1,
         solver_dt=solver_dt,
         save_dt=save_dt,
     )
-    ts_out = trajectory.t
+    ts = trajectory.t
     q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
-    video_ts = ts_out
+    video_ts = ts
     print("Final configuration:\n", q_ts[-1])
 
     # =====================================================
@@ -107,7 +108,7 @@ if __name__ == "__main__":
     plt.figure()
     for link_idx in range(num_links):
         plt.plot(
-            ts_out,
+            ts,
             q_ts[:, link_idx] / jnp.pi * 180,
             label=r"$q_{" + str(link_idx + 1) + "}$ [deg]",
         )
@@ -120,8 +121,8 @@ if __name__ == "__main__":
 
     # plot end-effector position vs time
     plt.figure()
-    plt.plot(ts_out, chi_ee_ts[:, 1], label="End-effector x [m]")
-    plt.plot(ts_out, chi_ee_ts[:, 2], label="End-effector y [m]")
+    plt.plot(ts, chi_ee_ts[:, 1], label="End-effector x [m]")
+    plt.plot(ts, chi_ee_ts[:, 2], label="End-effector y [m]")
     plt.xlabel("Time [s]")
     plt.ylabel("End-effector position [m]")
     plt.legend()
@@ -132,7 +133,7 @@ if __name__ == "__main__":
 
     # end effector orientation vs. time
     plt.figure()
-    plt.plot(ts_out, chi_ee_ts[:, 0] / jnp.pi * 180, label=r"End-effector Orientation $\theta$ [deg]")
+    plt.plot(ts, chi_ee_ts[:, 0] / jnp.pi * 180, label=r"End-effector Orientation $\theta$ [deg]")
     plt.xlabel("Time [s]")
     plt.ylabel("End-effector Orientation [deg]")
     plt.legend()
@@ -143,7 +144,7 @@ if __name__ == "__main__":
 
     # plot the end-effector position in the x-y plane as a scatter plot with the time as the color
     plt.figure()
-    plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts_out, cmap="viridis")
+    plt.scatter(chi_ee_ts[:, 1], chi_ee_ts[:, 2], c=ts, cmap="viridis")
     plt.axis("equal")
     plt.grid(True)
     plt.xlabel("End-effector x [m]")
@@ -159,8 +160,8 @@ if __name__ == "__main__":
     T_ts = jax.vmap(jax.jit(partial(robot.kinetic_energy)))(q_ts, qd_ts)
 
     plt.figure()
-    plt.plot(ts_out, U_ts, label="Potential Energy")
-    plt.plot(ts_out, T_ts, label="Kinetic Energy")
+    plt.plot(ts, U_ts, label="Potential Energy")
+    plt.plot(ts, T_ts, label="Kinetic Energy")
     plt.xlabel("Time (s)")
     plt.ylabel("Energy (J)")
     plt.legend()
