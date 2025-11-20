@@ -147,6 +147,7 @@ robot_updated = robot.update_tendon_params(new_tendon_params)
 
 ```python
 from diffrax import Tsit5
+from soromox.systems.system_state import SystemState
 
 # Simulation setup
 q0 = jnp.array([jnp.pi/8, -jnp.pi/4])       # Initial angles
@@ -154,15 +155,16 @@ qd0 = jnp.zeros_like(q0)                    # Initial velocities
 u = jnp.array([2.0])                        # Constant motor input
 
 # Time integration
-ts, qs, qds, us = robot.resolve_upon_time(
-    q0=q0,
-    qd0=qd0,
-    u=u,
-    t0=0.0,
+initial_state = SystemState(t=0.0, y=jnp.concatenate([q0, qd0]), u=u)
+trajectory = robot.resolve_upon_time(
+    initial_state=initial_state,
     t1=5.0,
     dt=1e-3,
     solver=Tsit5()
 )
+ts = trajectory.t
+qs, qds = jnp.split(trajectory.y, 2, axis=1)
+us = trajectory.u
 ```
 
 ## Configuration Guidelines

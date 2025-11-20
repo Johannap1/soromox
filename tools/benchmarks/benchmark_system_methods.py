@@ -39,6 +39,7 @@ from tools.benchmarks._benchmark_common import (
     block_until_ready,
     get_system_registry,
 )
+from soromox.systems.system_state import SystemState
 
 Array = jax.Array
 Tree = Any
@@ -50,7 +51,7 @@ class RuntimeConfig:
 
     duration: float
     dt: float
-    save_dt: int
+    save_dt: float
     execution_repeats: int
 
 
@@ -140,11 +141,8 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             name="resolve_upon_time",
             builder=lambda sys, ctx, runtime: (
                 lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.resolve_upon_time(
-                    q0=q0,
-                    qd0=qd0,
-                    u=u,
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
                     tau_ext=tau,
-                    t0=t0,
                     t1=t1,
                     dt=dt,
                     save_dt=save_dt,
@@ -199,11 +197,8 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             name="resolve_upon_time",
             builder=lambda sys, ctx, runtime: (
                 lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.resolve_upon_time(
-                    q0=q0,
-                    qd0=qd0,
-                    u=u,
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
                     tau_ext=tau,
-                    t0=t0,
                     t1=t1,
                     dt=dt,
                     save_dt=save_dt,
@@ -265,11 +260,8 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             name="resolve_upon_time",
             builder=lambda sys, ctx, runtime: (
                 lambda q0, qd0, u, tau, t0, t1, dt, save_n: sys.resolve_upon_time(
-                    q0=q0,
-                    qd0=qd0,
-                    u=u,
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
                     tau_ext=tau,
-                    t0=t0,
                     t1=t1,
                     dt=dt,
                     save_dt=save_n,

@@ -11,6 +11,7 @@ from typing import List
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.gvs import *
+from soromox.systems.system_state import SystemState
 
 jnp.set_printoptions(
     threshold=jnp.inf,
@@ -245,17 +246,18 @@ if __name__ == "__main__":
     t1 = 2.0
     dt = 1e-4
     skip_step = 100  # how many time steps to skip in between video frames
+    save_dt = dt * skip_step
 
-    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=t0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u)
+    trajectory = robot.resolve_upon_time(
+        initial_state=initial_state,
         t1=t1,
         dt=dt,
-        skip_steps=skip_step,
+        save_dt=save_dt,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
     print(f"Simulation completed with {len(ts)} time steps.")
 
     # =====================================================

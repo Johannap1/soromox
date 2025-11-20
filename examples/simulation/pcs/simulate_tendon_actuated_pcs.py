@@ -16,6 +16,7 @@ from functools import partial
 import time
 
 from soromox.systems.tendon_actuated_pcs import TendonActuatedPCS
+from soromox.systems.system_state import SystemState
 
 jax.config.update("jax_enable_x64", True)  # double precision
 
@@ -339,17 +340,17 @@ if __name__ == "__main__":
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
     initial_time = time.time()
-    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=t0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u)
+    trajectory = robot.resolve_upon_time(
+        initial_state=initial_state,
         t1=t1,
         dt=dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
     end_time = time.time()
     print(f"Total simulation time = {round(end_time - initial_time, ndigits=3)} s  |  t0 = {t0}, t1 = {t1}, dt0 = {dt}")
 

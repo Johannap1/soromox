@@ -16,6 +16,7 @@ jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.pneumatic_actuated_planar_pcs import (
     PneumaticActuatedPlanarPCS,
 )
+from soromox.systems.system_state import SystemState
 
 
 def draw_robot(
@@ -351,17 +352,17 @@ if __name__ == "__main__":
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=t0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u)
+    trajectory = robot.resolve_upon_time(
+        initial_state=initial_state,
         t1=t1,
         dt=dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
 
     # =====================================================
     # End-effector position upon time

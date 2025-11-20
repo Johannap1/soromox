@@ -12,6 +12,7 @@ from typing import Callable, Dict
 
 import soromox
 from soromox.systems import pendulum
+from soromox.systems.system_state import SystemState
 
 num_links = 2
 params = {
@@ -85,15 +86,15 @@ if __name__ == "__main__":
     print("yd0:\n", yd)
 
     # Integrate using the model's built-in solver
-    ts_out, q_ts, qd_ts, _ = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=ts[0],
+    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]), u=u)
+    trajectory = robot.resolve_upon_time(
+        initial_state=initial_state,
         t1=ts[-1],
         dt=dt,
         save_dt=save_dt,
     )
+    ts_out = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
     video_ts = ts_out
     print("Final configuration:\n", q_ts[-1])
 

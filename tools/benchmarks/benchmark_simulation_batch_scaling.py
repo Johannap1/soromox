@@ -22,6 +22,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.systems.system_state import SystemState
 from tools.benchmarks._benchmark_common import (
     add_integration_args,
     add_system_selection_args,
@@ -64,17 +65,16 @@ def _build_batched_solver(system: DynamicalSystem, runtime: RuntimeConfig) -> Ca
     t1 = runtime.t0 + runtime.duration
 
     def single_env(q0: Array, qd0: Array, u: Array, tau_ext: Array) -> Tuple[Array, Array, Array]:
-        ts, qs, qds, _ = system.resolve_upon_time(
-            q0=q0,
-            qd0=qd0,
-            u=u,
+        initial_state = SystemState(t=runtime.t0, y=jnp.concatenate([q0, qd0]), u=u)
+        trajectory = system.resolve_upon_time(
+            initial_state=initial_state,
             tau_ext=tau_ext,
-            t0=runtime.t0,
             t1=t1,
             dt=runtime.dt,
             save_dt=runtime.save_dt,
         )
-        return ts[-1], qs[-1], qds[-1]
+        qs, qds = jnp.split(trajectory.y, 2, axis=1)
+        return trajectory.t[-1], qs[-1], qds[-1]
 
     vmapped = jax.jit(jax.vmap(single_env, in_axes=(0, 0, 0, 0)))
     return vmapped

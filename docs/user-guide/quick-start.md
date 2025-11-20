@@ -16,6 +16,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     import jax.numpy as jnp
     import matplotlib.pyplot as plt
     from soromox.systems import pendulum
+    from soromox.systems.system_state import SystemState
 
     # Define parameters for a double pendulum
     num_links = 2
@@ -51,15 +52,16 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     u = jnp.zeros((num_links,))
 
     # Integrate using the class helper (Diffrax under the hood)
-    ts, qs, qds, us = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u=u,
-        t0=t_span[0],
+    initial_state = SystemState(t=t_span[0], y=jnp.concatenate([q0, qd0]), u=u)
+    trajectory = robot.resolve_upon_time(
+        initial_state=initial_state,
         t1=t_span[1],
         dt=dt,
-        save_dt=1,
+        save_dt=dt,
     )
+    ts = trajectory.t
+    qs, qds = jnp.split(trajectory.y, 2, axis=1)
+    us = trajectory.u
     ```
 
 === "📊 Analyze"
