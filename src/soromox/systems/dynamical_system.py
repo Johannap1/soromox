@@ -28,8 +28,8 @@ class DynamicalSystem(eqx.Module):
         t0: float,
         t1: float,
         solver_dt: float,
-        save_ts: Optional[Array],
         save_dt: Optional[float],
+        save_ts: Optional[Array],
     ) -> Array:
         """Build the array of time stamps to save during integration."""
         if save_ts is not None:
@@ -56,8 +56,8 @@ class DynamicalSystem(eqx.Module):
         tau_ext: Optional[Array] = None,
         t1: Optional[float] = 10.0,
         solver_dt: Optional[float] = 1e-4,
-        save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
+        save_ts: Optional[Array] = None,
         solver: Optional[AbstractSolver] = Tsit5(),
         stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
         max_steps: Optional[int] = None,
@@ -73,10 +73,10 @@ class DynamicalSystem(eqx.Module):
             tau_ext: External forces/torques applied to the system (broadcast as constant).
             t1: Final time of the simulation, included in the saved trajectory.
             solver_dt: Time step for the solver.
-            save_ts: Explicit time points to be saved in the output. Must be within
-                [initial_state.t, t1]. Falls back to `save_dt` if None.
             save_dt: Time interval at which to save the solution when `save_ts` is
                 not provided.
+            save_ts: Explicit time points to be saved in the output. Must be within
+                [initial_state.t, t1]. Falls back to `save_dt` if None.
             solver: Solver to use for the ODE integration.
             stepsize_controller: Stepsize controller for the solver.
             max_steps: Maximum number of steps for the solver.
@@ -98,7 +98,7 @@ class DynamicalSystem(eqx.Module):
 
         y0 = initial_state.y  # initial state vector
         t0 = float(initial_state.t)
-        save_ts = self._compute_save_times(t0, t1, solver_dt, save_ts, save_dt)
+        save_ts = self._compute_save_times(t0, t1, solver_dt, save_dt, save_ts)
 
         @jit
         def open_loop_forward_dynamics(
@@ -140,8 +140,8 @@ class DynamicalSystem(eqx.Module):
         tau_ext: Optional[Array] = None,
         t1: Optional[float] = 10.0,
         solver_dt: Optional[float] = 1e-4,
-        save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
+        save_ts: Optional[Array] = None,
         solver: Optional[AbstractSolver] = Tsit5(),
         stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
         max_steps: Optional[int] = None,
@@ -162,10 +162,10 @@ class DynamicalSystem(eqx.Module):
             tau_ext: External forces/torques applied to the system (broadcast as constant).
             t1: Final time of the simulation, included in the saved trajectory.
             solver_dt: Time step for the solver.
-            save_ts: Explicit time points to be saved in the output. Must be within
-                [initial_state.t, t1]. Falls back to `save_dt` if None.
             save_dt: Time interval at which to save the solution when `save_ts` is
                 not provided.
+            save_ts: Explicit time points to be saved in the output. Must be within
+                [initial_state.t, t1]. Falls back to `save_dt` if None.
             solver: Solver to use for the ODE integration.
             stepsize_controller: Stepsize controller for the solver.
             max_steps: Maximum number of steps for the solver.
@@ -189,7 +189,7 @@ class DynamicalSystem(eqx.Module):
         zero_control_state_dot = self._zero_like_control_state(controller_state0)
 
         t0 = float(initial_state.t)
-        save_ts = self._compute_save_times(t0, t1, solver_dt, save_ts, save_dt)
+        save_ts = self._compute_save_times(t0, t1, solver_dt, save_dt, save_ts)
 
         @jit
         def closed_loop_forward_dynamics(
@@ -263,8 +263,8 @@ class DynamicalSystem(eqx.Module):
         t1: Optional[float] = 10.0,
         solver_dt: Optional[float] = 1e-4,
         control_dt: Optional[float] = 1e-2,
-        save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
+        save_ts: Optional[Array] = None,
         solver: Optional[AbstractSolver] = Tsit5(),
         stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
         max_steps: Optional[int] = None,
@@ -289,8 +289,8 @@ class DynamicalSystem(eqx.Module):
             t1: final time of the simulation.
             solver_dt: initial step size for the solver.
             control_dt: sampling period for the controller. Must be positive.
-            save_ts: explicit times to save; falls back to ``save_dt``.
             save_dt: save interval if ``save_ts`` is not provided.
+            save_ts: explicit times to save; falls back to ``save_dt``.
             solver: Diffrax solver.
             stepsize_controller: Diffrax stepsize controller.
             max_steps: maximum solver steps.
@@ -301,7 +301,7 @@ class DynamicalSystem(eqx.Module):
         if controller is None:
             raise ValueError("A controller must be provided for closed-loop rollouts.")
         if save_ts is None:
-            save_ts = self._compute_save_times(float(initial_state.t), t1, solver_dt, save_ts, save_dt)
+            save_ts = self._compute_save_times(float(initial_state.t), t1, solver_dt, save_dt, save_ts)
 
         base_u = initial_state.u
         if base_u is None:
