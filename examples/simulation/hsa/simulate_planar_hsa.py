@@ -95,9 +95,10 @@ if __name__ == "__main__":
     dt = 5e-5  # time step
     save_dt = 0.01
 
-    initial_state = SystemState(t=t0, y=y0, u=phi)
-    trajectory = robot.resolve_upon_time(
+    initial_state = SystemState(t=t0, y=y0)
+    trajectory = robot.rollout_to(
         initial_state=initial_state,
+        u=phi,
         t1=t1,
         dt=dt,
         save_dt=save_dt,

@@ -65,9 +65,10 @@ def _build_batched_solver(system: DynamicalSystem, runtime: RuntimeConfig) -> Ca
     t1 = runtime.t0 + runtime.duration
 
     def single_env(q0: Array, qd0: Array, u: Array, tau_ext: Array) -> Tuple[Array, Array, Array]:
-        initial_state = SystemState(t=runtime.t0, y=jnp.concatenate([q0, qd0]), u=u)
-        trajectory = system.resolve_upon_time(
+        initial_state = SystemState(t=runtime.t0, y=jnp.concatenate([q0, qd0]))
+        trajectory = system.rollout_to(
             initial_state=initial_state,
+            u=u,
             tau_ext=tau_ext,
             t1=t1,
             dt=runtime.dt,

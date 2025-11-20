@@ -86,9 +86,10 @@ if __name__ == "__main__":
     print("yd0:\n", yd)
 
     # Integrate using the model's built-in solver
-    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]), u=u)
-    trajectory = robot.resolve_upon_time(
+    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
         initial_state=initial_state,
+        u=u,
         t1=ts[-1],
         dt=dt,
         save_dt=save_dt,

@@ -52,9 +52,10 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     u = jnp.zeros((num_links,))
 
     # Integrate using the class helper (Diffrax under the hood)
-    initial_state = SystemState(t=t_span[0], y=jnp.concatenate([q0, qd0]), u=u)
-    trajectory = robot.resolve_upon_time(
+    initial_state = SystemState(t=t_span[0], y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
         initial_state=initial_state,
+        u=u,
         t1=t_span[1],
         dt=dt,
         save_dt=dt,

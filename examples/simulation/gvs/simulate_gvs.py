@@ -248,9 +248,10 @@ if __name__ == "__main__":
     skip_step = 100  # how many time steps to skip in between video frames
     save_dt = dt * skip_step
 
-    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u)
-    trajectory = robot.resolve_upon_time(
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
         initial_state=initial_state,
+        u=u,
         t1=t1,
         dt=dt,
         save_dt=save_dt,

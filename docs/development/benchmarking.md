@@ -40,7 +40,7 @@ python tools/benchmarks/benchmark_system_methods.py \
 - `--systems`: subset of available robots (defaults to all registered systems).
 - `--segment-counts`: link/segment sweep; a fresh system instance is created per value.
 - `--duration`, `--dt`, `--save-dt`: integration controls when benchmarking
-  `resolve_upon_time`.
+  `rollout_to`.
 - `--execution-repeats`: number of warm calls to average after the cold run.
 - `--json` / `--csv`: export raw results for regression tracking.
 - `--plot` / `--show-plot`: render Matplotlib summaries (compile vs. exec time).
@@ -95,7 +95,7 @@ For each combination of system, segment count, and number of environments the sc
 
 - Wall-clock time averaged over the requested repeats.
 - Mean simulated time per environment (i.e., the final timestamp returned by
-  `resolve_upon_time`).
+  `rollout_to`).
 - Per-environment speed ratio `simulated_time / wall_time`, total throughput
   `number_of_environments * simulated_time / wall_time`, and per-environment wall time. Ratios > 1
   indicate faster-than-real-time performance.
@@ -112,7 +112,7 @@ To revisit stored measurements (JSON or CSV) without re-running the benchmarks, 
 ```bash
 python tools/benchmarks/visualize_benchmarks.py benchmarks/methods.json \
   --systems planar_pcs pcs \
-  --functions resolve_upon_time forward_dynamics \
+  --functions rollout_to forward_dynamics \
   --output benchmarks/methods-focus.png
 ```
 

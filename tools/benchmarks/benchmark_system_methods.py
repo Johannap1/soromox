@@ -138,10 +138,11 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (sys.total_energy, (ctx["q"], ctx["qd"])),
         ),
         BenchmarkCase(
-            name="resolve_upon_time",
+            name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.resolve_upon_time(
-                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
+                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.rollout_to(
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
+                    u=u,
                     tau_ext=tau,
                     t1=t1,
                     dt=dt,
@@ -194,10 +195,11 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (sys.total_energy, (ctx["q"], ctx["qd"])),
         ),
         BenchmarkCase(
-            name="resolve_upon_time",
+            name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.resolve_upon_time(
-                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
+                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.rollout_to(
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
+                    u=u,
                     tau_ext=tau,
                     t1=t1,
                     dt=dt,
@@ -257,10 +259,11 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (sys.total_energy, (ctx["q"], ctx["qd"])),
         ),
         BenchmarkCase(
-            name="resolve_upon_time",
+            name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_n: sys.resolve_upon_time(
-                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u),
+                lambda q0, qd0, u, tau, t0, t1, dt, save_n: sys.rollout_to(
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
+                    u=u,
                     tau_ext=tau,
                     t1=t1,
                     dt=dt,

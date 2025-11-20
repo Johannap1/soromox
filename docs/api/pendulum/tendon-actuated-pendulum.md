@@ -155,9 +155,10 @@ qd0 = jnp.zeros_like(q0)                    # Initial velocities
 u = jnp.array([2.0])                        # Constant motor input
 
 # Time integration
-initial_state = SystemState(t=0.0, y=jnp.concatenate([q0, qd0]), u=u)
-trajectory = robot.resolve_upon_time(
+initial_state = SystemState(t=0.0, y=jnp.concatenate([q0, qd0]))
+trajectory = robot.rollout_to(
     initial_state=initial_state,
+    u=u,
     t1=5.0,
     dt=1e-3,
     solver=Tsit5()

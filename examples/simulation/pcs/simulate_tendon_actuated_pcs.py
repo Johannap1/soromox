@@ -340,9 +340,10 @@ if __name__ == "__main__":
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
     initial_time = time.time()
-    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]), u=u)
-    trajectory = robot.resolve_upon_time(
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
         initial_state=initial_state,
+        u=u,
         t1=t1,
         dt=dt,
         save_dt=save_dt,
