@@ -28,15 +28,12 @@ def draw_robot(
     q: Array,
     num_points: int = 50,
 ):
-    batched_forward_kinematics = jax.vmap(
-        robot.forward_kinematics, in_axes=(None, 0), out_axes=-1
-    )
     L_max = jnp.sum(robot.L)
 
     s_ps = jnp.linspace(0, L_max, num_points)
-    chi_ps = batched_forward_kinematics(q, s_ps)
+    chi_ps = robot.forward_kinematics_batched(q, s_ps)
 
-    curve = onp.array(chi_ps[1:, :], dtype=onp.float64).T
+    curve = onp.array(chi_ps[:, 1:], dtype=onp.float64)
 
     return curve  # (N, 2)
 

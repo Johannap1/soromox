@@ -25,14 +25,12 @@ jnp.set_printoptions(
 )
 jnp.set_printoptions(precision=4, suppress=True)
 
+
 def draw_robot_curve(
-    batched_forward_kinematics: Callable,
-    L_max: float,
-    q: Array,
-    num_points: int = 50,
+    robot: TendonActuatedPCS, L_max: float, q: Array, num_points: int = 50
 ):
     s_ps = jnp.linspace(0, L_max, num_points)
-    g_ps = batched_forward_kinematics(q, s_ps)[:, :3, 3]
+    g_ps = robot.forward_kinematics_batched(q, s_ps)[:, :3, 3]
 
     curve = jnp.array(g_ps, dtype=jnp.float64)
     return curve  # (N, 3)
@@ -68,7 +66,6 @@ def animate_robot_tendons_matplotlib(
             "Cannot use both animation and slider at the same time. Choose one."
         )
 
-    batched_forward_kinematics = jax.vmap(robot.forward_kinematics, in_axes=(None, 0))
     batched_forward_kinematics_tendons = jax.vmap(
         robot.forward_kinematics_tendons, in_axes=(None, 0), out_axes=1
     )
@@ -88,7 +85,7 @@ def animate_robot_tendons_matplotlib(
     # Precompute all trajectories
     # ---------------------------------------------------
     batched_robot_curve = jax.vmap(
-        lambda q: draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+        lambda q: draw_robot_curve(robot, L_max, q, num_points)
     )
     batched_tendon_curve = jax.vmap(
         lambda q: draw_tendon_curves(

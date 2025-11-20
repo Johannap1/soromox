@@ -15,7 +15,6 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import numpy as onp
-from typing import Callable
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.isupport import ISupport
@@ -28,13 +27,10 @@ jnp.set_printoptions(
 
 
 def draw_robot_curve(
-    batched_forward_kinematics: Callable,
-    L_max: float,
-    q: Array,
-    num_points: int = 50,
+    robot: ISupport, L_max: float, q: Array, num_points: int = 50
 ):
     s_ps = jnp.linspace(0, L_max, num_points)
-    g_ps = batched_forward_kinematics(q, s_ps)[:, :3, 3]
+    g_ps = robot.forward_kinematics_batched(q, s_ps)[:, :3, 3]
 
     curve = onp.array(g_ps, dtype=onp.float64)
     return curve  # (N, 3)
@@ -57,7 +53,6 @@ def animate_robot_matplotlib(
             "Cannot use both animation and slider at the same time. Choose one."
         )
 
-    batched_forward_kinematics = jax.vmap(robot.forward_kinematics, in_axes=(None, 0))
     L_max = jnp.sum(robot.L)
 
     width = jnp.linalg.norm(robot.L) * 1.5
@@ -83,7 +78,7 @@ def animate_robot_matplotlib(
         def update(frame_idx):
             q = q_list[frame_idx]
             t = t_list[frame_idx]
-            curve = draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+            curve = draw_robot_curve(robot, L_max, q, num_points)
             line.set_data(curve[:, 0], curve[:, 1])
             line.set_3d_properties(curve[:, 2])
             title_text.set_text(f"t = {t:.2f} s")
@@ -116,7 +111,7 @@ def animate_robot_matplotlib(
             ax.set_zlabel("Z [m]")
             ax.set_title(f"t = {t_list[frame_idx]:.2f} s")
             q = q_list[frame_idx]
-            curve = draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+            curve = draw_robot_curve(robot, L_max, q, num_points)
             ax.plot(curve[:, 0], curve[:, 1], curve[:, 2], lw=4, color="blue")
             fig.canvas.draw_idle()
 

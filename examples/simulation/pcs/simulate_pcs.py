@@ -22,15 +22,14 @@ jnp.set_printoptions(
 
 
 def draw_robot_curve(
-    robot  : PCS,
+    robot: PCS,
     q: Array,
     num_points: int = 50,
 ):
-    batched_forward_kinematics = jax.vmap(robot.forward_kinematics, in_axes=(None, 0))
     L_max = jnp.sum(robot.L)
-    
+
     s_ps = jnp.linspace(0, L_max, num_points)
-    g_ps = batched_forward_kinematics(q, s_ps)[:, :3, 3]
+    g_ps = robot.forward_kinematics_batched(q, s_ps)[:, :3, 3]
 
     curve = onp.array(g_ps, dtype=onp.float64)
     return curve  # (N, 3)

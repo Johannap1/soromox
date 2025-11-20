@@ -112,7 +112,8 @@ dependencies = [ # Optional
   "quadax",
   "peppercorn",
   "scipy",
-  "sympy>=1.11"
+  "sympy",
+  "tqdm",
 ]
 
 # List additional groups of dependencies here (e.g. development
