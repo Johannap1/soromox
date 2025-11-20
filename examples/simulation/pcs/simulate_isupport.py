@@ -18,6 +18,7 @@ import numpy as onp
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.isupport import ISupport
+from soromox.systems.system_state import SystemState
 
 jnp.set_printoptions(
     threshold=jnp.inf,
@@ -204,23 +205,24 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    dt = 5e-5
+    solver_dt = 5e-5
     save_dt = 0.01
 
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=t0,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
 
     q1 = q_ts[-1]
     print("q1:\n", q1)

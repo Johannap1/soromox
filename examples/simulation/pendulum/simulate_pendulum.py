@@ -12,6 +12,7 @@ from typing import Callable, Dict
 
 import soromox
 from soromox.systems import pendulum
+from soromox.systems.system_state import SystemState
 
 num_links = 2
 params = {
@@ -27,8 +28,8 @@ q0 = jnp.zeros((num_links,))
 q0 = jnp.array([jnp.pi / 8, -jnp.pi / 4])
 
 # set simulation parameters
-dt = 1e-4  # time step
-ts = jnp.arange(0.0, 5, dt)  # time steps
+solver_dt = 1e-4  # time step
+ts = jnp.arange(0.0, 5, solver_dt)  # time steps
 save_dt = 0.01
 
 # video settings
@@ -85,15 +86,16 @@ if __name__ == "__main__":
     print("yd0:\n", yd)
 
     # Integrate using the model's built-in solver
-    ts_out, q_ts, qd_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=ts[0],
         t1=ts[-1],
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
     )
+    ts_out = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
     video_ts = ts_out
     print("Final configuration:\n", q_ts[-1])
 
@@ -174,7 +176,7 @@ if __name__ == "__main__":
     video = cv2.VideoWriter(
         str(video_path),
         fourcc,
-        1 / (save_dt * dt),  # fps
+        1 / (save_dt * solver_dt),  # fps
         (video_width, video_height),
     )
 

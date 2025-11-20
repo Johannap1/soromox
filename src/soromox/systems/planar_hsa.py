@@ -1,5 +1,6 @@
 __all__ = ["PlanarHSA"]
 import equinox as eqx
+import jax
 from diffrax import (
     diffeqsolve,
     ODETerm,
@@ -10,13 +11,14 @@ from diffrax import (
     AbstractSolver,
 )
 import dill
-from jax import Array, lax
+from jax import Array, lax, vmap
 from jax import numpy as jnp
 import sympy as sp
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.systems.system_state import SystemState
 from soromox.utils.basic import (
     concatenate_params_syms,
     compute_strain_basis,
@@ -1492,7 +1494,7 @@ class PlanarHSA(DynamicalSystem):
 
     @eqx.filter_jit
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: Tuple[Array, Callable]
+        self, t: Array, y: Array, actuation_args: Tuple[Array, Optional[Array]]
     ) -> Array:
         """
         Forward dynamics function.
@@ -1502,30 +1504,34 @@ class PlanarHSA(DynamicalSystem):
             y (Array): State vector containing configuration, velocity, and possibly hysteresis state.
                 Shape is (2 * num_dofs + num_hysteresis,).
             actuation_args (Tuple): Additional arguments for the actuation function.
-                - u (Array): Initial actuation input.
-                    If consider_underactuation is True, this is an array of shape (num_hysteresis, ) with
-                    motor positions / twist angles of the proximal end of the rods.
-                    If consider_underactuation is False, this is an array of shape (num_dofs, ) with
-                    the configuration-space torques.
-                - control_fn (Callable): Callable that returns the forcing function of the form control_fn(t, x) -> phi. If consider_underactuation is True,
-                    then phi is an array of shape (num_dofs, ) with the configuration-space torques. If consider_underactuation is False,
-                    then phi is an array of shape (num_hysteresis, ) with the motor positions / twist angles of the proximal end of the rods.
+                - u (Array): Actuation input.
+                    If consider_underactuation is True, this is an array of shape (num_actuators, )
+                    with motor positions / twist angles of the proximal end of the rods.
+                    If consider_underactuation is False, this is an array of shape (num_dofs, )
+                    with the configuration-space torques.
+                - tau_ext (Array, optional): External generalized forces, shape (num_dofs,).
 
         Returns:
             yd: Time derivative of the state vector of shape (2 * num_dofs + num_hysteresis, ).
         """
-        u, control_fn = actuation_args
+        u, tau_ext = actuation_args
+        if tau_ext is None:
+            tau_ext = jnp.zeros((self.num_dofs,), dtype=y.dtype)
 
-        q, qd, z = jnp.split(y, [self.num_dofs, 2 * self.num_dofs])
+        if self.consider_hysteresis:
+            q, qd, z = jnp.split(y, [self.num_dofs, 2 * self.num_dofs])
+        else:
+            q, qd = jnp.split(y, [self.num_dofs])
+            z = jnp.zeros((self.num_hysteresis,), dtype=y.dtype)
 
-        zd = (self.B_hyst.T @ qd) * (
-            self.hyst_A
-            - jnp.abs(z) ** self.hyst_n
-            * (self.hyst_gamma + self.hyst_beta * jnp.sign((self.B_hyst.T @ qd) * z))
-        )
-
-        if control_fn is not None:
-            u = u + control_fn(t, y)
+        if self.consider_hysteresis:
+            zd = (self.B_hyst.T @ qd) * (
+                self.hyst_A
+                - jnp.abs(z) ** self.hyst_n
+                * (self.hyst_gamma + self.hyst_beta * jnp.sign((self.B_hyst.T @ qd) * z))
+            )
+        else:
+            zd = jnp.zeros((self.num_hysteresis,), dtype=y.dtype)
 
         if self.consider_underactuation is True:
             phi = u
@@ -1551,98 +1557,11 @@ class PlanarHSA(DynamicalSystem):
         B_inv = jnp.linalg.inv(B)
 
         # Compute the acceleration
-        qdd = B_inv @ (-C @ qd - G - tau_el - D @ qd + alpha)
+        qdd = B_inv @ (-C @ qd - G - tau_el - D @ qd + alpha + tau_ext)
 
-        yd = jnp.concatenate([qd, qdd, zd])
+        if self.consider_hysteresis:
+            yd = jnp.concatenate([qd, qdd, zd])
+        else:
+            yd = jnp.concatenate([qd, qdd])
 
         return yd
-
-    @eqx.filter_jit
-    def resolve_upon_time(
-        self,
-        q0: Array,
-        qd0: Array,
-        u0: Array,
-        control_fn: Optional[Callable] = None,
-        t0: Optional[float] = 0.0,
-        t1: Optional[float] = 10.0,
-        dt: Optional[float] = 1e-4,
-        save_dt: int = 1,
-        solver: Optional[AbstractSolver] = Tsit5(),
-        stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
-        max_steps: Optional[int] = None,
-    ) -> Tuple[Array, Array, Array]:
-        """
-        Resolve the system dynamics over time using Diffrax.
-
-        Args:
-            q0 (Array): Initial configuration (strains).
-            qd0 (Array): Initial velocity (strains).
-            u0 (Array): Initial actuation input.
-                If consider_underactuation is True,
-                    array of shape (num_actuators, ) with
-                    motor positions / twist angles of the proximal end of the rods.
-                If consider_underactuation is False,
-                    array of shape (num_dofs, ) with
-                    the configuration-space torques.
-            control_fn (Callable, optional): Callable that returns the forcing function of the form control_fn(t, [q, qd]) -> phi.
-                If consider_underactuation is True,
-                    then phi is an array of shape (num_actuators, )
-                    with the configuration-space torques.
-                If consider_underactuation is False,
-                    then phi is an array of shape (num_dofs, )
-                    with the motor positions / twist angles of the proximal end of the rods.
-            t0 (float, optionnal): Initial time.
-                Default is 0.0.
-            t1 (float, optionnal): Final time.
-                Default is 10.0.
-            dt (float, optionnal): Time step for the solver.
-                Default is 1e-4.
-            save_dt (int, optional): Determines how many time steps to skip
-                when saving the output. For example, if set to 1, every time step is saved;
-                if set to 10, every 10th time step is saved.
-                Default is 1 (save every step).
-            solver (AbstractSolver, optional): Solver to use for the ODE integration.
-                Default is Tsit5() (Runge-Kutta 5(4) method).
-            stepsize_controller (PIDController, optional): Stepsize controller for the solver.
-                Default is ConstantStepSize().
-            max_steps (int, optional): Maximum number of steps for the solver.
-                Default is None (no limit).
-
-        Returns:
-            ts (Array): Time points at which the solution is saved.
-            qs (Array): Configuration (strains) at the saved time points.
-            qds (Array): Velocity (strains) at the saved time points.
-        """
-        y0 = jnp.concatenate([q0, qd0, jnp.zeros((self.num_hysteresis,))])
-
-        term = ODETerm(self.forward_dynamics)
-
-        t = jnp.arange(t0, t1, dt)  # Time points for the solution
-        
-        assert save_dt > 0, "save_dt must be a positive integer."
-        assert isinstance(save_dt, int), "save_dt must be an integer."
-        saveat = SaveAt(ts=t[::save_dt])  # Save at specified time points
-
-        # Prepare the actuation arguments
-        actuation_args = (u0, control_fn)
-
-        sol = diffeqsolve(
-            terms=term,
-            solver=solver,
-            t0=t[0],
-            t1=t[-1],
-            dt0=dt,
-            y0=y0,
-            args=actuation_args,
-            saveat=saveat,
-            stepsize_controller=stepsize_controller,
-            max_steps=max_steps,
-        )
-
-        ts = sol.ts
-        # Extract the configuration and velocity from the solution
-        y_out = sol.ys
-        qs, qds, zs = jnp.split(y_out, [self.num_dofs, 2 * self.num_dofs], axis=1)
-
-        return ts, qs, qds

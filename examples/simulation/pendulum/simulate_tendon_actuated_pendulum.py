@@ -12,6 +12,7 @@ from functools import partial
 
 import soromox
 from soromox.systems.tendon_actuated_pendulum import TendonActuatedPendulum
+from soromox.systems.system_state import SystemState
 
 import matplotlib.pyplot as plt
 
@@ -38,9 +39,9 @@ q0 = jnp.zeros((num_links,))
 # q0 = jnp.array([jnp.pi / 8, -jnp.pi / 4])
 
 # set simulation parameters
-dt = 1e-4  # time step
-ts = jnp.arange(0.0, 5, dt)  # time steps
-save_dt = dt * 100
+solver_dt = 1e-4  # time step
+ts = jnp.arange(0.0, 5, solver_dt)  # time steps
+save_dt = solver_dt * 100
 
 # video settings
 video_width, video_height = 1080, 1080  # img height and width
@@ -207,15 +208,16 @@ if __name__ == "__main__":
     print(robot.passive_tendon_length(q0))
 
     # Integrate using the model's built-in solver
-    ts_out, qs, qds = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_state = SystemState(t=ts[0], y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=ts[0],
         t1=ts[-1],
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
     )
+    ts_out = trajectory.t
+    qs, qds = jnp.split(trajectory.y, 2, axis=1)
     video_ts = ts_out
     print("Final configuration:\n", qs[-1])
 
