@@ -319,6 +319,7 @@ class DynamicalSystem(eqx.Module):
         t_ends = jnp.minimum(t_starts + control_dt, t1)
 
         max_saves = save_ts.shape[0]
+        max_save_slots = max_saves + 1  # include control interval end time
 
         def body(
             carry: Tuple[Array, Optional[Any]],
@@ -352,6 +353,9 @@ class DynamicalSystem(eqx.Module):
             mask = (save_ts >= t_start) & (save_ts <= t_end)
             count = jnp.sum(mask, dtype=jnp.int32)
             idxs = jnp.nonzero(mask, size=max_saves, fill_value=0)[0]
+            valid_mask = jnp.arange(max_save_slots - 1) < count
+            ts_control_interval = jnp.where(valid_mask, save_ts[idxs], t_end)
+            ts_control_interval = jnp.concatenate((ts_control_interval, jnp.array([t_end])))
 
             @jit
             def open_loop_forward_dynamics(t: Array, y: Array, actuation_args: Tuple[Array, Array]):
@@ -359,7 +363,7 @@ class DynamicalSystem(eqx.Module):
                 return self.forward_dynamics(t, y, (base_u_val, base_tau_ext))
 
             term = ODETerm(open_loop_forward_dynamics)
-            saveat = SaveAt(ts=save_ts[idxs[:count]], t1=True)
+            saveat = SaveAt(ts=ts_control_interval, t1=False)
             sol = diffeqsolve(
                 terms=term,
                 solver=solver,
@@ -373,24 +377,30 @@ class DynamicalSystem(eqx.Module):
                 max_steps=max_steps,
             )
 
-            ts_out = jnp.zeros((max_saves,), dtype=sol.ts.dtype)
-            ts_out = ts_out.at[:count].set(sol.ts[:count])
+            valid_mask = (jnp.arange(max_save_slots) < (count + 1)).astype(sol.ts.dtype)
+            ts_out = sol.ts * valid_mask
 
-            ys_out = jnp.zeros((max_saves,) + y_in.shape, dtype=sol.ys.dtype)
-            ys_out = ys_out.at[:count].set(sol.ys[:count])
+            ys_out = jnp.where(
+                valid_mask[:, None] > 0,
+                sol.ys,
+                jnp.zeros_like(sol.ys),
+            )
 
-            us_out = jnp.zeros((max_saves, self.num_actuators), dtype=u_total.dtype)
-            us_out = us_out.at[:count].set(jnp.broadcast_to(u_total, (count, u_total.shape[0])))
+            us_out = jnp.where(
+                valid_mask[:, None] > 0,
+                jnp.broadcast_to(u_total, (max_save_slots, u_total.shape[0])),
+                jnp.zeros((max_save_slots, u_total.shape[0]), dtype=u_total.dtype),
+            )
 
             if track_control_state:
                 cs_segment = jax.tree_util.tree_map(
-                    lambda c: jnp.zeros((max_saves,) + c.shape, dtype=c.dtype),
+                    lambda c: jnp.zeros((max_save_slots,) + c.shape, dtype=c.dtype),
                     ctrl_state_in,
                 )
-                mask = (jnp.arange(max_saves) < count).astype(jnp.int32)
+                mask = (jnp.arange(max_save_slots) < (count + 1)).astype(jnp.int32)
                 cs_out = jax.tree_util.tree_map(
                     lambda arr, c: arr
-                    + mask.reshape((max_saves,) + (1,) * c.ndim) * c,
+                    + mask.reshape((max_save_slots,) + (1,) * c.ndim) * c,
                     cs_segment,
                     ctrl_state_in,
                 )
@@ -406,14 +416,14 @@ class DynamicalSystem(eqx.Module):
                 else None
             )
 
-            outputs = (ts_out, ys_out, us_out, cs_out, count)
+            outputs = (ts_out, ys_out, us_out, cs_out, count + 1)
             next_carry = (y_next, ctrl_state_next)
             return next_carry, outputs
 
         _, scan_outputs = lax.scan(body, (y_curr, control_state), (t_starts, t_ends))
         ts_padded, ys_padded, us_padded, cs_padded, counts = scan_outputs
 
-        idxs = jnp.arange(max_saves)
+        idxs = jnp.arange(max_save_slots)
         valid_mask = idxs[None, :] < counts[:, None]
         flat_mask = valid_mask.reshape(-1)
 
