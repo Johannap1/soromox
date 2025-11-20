@@ -27,7 +27,7 @@ class DynamicalSystem(eqx.Module):
     def _compute_save_times(
         t0: float,
         t1: float,
-        dt: float,
+        solver_dt: float,
         save_ts: Optional[Array],
         save_dt: Optional[float],
     ) -> Array:
@@ -37,7 +37,9 @@ class DynamicalSystem(eqx.Module):
 
         assert save_dt is not None, "Either save_ts or save_dt must be provided."
         assert save_dt > 0.0, "save_dt must be positive."
-        assert save_dt >= dt, "save_dt must be greater than or equal to the simulation dt."
+        assert (
+            save_dt >= solver_dt
+        ), "save_dt must be greater than or equal to the solver step size."
         return jnp.arange(t0, t1 + save_dt, save_dt)
 
     @staticmethod
@@ -53,7 +55,7 @@ class DynamicalSystem(eqx.Module):
         u: Optional[Array] = None,
         tau_ext: Optional[Array] = None,
         t1: Optional[float] = 10.0,
-        dt: Optional[float] = 1e-4,
+        solver_dt: Optional[float] = 1e-4,
         save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
         solver: Optional[AbstractSolver] = Tsit5(),
@@ -70,7 +72,7 @@ class DynamicalSystem(eqx.Module):
                 falls back to `initial_state.u`, then zeros.
             tau_ext: External forces/torques applied to the system (broadcast as constant).
             t1: Final time of the simulation, included in the saved trajectory.
-            dt: Time step for the solver.
+            solver_dt: Time step for the solver.
             save_ts: Explicit time points to be saved in the output. Must be within
                 [initial_state.t, t1]. Falls back to `save_dt` if None.
             save_dt: Time interval at which to save the solution when `save_ts` is
@@ -96,7 +98,7 @@ class DynamicalSystem(eqx.Module):
 
         y0 = initial_state.y  # initial state vector
         t0 = float(initial_state.t)
-        save_ts = self._compute_save_times(t0, t1, dt, save_ts, save_dt)
+        save_ts = self._compute_save_times(t0, t1, solver_dt, save_ts, save_dt)
 
         @jit
         def open_loop_forward_dynamics(
@@ -115,8 +117,8 @@ class DynamicalSystem(eqx.Module):
             terms=term,
             solver=solver,
             t0=t0,
-            t1=t1 + dt,
-            dt0=dt,
+            t1=t1 + solver_dt,
+            dt0=solver_dt,
             y0=y0,
             args=(base_u, tau_ext),
             saveat=saveat,
@@ -137,7 +139,7 @@ class DynamicalSystem(eqx.Module):
         controller: Callable[[SystemState], Tuple[Array, Optional[Any]]],
         tau_ext: Optional[Array] = None,
         t1: Optional[float] = 10.0,
-        dt: Optional[float] = 1e-4,
+        solver_dt: Optional[float] = 1e-4,
         save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
         solver: Optional[AbstractSolver] = Tsit5(),
@@ -159,7 +161,7 @@ class DynamicalSystem(eqx.Module):
                 actuation from the initial state.
             tau_ext: External forces/torques applied to the system (broadcast as constant).
             t1: Final time of the simulation, included in the saved trajectory.
-            dt: Time step for the solver.
+            solver_dt: Time step for the solver.
             save_ts: Explicit time points to be saved in the output. Must be within
                 [initial_state.t, t1]. Falls back to `save_dt` if None.
             save_dt: Time interval at which to save the solution when `save_ts` is
@@ -187,7 +189,7 @@ class DynamicalSystem(eqx.Module):
         zero_control_state_dot = self._zero_like_control_state(controller_state0)
 
         t0 = float(initial_state.t)
-        save_ts = self._compute_save_times(t0, t1, dt, save_ts, save_dt)
+        save_ts = self._compute_save_times(t0, t1, solver_dt, save_ts, save_dt)
 
         @jit
         def closed_loop_forward_dynamics(
@@ -225,8 +227,8 @@ class DynamicalSystem(eqx.Module):
             terms=term,
             solver=solver,
             t0=t0,
-            t1=t1 + dt,
-            dt0=dt,
+            t1=t1 + solver_dt,
+            dt0=solver_dt,
             y0=y0_for_solver,
             args=(base_u, tau_ext),
             saveat=saveat,
@@ -259,7 +261,7 @@ class DynamicalSystem(eqx.Module):
         controller: Callable[[SystemState], Tuple[Array, Optional[Any]]],
         tau_ext: Optional[Array] = None,
         t1: Optional[float] = 10.0,
-        dt: Optional[float] = 1e-4,
+        solver_dt: Optional[float] = 1e-4,
         control_dt: Optional[float] = 1e-2,
         save_ts: Optional[Array] = None,
         save_dt: Optional[float] = 0.01,
@@ -285,7 +287,7 @@ class DynamicalSystem(eqx.Module):
             controller: callable returning ``(u_control, control_state_dot)``.
             tau_ext: constant external wrench/force applied during the rollout.
             t1: final time of the simulation.
-            dt: initial step size for the solver.
+            solver_dt: initial step size for the solver.
             control_dt: sampling period for the controller. Must be positive.
             save_ts: explicit times to save; falls back to ``save_dt``.
             save_dt: save interval if ``save_ts`` is not provided.
@@ -299,7 +301,7 @@ class DynamicalSystem(eqx.Module):
         if controller is None:
             raise ValueError("A controller must be provided for closed-loop rollouts.")
         if save_ts is None:
-            save_ts = self._compute_save_times(float(initial_state.t), t1, dt, save_ts, save_dt)
+            save_ts = self._compute_save_times(float(initial_state.t), t1, solver_dt, save_ts, save_dt)
 
         base_u = initial_state.u
         if base_u is None:
@@ -363,7 +365,7 @@ class DynamicalSystem(eqx.Module):
                 solver=solver,
                 t0=t_start,
                 t1=t_end,
-                dt0=dt,
+                dt0=solver_dt,
                 y0=y_in,
                 args=(u_total, tau_ext),
                 saveat=saveat,

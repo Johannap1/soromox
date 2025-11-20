@@ -29,7 +29,7 @@ python tools/benchmarks/benchmark_system_methods.py \
   --systems pendulum planar_pcs pcs \
   --segment-counts 1 3 5 7 \
   --duration 2.0 \
-  --dt 5e-4 \
+  --solver-dt 5e-4 \
   --execution-repeats 5 \
   --csv benchmarks/methods.csv \
   --plot benchmarks/methods.png
@@ -39,7 +39,7 @@ python tools/benchmarks/benchmark_system_methods.py \
 
 - `--systems`: subset of available robots (defaults to all registered systems).
 - `--segment-counts`: link/segment sweep; a fresh system instance is created per value.
-- `--duration`, `--dt`, `--save-dt`: integration controls when benchmarking
+- `--duration`, `--solver-dt` (`--dt` alias), `--save-dt`: integration controls when benchmarking
   `rollout_to`.
 - `--execution-repeats`: number of warm calls to average after the cold run.
 - `--json` / `--csv`: export raw results for regression tracking.
@@ -73,7 +73,7 @@ python tools/benchmarks/benchmark_simulation_batch_scaling.py \
   --segment-counts 1 3 5 \
   --batch-sizes 1 2 4 8 16 32 64 \
   --duration 2.0 \
-  --dt 5e-4 \
+  --solver-dt 5e-4 \
   --csv benchmarks/batch-scaling.csv \
   --plot benchmarks/batch-scaling.png \
   --log-x --log-y
@@ -82,7 +82,7 @@ python tools/benchmarks/benchmark_simulation_batch_scaling.py \
 ### Key options
 
 - `--batch-sizes`: number of environments to launch per measurement.
-- Shared `--systems`, `--segment-counts`, `--duration`, `--dt`, `--save-dt`.
+- Shared `--systems`, `--segment-counts`, `--duration`, `--solver-dt` (`--dt` alias), `--save-dt`.
 - `--noise-scale`: per-environment perturbation applied to `q`/`qd` to avoid feeding
   identical states to all replicas (helps stress vectorisation paths).
 - `--repeats`, `--warmup-runs`: control timing stability.

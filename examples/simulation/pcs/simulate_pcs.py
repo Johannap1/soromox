@@ -186,7 +186,7 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    dt = 1e-4
+    solver_dt = 1e-4
     save_dt = 0.01
 
     # Solver
@@ -197,7 +197,7 @@ if __name__ == "__main__":
         initial_state=initial_state,
         u=u,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,

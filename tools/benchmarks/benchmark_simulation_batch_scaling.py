@@ -36,7 +36,7 @@ Array = jax.Array
 @dataclass
 class RuntimeConfig:
     duration: float
-    dt: float
+    solver_dt: float
     save_dt: float
     t0: float = 0.0
 
@@ -71,7 +71,7 @@ def _build_batched_solver(system: DynamicalSystem, runtime: RuntimeConfig) -> Ca
             u=u,
             tau_ext=tau_ext,
             t1=t1,
-            dt=runtime.dt,
+            solver_dt=runtime.solver_dt,
             save_dt=runtime.save_dt,
         )
         qs, qds = jnp.split(trajectory.y, 2, axis=1)
@@ -119,7 +119,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "dof",
         "batch_size",
         "duration_s",
-        "dt",
+        "solver_dt",
         "save_dt",
         "wall_time_s",
         "per_env_wall_time_s",
@@ -299,10 +299,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     if args.duration <= 0.0:
         parser.error("--duration must be positive.")
-    if args.dt <= 0.0:
-        parser.error("--dt must be positive.")
-    if args.save_dt < args.dt:
-        parser.error("--save-dt must be greater than or equal to --dt.")
+    if args.solver_dt <= 0.0:
+        parser.error("--solver-dt/--dt must be positive.")
+    if args.save_dt < args.solver_dt:
+        parser.error("--save-dt must be greater than or equal to --solver-dt/--dt.")
     if any(bs < 1 for bs in args.batch_sizes):
         parser.error("All --batch-sizes entries must be >= 1.")
     if any(seg < 1 for seg in args.segment_counts):
@@ -321,7 +321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     runtime = RuntimeConfig(
         duration=args.duration,
-        dt=args.dt,
+        solver_dt=args.solver_dt,
         save_dt=args.save_dt,
     )
     registry = get_system_registry()
@@ -381,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "dof": dof,
                         "batch_size": batch,
                         "duration_s": args.duration,
-                        "dt": args.dt,
+                        "solver_dt": args.solver_dt,
                         "save_dt": args.save_dt,
                         "wall_time_s": wall_time,
                         "per_env_wall_time_s": per_env_wall,

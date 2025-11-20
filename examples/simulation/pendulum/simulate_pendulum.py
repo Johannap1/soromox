@@ -28,8 +28,8 @@ q0 = jnp.zeros((num_links,))
 q0 = jnp.array([jnp.pi / 8, -jnp.pi / 4])
 
 # set simulation parameters
-dt = 1e-4  # time step
-ts = jnp.arange(0.0, 5, dt)  # time steps
+solver_dt = 1e-4  # time step
+ts = jnp.arange(0.0, 5, solver_dt)  # time steps
 save_dt = 0.01
 
 # video settings
@@ -91,7 +91,7 @@ if __name__ == "__main__":
         initial_state=initial_state,
         u=u,
         t1=ts[-1],
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
     )
     ts_out = trajectory.t
@@ -176,7 +176,7 @@ if __name__ == "__main__":
     video = cv2.VideoWriter(
         str(video_path),
         fourcc,
-        1 / (save_dt * dt),  # fps
+        1 / (save_dt * solver_dt),  # fps
         (video_width, video_height),
     )
 

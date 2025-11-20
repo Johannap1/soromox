@@ -254,7 +254,7 @@ def add_integration_args(
     parser: argparse.ArgumentParser,
     *,
     duration_default: float = 1.0,
-    dt_default: float = 1e-4,
+    solver_dt_default: float = 1e-4,
     save_dt_default: float = 0.01,
 ) -> None:
     """Attach shared integration arguments to a parser."""
@@ -266,16 +266,18 @@ def add_integration_args(
         help="Simulation duration (seconds)",
     )
     parser.add_argument(
+        "--solver-dt",
         "--dt",
+        dest="solver_dt",
         type=float,
-        default=dt_default,
+        default=solver_dt_default,
         help="Integration step size",
     )
     parser.add_argument(
         "--save-dt",
         type=float,
         default=save_dt_default,
-        help="Save the system state every `save_dt` seconds (must be >= dt)",
+        help="Save the system state every `save_dt` seconds (must be >= solver_dt)",
     )
 
 

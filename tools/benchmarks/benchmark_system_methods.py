@@ -50,7 +50,7 @@ class RuntimeConfig:
     """Holds runtime controls shared across benchmark cases."""
 
     duration: float
-    dt: float
+    solver_dt: float
     save_dt: float
     execution_repeats: int
 
@@ -140,12 +140,12 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         BenchmarkCase(
             name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.rollout_to(
+                lambda q0, qd0, u, tau, t0, t1, solver_dt, save_dt: sys.rollout_to(
                     initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
                     u=u,
                     tau_ext=tau,
                     t1=t1,
-                    dt=dt,
+                    solver_dt=solver_dt,
                     save_dt=save_dt,
                 ),
                 (
@@ -155,7 +155,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
                     ctx["tau_ext"],
                     jnp.array(0.0),
                     jnp.array(runtime.duration),
-                    jnp.array(runtime.dt),
+                    jnp.array(runtime.solver_dt),
                     runtime.save_dt,
                 ),
             ),
@@ -197,12 +197,12 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         BenchmarkCase(
             name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_dt: sys.rollout_to(
+                lambda q0, qd0, u, tau, t0, t1, solver_dt, save_dt: sys.rollout_to(
                     initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
                     u=u,
                     tau_ext=tau,
                     t1=t1,
-                    dt=dt,
+                    solver_dt=solver_dt,
                     save_dt=save_dt,
                 ),
                 (
@@ -212,7 +212,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
                     ctx["tau_ext"],
                     jnp.array(0.0),
                     jnp.array(runtime.duration),
-                    jnp.array(runtime.dt),
+                    jnp.array(runtime.solver_dt),
                     runtime.save_dt,
                 ),
             ),
@@ -261,12 +261,12 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         BenchmarkCase(
             name="rollout_to",
             builder=lambda sys, ctx, runtime: (
-                lambda q0, qd0, u, tau, t0, t1, dt, save_n: sys.rollout_to(
+                lambda q0, qd0, u, tau, t0, t1, solver_dt, save_n: sys.rollout_to(
                     initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
                     u=u,
                     tau_ext=tau,
                     t1=t1,
-                    dt=dt,
+                    solver_dt=solver_dt,
                     save_dt=save_n,
                 ),
                 (
@@ -276,7 +276,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
                     ctx["tau_ext"],
                     jnp.array(0.0),
                     jnp.array(runtime.duration),
-                    jnp.array(runtime.dt),
+                    jnp.array(runtime.solver_dt),
                     runtime.save_dt,
                 ),
             ),
@@ -368,7 +368,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "jit_compile_time_s",
         "jit_execution_time_s",
         "duration",
-        "dt",
+        "solver_dt",
         "save_dt",
         "execution_repeats",
     ]
@@ -423,7 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     runtime = RuntimeConfig(
         duration=args.duration,
-        dt=args.dt,
+        solver_dt=args.solver_dt,
         save_dt=max(0.0, args.save_dt),
         execution_repeats=args.execution_repeats,
     )
@@ -468,7 +468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "jit_compile_time_s": compile_time,
                         "jit_execution_time_s": exec_time,
                         "duration": runtime.duration,
-                        "dt": runtime.dt,
+                        "solver_dt": runtime.solver_dt,
                         "save_dt": runtime.save_dt,
                         "execution_repeats": runtime.execution_repeats,
                     }

@@ -333,7 +333,7 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    dt = 1e-4
+    solver_dt = 1e-4
     save_dt = 0.01
 
     # Solver
@@ -345,7 +345,7 @@ if __name__ == "__main__":
         initial_state=initial_state,
         u=u,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
@@ -353,7 +353,9 @@ if __name__ == "__main__":
     ts = trajectory.t
     q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
     end_time = time.time()
-    print(f"Total simulation time = {round(end_time - initial_time, ndigits=3)} s  |  t0 = {t0}, t1 = {t1}, dt0 = {dt}")
+    print(
+        f"Total simulation time = {round(end_time - initial_time, ndigits=3)} s  |  t0 = {t0}, t1 = {t1}, solver_dt0 = {solver_dt}"
+    )
 
     # =====================================================
     # End-effector position upon time

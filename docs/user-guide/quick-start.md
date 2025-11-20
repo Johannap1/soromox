@@ -46,7 +46,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     ```python
     # Configure simulation
     t_span = (0.0, 5.0)  # 5 seconds
-    dt = 0.01           # 10ms timestep
+    solver_dt = 0.01    # 10ms timestep
 
     # Zero control torques
     u = jnp.zeros((num_links,))
@@ -57,8 +57,8 @@ Let's dive right in with a classic example - simulating a double pendulum to und
         initial_state=initial_state,
         u=u,
         t1=t_span[1],
-        dt=dt,
-        save_dt=dt,
+        solver_dt=solver_dt,
+        save_dt=solver_dt,
     )
     ts = trajectory.t
     qs, qds = jnp.split(trajectory.y, 2, axis=1)

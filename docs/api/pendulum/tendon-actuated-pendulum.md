@@ -160,7 +160,7 @@ trajectory = robot.rollout_to(
     initial_state=initial_state,
     u=u,
     t1=5.0,
-    dt=1e-3,
+    solver_dt=1e-3,
     solver=Tsit5()
 )
 ts = trajectory.t

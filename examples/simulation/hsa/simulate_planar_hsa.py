@@ -92,7 +92,7 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 5.0
-    dt = 5e-5  # time step
+    solver_dt = 5e-5  # time step
     save_dt = 0.01
 
     initial_state = SystemState(t=t0, y=y0)
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         initial_state=initial_state,
         u=phi,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         max_steps=None,
     )
