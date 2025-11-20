@@ -246,7 +246,7 @@ if __name__ == "__main__":
     dt = 1e-4
     skip_step = 100  # how many time steps to skip in between video frames
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
+    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u=u,

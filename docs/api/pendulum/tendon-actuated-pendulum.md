@@ -154,7 +154,7 @@ qd0 = jnp.zeros_like(q0)                    # Initial velocities
 u = jnp.array([2.0])                        # Constant motor input
 
 # Time integration
-ts, qs, qds = robot.resolve_upon_time(
+ts, qs, qds, us = robot.resolve_upon_time(
     q0=q0,
     qd0=qd0,
     u=u,

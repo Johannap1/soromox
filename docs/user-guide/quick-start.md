@@ -51,7 +51,7 @@ Let's dive right in with a classic example - simulating a double pendulum to und
     u = jnp.zeros((num_links,))
 
     # Integrate using the class helper (Diffrax under the hood)
-    ts, qs, qds = robot.resolve_upon_time(
+    ts, qs, qds, us = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u=u,

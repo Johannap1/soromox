@@ -207,7 +207,7 @@ if __name__ == "__main__":
     print(robot.passive_tendon_length(q0))
 
     # Integrate using the model's built-in solver
-    ts_out, qs, qds = robot.resolve_upon_time(
+    ts_out, qs, qds, _ = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u=u,

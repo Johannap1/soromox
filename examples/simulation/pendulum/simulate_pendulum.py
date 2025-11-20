@@ -85,7 +85,7 @@ if __name__ == "__main__":
     print("yd0:\n", yd)
 
     # Integrate using the model's built-in solver
-    ts_out, q_ts, qd_ts = robot.resolve_upon_time(
+    ts_out, q_ts, qd_ts, _ = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u=u,

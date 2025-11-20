@@ -10,7 +10,7 @@ from diffrax import (
     AbstractSolver,
 )
 import dill
-from jax import Array, lax
+from jax import Array, lax, vmap
 from jax import numpy as jnp
 import sympy as sp
 from pathlib import Path
@@ -1492,7 +1492,7 @@ class PlanarHSA(DynamicalSystem):
 
     @eqx.filter_jit
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: Tuple[Array, Callable]
+        self, t: Array, y: Array, actuation_args: Tuple[Array, Optional[Callable]]
     ) -> Array:
         """
         Forward dynamics function.
@@ -1507,14 +1507,14 @@ class PlanarHSA(DynamicalSystem):
                     motor positions / twist angles of the proximal end of the rods.
                     If consider_underactuation is False, this is an array of shape (num_dofs, ) with
                     the configuration-space torques.
-                - control_fn (Callable): Callable that returns the forcing function of the form control_fn(t, x) -> phi. If consider_underactuation is True,
+                - controller (Callable): Callable that returns the forcing function of the form controller(t, x) -> phi. If consider_underactuation is True,
                     then phi is an array of shape (num_dofs, ) with the configuration-space torques. If consider_underactuation is False,
                     then phi is an array of shape (num_hysteresis, ) with the motor positions / twist angles of the proximal end of the rods.
 
         Returns:
             yd: Time derivative of the state vector of shape (2 * num_dofs + num_hysteresis, ).
         """
-        u, control_fn = actuation_args
+        u, controller = actuation_args
 
         q, qd, z = jnp.split(y, [self.num_dofs, 2 * self.num_dofs])
 
@@ -1524,8 +1524,8 @@ class PlanarHSA(DynamicalSystem):
             * (self.hyst_gamma + self.hyst_beta * jnp.sign((self.B_hyst.T @ qd) * z))
         )
 
-        if control_fn is not None:
-            u = u + control_fn(t, y)
+        if controller is not None:
+            u = u + controller(t, y)
 
         if self.consider_underactuation is True:
             phi = u
@@ -1563,7 +1563,7 @@ class PlanarHSA(DynamicalSystem):
         q0: Array,
         qd0: Array,
         u0: Array,
-        control_fn: Optional[Callable] = None,
+        controller: Optional[Callable] = None,
         t0: Optional[float] = 0.0,
         t1: Optional[float] = 10.0,
         dt: Optional[float] = 1e-4,
@@ -1571,7 +1571,7 @@ class PlanarHSA(DynamicalSystem):
         solver: Optional[AbstractSolver] = Tsit5(),
         stepsize_controller: Optional[AbstractStepSizeController] = ConstantStepSize(),
         max_steps: Optional[int] = None,
-    ) -> Tuple[Array, Array, Array]:
+    ) -> Tuple[Array, Array, Array, Array]:
         """
         Resolve the system dynamics over time using Diffrax.
 
@@ -1585,7 +1585,7 @@ class PlanarHSA(DynamicalSystem):
                 If consider_underactuation is False,
                     array of shape (num_dofs, ) with
                     the configuration-space torques.
-            control_fn (Callable, optional): Callable that returns the forcing function of the form control_fn(t, [q, qd]) -> phi.
+            controller (Callable, optional): Callable that returns the forcing function of the form controller(t, [q, qd]) -> phi.
                 If consider_underactuation is True,
                     then phi is an array of shape (num_actuators, )
                     with the configuration-space torques.
@@ -1613,6 +1613,7 @@ class PlanarHSA(DynamicalSystem):
             ts (Array): Time points at which the solution is saved.
             qs (Array): Configuration (strains) at the saved time points.
             qds (Array): Velocity (strains) at the saved time points.
+            us (Array): Actuation applied at each saved time step.
         """
         y0 = jnp.concatenate([q0, qd0, jnp.zeros((self.num_hysteresis,))])
 
@@ -1625,7 +1626,7 @@ class PlanarHSA(DynamicalSystem):
         saveat = SaveAt(ts=t[::save_dt])  # Save at specified time points
 
         # Prepare the actuation arguments
-        actuation_args = (u0, control_fn)
+        actuation_args = (u0, controller)
 
         sol = diffeqsolve(
             terms=term,
@@ -1645,4 +1646,10 @@ class PlanarHSA(DynamicalSystem):
         y_out = sol.ys
         qs, qds, zs = jnp.split(y_out, [self.num_dofs, 2 * self.num_dofs], axis=1)
 
-        return ts, qs, qds
+        if controller is None:
+            us = jnp.broadcast_to(u0, (ts.shape[0], u0.shape[0]))
+        else:
+            u_controls = vmap(controller)(ts, y_out)
+            us = u0 + u_controls
+
+        return ts, qs, qds, us

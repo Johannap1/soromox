@@ -351,7 +351,7 @@ if __name__ == "__main__":
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
+    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u=u,

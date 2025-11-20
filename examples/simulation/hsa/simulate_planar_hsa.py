@@ -88,7 +88,7 @@ if __name__ == "__main__":
     dt = 5e-5  # time step
     save_dt = 0.01
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
+    ts, q_ts, qd_ts, _ = robot.resolve_upon_time(
         q0=q0,
         qd0=qd0,
         u0=phi,

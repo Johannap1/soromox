@@ -64,7 +64,7 @@ def _build_batched_solver(system: DynamicalSystem, runtime: RuntimeConfig) -> Ca
     t1 = runtime.t0 + runtime.duration
 
     def single_env(q0: Array, qd0: Array, u: Array, tau_ext: Array) -> Tuple[Array, Array, Array]:
-        ts, qs, qds = system.resolve_upon_time(
+        ts, qs, qds, _ = system.resolve_upon_time(
             q0=q0,
             qd0=qd0,
             u=u,
