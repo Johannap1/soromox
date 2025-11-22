@@ -179,8 +179,8 @@ def plot_forward(impls, results, q_values: Array) -> None:
     soromox_chi = results["SoRoMoX"]["chi"]
     ylabels = [
         r"$\theta(s=L)\;[\mathrm{rad}]$",
-        r"$x(s=L)\;[\mathrm{m}]$",
-        r"$y(s=L)\;[\mathrm{m}]$",
+        r"$p_\mathrm{x}(s=L)\;[\mathrm{m}]$",
+        r"$p_\mathrm{y}(s=L)\;[\mathrm{m}]$",
     ]
     for comp_idx in range(3):
         ax = axes[comp_idx]
