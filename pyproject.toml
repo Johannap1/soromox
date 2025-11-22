@@ -152,6 +152,7 @@ docs = [
 examples = [
     "ipython",
     "jaxopt",
+    "jsrm",
     "matplotlib",
     "seaborn",
 ]
