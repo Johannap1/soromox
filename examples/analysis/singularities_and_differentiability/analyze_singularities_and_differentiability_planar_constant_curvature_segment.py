@@ -322,7 +322,7 @@ def main() -> None:
     params_soromox["D"] = jnp.zeros((3, 3))
 
     params_jsrm: Dict[str, Array] = {
-        "th0": params_soromox["th0"],
+        "th0": jnp.array(0.0),
         "l": params_soromox["L"],
         "r": params_soromox["r"],
         "rho": params_soromox["rho"],
