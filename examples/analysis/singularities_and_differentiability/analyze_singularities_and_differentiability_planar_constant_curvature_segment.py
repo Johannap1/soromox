@@ -124,7 +124,8 @@ def build_jsrm_impl(
     def forward(q: Array) -> Array:
         q_vec = jnp.asarray(q, dtype=jnp.float64).reshape(-1)
         chi = forward_kinematics_fn(params, q_vec, total_length)
-        return jnp.stack([chi[2], chi[0], chi[1]])  # theta, x, y
+        chi = jnp.stack([chi[2] + jnp.pi / 2, chi[0], chi[1]])  # theta, x, y
+        return chi
 
     def jacobian(q: Array) -> Array:
         q_vec = jnp.asarray(q, dtype=jnp.float64).reshape(-1)
