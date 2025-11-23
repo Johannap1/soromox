@@ -83,13 +83,6 @@ class TendonActuatedGVS(GVS):
 
     def __init__(
         self,
-        links_list: List[LinkAttributes,],
-        joints_list: List[JointAttributes,],
-        basis_list: List[BasisAttributes,],
-        n_gauss_list: List[int],
-        gravity_vector: List[float],
-        max_dof: Optional[int] = None,
-        max_nGauss: Optional[int] = None,
         *args,
         tendon_routing_basis: Optional[Dict[str, Callable]] = None,
         tendon_routing_params: Dict[str, Array],
@@ -169,13 +162,6 @@ class TendonActuatedGVS(GVS):
         """
 
         super().__init__(
-            links_list,
-            joints_list,
-            basis_list,
-            n_gauss_list,
-            gravity_vector,
-            max_dof,
-            max_nGauss,
             *args,
             **kwargs,
         )
@@ -257,74 +243,68 @@ class TendonActuatedGVS(GVS):
 
         return updated_self
 
+
+    @eqx.filter_jit
+    def _local_actuation_basis_single(
+        self,
+        single_tendon_routing_params: Dict[str, Array],
+        q: Array,
+        s: Array,
+        i: Array,
+        j: Array,
+    ) -> Array:
+        """
+        Returns a (6,) vector: actuation basis contribution of a single tendon
+        at segment i and abscissa index j (for abscissa value s).
+        """
+        attachment_segment_idx = single_tendon_routing_params["idx_seg_att"]  # ()
+        cond = attachment_segment_idx >= i  # ()
+
+        V_flat = self.V_dof.reshape(-1)
+        starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
+
+        start_col_link = starts[(2 * i + 1)].astype(jnp.int64)
+        n_active = self.B_select.shape[1]
+        B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
+        BXs = self.V_B_Xs[i, j]  # (6, max_dof)
+        dof_link = self.V_dof[i, 1].astype(jnp.int64)
+
+        max_dof = int(self.max_dof)                       # concrete Python int
+        cols_full = jnp.arange(max_dof)                   # concrete array [0..max_dof-1]
+        mask = (cols_full < dof_link).astype(BXs.dtype)   # dynamic comparison -> tracer OK
+        BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
+
+        B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
+        B_xi_i = B_xi_i.at[:3, :].multiply(1.0 / self.V_L[i])
+
+
+        # xi_ref = self.V_xi_ref_Xs[i,j]    
+        xi_ref = self.V_xi_ref_Xs[i, 0]
+        xi_i = B_xi_i @ q + xi_ref
+
+        d_s = jnp.append(self.d_s(single_tendon_routing_params, s), 1.0)  # (4,)
+        dd_s = jnp.append(self.dd_s_ds(single_tendon_routing_params, s), 1.0)  # (4,)
+
+        term = (dd_s + lie.hat_SE3(xi_i) @ d_s)[:-1]  # (3,)
+        norm = jnp.linalg.norm(term)  # ()
+        t = term / norm  # (3,)
+
+        return cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  # (6,)
+
+
     @eqx.filter_jit
     def _local_actuation_basis(self, q: Array, s: Array, i: Array, j: Array) -> Array:
         """
-        Compute the local actuation basis at current abscissa s.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,)
-            s (Array): abscissa points (num_gauss_points,)
-            i (Array): index of the segment ()
-            j (Array): index of the abscissa points (num_gauss_points,)
-            
-
-        Returns:
-            Phi_a_s (Array): actuation basis at s of shape (6, num_actuators)
+        Vectorized wrapper: compute actuation basis Phi_a_s for all tendons at
+        given (q, s, segment i, gauss index j). Returns (6, num_actuators).
         """
+        # vmap over the first axis of tendon_routing_params, keep other args fixed
+        Phi_a_s = vmap(
+            self._local_actuation_basis_single,
+            in_axes=(0, None, None, None, None),
+            out_axes=1,
+        )(self.tendon_routing_params, q, s, i, j)
 
-        def Phi_a_ki(single_tendon_routing_params: Dict[str, Array]):
-            """
-            Compute the actuation basis of one tendon at the segment i of the robot.
-
-            Args:
-                single_tendon_routing_params (Dict[str, Array]): parameters of one tendon (6,)
-
-            Returns:
-                Phi_a_ki (Array): actuation basis of one tendon at one segment of shape (6,)
-            """
-            attachment_segment_idx = single_tendon_routing_params["idx_seg_att"]  # ()
-            cond = attachment_segment_idx >= i  # ()
-
-            V_flat = self.V_dof.reshape(-1)
-            starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
-          
-          
-            start_col_link = starts[(2 * i + 1)].astype(jnp.int64)
-            n_active = self.B_select.shape[1]
-            B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
-            BXs = self.V_B_Xs[i, j]  # (6, max_dof)
-            dof_link = self.V_dof[i, 1].astype(jnp.int64)
-            
-            # cols = jnp.arange(dof_link)
-            # BXs_slice = jnp.take(BXs, cols, axis=1)  # (6, dof_link)
-            max_dof = int(self.max_dof)                       # concrete Python int
-            cols_full = jnp.arange(max_dof)                   # concrete array [0..max_dof-1]
-            mask = (cols_full < dof_link).astype(BXs.dtype)   # dynamic comparison -> tracer OK
-            BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
-        
-            B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
-            
-            B_xi_i = B_xi_i.at[:3, :].multiply(1.0 / self.V_L[i])
-
-            # xi_ref = self.V_xi_ref_Xs[i,j]
-            xi_ref = self.V_xi_ref_Xs[i,0]
-            xi_i = B_xi_i @ q + xi_ref
-
-            d_s = jnp.append(self.d_s(single_tendon_routing_params, s), 1.0)  # (4,)
-            dd_s = jnp.append(self.dd_s_ds(single_tendon_routing_params, s), 1.0)  # (4,)
-
-            term = (dd_s + lie.hat_SE3(xi_i) @ d_s)[:-1]  # (3,)
-            norm = jnp.linalg.norm(term)  # ()
-            t = term / norm  # (3,)
-            
-            # print("Phi_a_ki", cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t]))
-            return cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  # (6,)
-
-
-        Phi_a_s = vmap(Phi_a_ki, in_axes=(0), out_axes=1)(self.tendon_routing_params)
-        # print("Phi_a_s", Phi_a_s)
-       
         return Phi_a_s
 
     @eqx.filter_jit
@@ -374,9 +354,9 @@ class TendonActuatedGVS(GVS):
                 B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
                 BXs = self.V_B_Xs[i, j]  # (6, max_dof)
                 dof_link = self.V_dof[i, 1].astype(jnp.int64)
-                max_dof = int(self.max_dof)                       # concrete Python int
-                cols_full = jnp.arange(max_dof)                   # concrete array [0..max_dof-1]
-                mask = (cols_full < dof_link).astype(BXs.dtype)   # dynamic comparison -> tracer OK
+                max_dof = int(self.max_dof)                       
+                cols_full = jnp.arange(max_dof)                  
+                mask = (cols_full < dof_link).astype(BXs.dtype)   
                 BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
             
                 B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
@@ -466,3 +446,122 @@ class TendonActuatedGVS(GVS):
         )  # (n_actuators, 3)
 
         return t_s
+
+
+
+    @eqx.filter_jit
+    def tendon_length(self, q: Array) -> Array:
+            """
+            Compute the length of all tendons of the robot.
+            This implementation is based on the formulation presented in:
+            Pustina, P., Della Santina, C., Boyer, F., De Luca, A., & Renda, F. (2024). Input decoupling of lagrangian systems via coordinate transformation: General characterization and its application to soft robotics. IEEE transactions on robotics, 40, 2098-2110.
+    
+            Args:
+                q (Array): generalized coordinates of shape (num_active_strains,).
+    
+            Returns:
+                l (Array): Lengths of all tendons of shape (num_actuators,).
+            """
+    
+            def tendon_length_density_segment_i(i: Array):
+                """
+                Compute the tendon length density at all Gauss points of segment i.
+    
+                Args:
+                    i (Array): segment index.
+    
+                Returns:
+                    dl_ds_i (Array): tendon length density values at Gauss points,
+                        shape (num_gauss_points, num_actuators).
+                """
+    
+                def tendon_length_density_point_j(j: Array):
+                    """
+                    Evaluate the tendon length density at the Gauss point j inside segment i.
+    
+                    Args:
+                        j (Array): Gauss point index.
+    
+                    Returns:
+                        dl_ds_j (Array): local tendon length density of shape (num_actuators,)
+                            at Gauss point j.
+                    """
+                    # extract gaussian point and weight
+                    Xs_j = Xs_scaled[j]
+                    Ws_j = Ws_scaled[j]
+    
+                    def tendon_length_density_tendon_k(
+                        tendon_routing_params_k: Dict[str, Array]
+                    ) -> Array:
+                        """
+                        Compute the tendon length density contribution of one tendon at the
+                        current Gauss point.
+    
+                        Args:
+                            tendon_routing_params_k (Dict[str, Array]): parameters of the tendon.
+                        
+                        Returns:
+                            dl_ds_k (Array): scalar tendon length density contribution.
+                        """
+                        # extract tendon routing evolution in the cross-sectional plane
+                        dd_s = jnp.append(
+                            self.dd_s_ds(tendon_routing_params_k, Xs_j), 1.0
+                        )  # (4,)
+    
+                        # compute local actuation basis
+                        Phi_a_k = self._local_actuation_basis_single(tendon_routing_params_k, q, Xs_j, i, j)  # (6,)
+                        
+                        # compute strain at the current segment and gauss point
+                        V_flat = self.V_dof.reshape(-1)
+                        starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
+    
+                        start_col_link = starts[(2 * i + 1)].astype(jnp.int64)
+                        n_active = self.B_select.shape[1]
+                        B_xi_i = jnp.zeros((6, n_active), dtype=self.V_B_Xs.dtype)
+                        BXs = self.V_B_Xs[i, j]  # (6, max_dof)
+                        dof_link = self.V_dof[i, 1].astype(jnp.int64)
+    
+                        max_dof = int(self.max_dof)                       
+                        cols_full = jnp.arange(max_dof)                   
+                        mask = (cols_full < dof_link).astype(BXs.dtype)   
+                        BXs_masked = BXs * mask                           # (6, max_dof), zeros beyond dof_link
+    
+                        B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs_masked, (0, start_col_link))
+                        B_xi_i = B_xi_i.at[:3, :].multiply(1.0 / self.V_L[i])
+    
+                        # xi_ref = self.V_xi_ref_Xs[i,j]    
+                        xi_ref = self.V_xi_ref_Xs[i, 0]
+                        xi_i = B_xi_i @ q + xi_ref
+    
+    
+                        # compute tendon length density contribution
+                        dl_ds_k = jnp.dot(Phi_a_k.T, xi_i + jnp.concat([jnp.zeros((3,)), dd_s[:3]], axis=-1))  # ()
+    
+                        return dl_ds_k
+    
+                    # Vectorize the tendon length density computation for all tendons
+                    dl_ds_j = vmap(tendon_length_density_tendon_k)(
+                        self.tendon_routing_params
+                    )  # (num_actuators,)
+    
+                    return Ws_j * dl_ds_j
+                
+                Xs_scaled, Ws_scaled = scale_gaussian_quadrature(
+                    self.V_Xs[i], self.V_Ws[i], self.V_L_cum[i], self.V_L_cum[i + 1]
+                )
+    
+                # Vectorize the tendon length density evaluation for all Gauss points
+                dl_ds_i = vmap(tendon_length_density_point_j)(           
+                    jnp.arange(self.max_nGauss+2)
+                )  # (num_gauss_points, num_actuators)
+    
+                return dl_ds_i
+    
+            # Vectorize the tendon length density evaluation for all segments
+            dl_ds_blocks = vmap(tendon_length_density_segment_i)(
+                jnp.arange(self.num_segments)
+            )  # (num_segments, num_gauss_points, num_actuators)
+    
+            l = jnp.sum(dl_ds_blocks, axis=(0, 1))  # Sum over the segments and Gauss points
+    
+            return l

@@ -15,10 +15,10 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import numpy as onp
-from typing import Callable
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.systems.isupport import ISupport
+from soromox.systems.system_state import SystemState
 
 jnp.set_printoptions(
     threshold=jnp.inf,
@@ -28,13 +28,10 @@ jnp.set_printoptions(
 
 
 def draw_robot_curve(
-    batched_forward_kinematics: Callable,
-    L_max: float,
-    q: Array,
-    num_points: int = 50,
+    robot: ISupport, L_max: float, q: Array, num_points: int = 50
 ):
     s_ps = jnp.linspace(0, L_max, num_points)
-    g_ps = batched_forward_kinematics(q, s_ps)[:, :3, 3]
+    g_ps = robot.forward_kinematics_batched(q, s_ps)[:, :3, 3]
 
     curve = onp.array(g_ps, dtype=onp.float64)
     return curve  # (N, 3)
@@ -57,7 +54,6 @@ def animate_robot_matplotlib(
             "Cannot use both animation and slider at the same time. Choose one."
         )
 
-    batched_forward_kinematics = jax.vmap(robot.forward_kinematics, in_axes=(None, 0))
     L_max = jnp.sum(robot.L)
 
     width = jnp.linalg.norm(robot.L) * 1.5
@@ -83,7 +79,7 @@ def animate_robot_matplotlib(
         def update(frame_idx):
             q = q_list[frame_idx]
             t = t_list[frame_idx]
-            curve = draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+            curve = draw_robot_curve(robot, L_max, q, num_points)
             line.set_data(curve[:, 0], curve[:, 1])
             line.set_3d_properties(curve[:, 2])
             title_text.set_text(f"t = {t:.2f} s")
@@ -116,7 +112,7 @@ def animate_robot_matplotlib(
             ax.set_zlabel("Z [m]")
             ax.set_title(f"t = {t_list[frame_idx]:.2f} s")
             q = q_list[frame_idx]
-            curve = draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+            curve = draw_robot_curve(robot, L_max, q, num_points)
             ax.plot(curve[:, 0], curve[:, 1], curve[:, 2], lw=4, color="blue")
             fig.canvas.draw_idle()
 
@@ -209,23 +205,24 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    dt = 5e-5
+    solver_dt = 5e-5
     save_dt = 0.01
 
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=t0,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
 
     q1 = q_ts[-1]
     print("q1:\n", q1)

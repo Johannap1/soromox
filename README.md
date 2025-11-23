@@ -21,8 +21,8 @@ We provide implementations of several popular and expressive soft robot models i
 So far, we have implemented the following systems:
 
 - [N-link pendulum](examples/simulate_pendulum.py)
-- [General/3D Piecewise Constant Strain (PCS) continuum soft robot](examples/simulate_pcs.py)
 - [Planar Piecewise Constant Strain (PCS) continuum soft robot](examples/simulate_planar_pcs.py)
+- [Spatial Piecewise Constant Strain (PCS) continuum soft robot](examples/simulate_pcs.py)
 - [Planar Handed Shearing Auxetics (HSA) robot](examples/simulate_planar_hsa.py)
 
 We are happy to receive contributions for other soft robot models. See the [Contributing Guide](development/contributing.md) for more details.

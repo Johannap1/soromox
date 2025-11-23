@@ -10,6 +10,7 @@ from soromox.parameters.hsa_params import (
     PARAMS_FPU_HYSTERESIS_CONTROL,
 )
 from soromox.systems.planar_hsa import PlanarHSA
+from soromox.systems.system_state import SystemState
 from soromox.rendering.planar_hsa.opencv_renderer import draw_robot, animate_robot
 
 
@@ -66,6 +67,12 @@ if __name__ == "__main__":
     qd0 = jnp.zeros_like(q0)
     # Motor actuation angles
     phi = jnp.array([jnp.pi, jnp.pi / 2])
+    # initial hysteresis state
+    if consider_hysteresis:
+        z0 = jnp.zeros((robot.num_hysteresis,))
+    else:
+        z0 = jnp.array([])
+    y0 = jnp.concatenate([q0, qd0, z0])
 
     # Displaying the image
     window_name = f"Planar HSA with {num_segments} segments"
@@ -85,19 +92,20 @@ if __name__ == "__main__":
     # Simulation time parameters
     t0 = 0.0
     t1 = 5.0
-    dt = 5e-5  # time step
+    solver_dt = 5e-5  # time step
     save_dt = 0.01
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
-        u0=phi,
-        t0=t0,
+    initial_state = SystemState(t=t0, y=y0)
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
+        u=phi,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         max_steps=None,
     )
+    ts = trajectory.t
+    q_ts, qd_ts, _ = jnp.split(trajectory.y, [robot.num_dofs, 2 * robot.num_dofs], axis=1)
 
     # create video
     video_width, video_height = 700, 700  # img height and width
@@ -124,7 +132,7 @@ if __name__ == "__main__":
             if not ret:
                 break
             cv2.imshow("Animation Planar HSA", frame)
-            key = cv2.waitKey(int(1000 / (1 / dt / skip_step)))
+            key = cv2.waitKey(int(1000 / (1 / save_dt)))
             if key in (27, ord("q")):
                 break
         cap.release()

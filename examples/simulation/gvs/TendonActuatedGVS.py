@@ -20,49 +20,22 @@ jax.config.update("jax_enable_x64", True)
 print("JAX default backend:", jax.default_backend())
 print("JAX devices:", jax.devices())
 
-### MOCAP DATA TRANSFORMATION FUNCTIONS ###
-
-def _transform_points(pb: jnp.ndarray, p1: jnp.ndarray, p2: jnp.ndarray, p3: jnp.ndarray, p4: jnp.ndarray,
-                      Rot: jnp.ndarray, R_alg1: jnp.ndarray, R_alg2: jnp.ndarray, offset: jnp.ndarray):
-    # equivalente del blocco richiesto
-    pb_gl = Rot @ pb
-    p1_gl = Rot @ p1
-    p2_gl = Rot @ p2
-    p3_gl = Rot @ p3
-    p4_gl = Rot @ p4
-
-    pb_lcl = -offset
-    p1_lcl = p1_gl - (pb_gl + offset)
-    p2_lcl = p2_gl - (pb_gl + offset)
-    p3_lcl = p3_gl - (pb_gl + offset)
-    p4_lcl = p4_gl - (pb_gl + offset)
-
-    R_total = R_alg1 @ R_alg2
-    pb_tr = R_total @ pb_lcl
-    p1_tr = R_total @ p1_lcl
-    p2_tr = R_total @ p2_lcl
-    p3_tr = R_total @ p3_lcl
-    p4_tr = R_total @ p4_lcl
-
-    return {"pb_tr": pb_tr, "p1_tr": p1_tr, "p2_tr": p2_tr, "p3_tr": p3_tr, "p4_tr": p4_tr}
-
 ### SOFT ROBOT UTILITIES FUNCTIONS ###
 
-# MY STATIC EQUILIBRIUM EQUATION SOLVER
-def solve_equilibrium(robot, u, q0):
+#STATIC EQUILIBRIUM EQUATION SOLVER
+def solve_equilibrium(robot: TendonActuatedGVS, u: jnp.ndarray, q0: jnp.ndarray):
     def statics_eq(q,args): 
-        robot, u = args
+        u = args
         K = robot.stiffness_matrix()
         B = robot.actuation_matrix(q)
         G = robot.gravitational_force(q)
-        return K @ q - G - B @ u
+        return K @ q + G - B @ u
     
-
     solver = optx.Newton(rtol=1e-6, atol=1e-6)
-    res = optx.root_find(jax.jit(statics_eq), solver, q0, args=(robot, u), max_steps=50)
+    statics_eq_jit = jax.jit(statics_eq) 
+    return optx.root_find(statics_eq_jit, solver, q0, (u), max_steps=200)
 
-    # print("Solution q*:", res.value)
-    # print("Final residual:", jnp.linalg.norm(statics_eq(res.value, (robot, u))))
+   
     return res
 
 
@@ -230,7 +203,7 @@ tendon_routing_params = {
      "mz": jnp.array([-0.0295*jnp.sin(jnp.pi/180*30), -0.0295*jnp.sin(jnp.pi/180*150)]),
      "idx_seg_att": jnp.array([0, 0]),
 }
-#REMEMBER: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
+#attention: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
 
 # 2 link version
 robot = TendonActuatedGVS(
@@ -325,9 +298,9 @@ K = robot.stiffness_matrix()
 F = robot.gravitational_force(q0)
 D = robot.damping_matrix()
 B = robot.actuation_matrix(q0)
-u = jnp.asarray([-1, -0.00], dtype=q0.dtype)  
 C = robot.coriolis_matrix(q0, q0dot)
-# #THE INITIAL CONDITION CAN BE CHANGED WITH G_INI,G_INIT e G0 IN CORE
+
+u = jnp.asarray([-1, -0.00], dtype=q0.dtype)  
 tau = robot.actuation_force(q0, u)
 
 
@@ -354,8 +327,37 @@ tau_ext = 0* jnp.ones((dof,))
 # ydot = robot.forward_dynamics(0.0, y, actuation_args=(u, tau_ext))
 # print("ydot (q0dot, q0ddot):", ydot)
 
-# res = solve_equilibrium(robot, u, q0)
-# print("q* =", res.value)
+l_tendons = robot.tendon_length(q0)            # jax.Array (num_actuators,)
+print("tendon lengths (m):", jax.device_get(l_tendons))
+
+
+
+
+# =====================================================
+# Static equilibrium (solve statics) and plot its shape
+# =====================================================
+# Solve for static equilibrium q* given current actuation u
+res_stat = solve_equilibrium(robot, u, q0)
+q_stat = res_stat.value  # equilibrium generalized coordinates
+print("q* =", q_stat)
+
+# Draw static equilibrium curve
+curve_stat = draw_robot_curve(robot, q_stat)
+
+# Also draw initial (q0) for comparison
+curve_init = draw_robot_curve(robot, q0)
+
+fig = plt.figure(figsize=(8, 6))
+ax = fig.add_subplot(111, projection="3d")
+ax.plot(curve_init[:, 0], curve_init[:, 1], curve_init[:, 2], lw=2, color="gray", linestyle="--", label="Initial (q0)")
+ax.plot(curve_stat[:, 0], curve_stat[:, 1], curve_stat[:, 2], lw=4, color="red", label="Static equilibrium (q*)")
+ax.set_xlabel("X [m]")
+ax.set_ylabel("Y [m]")
+ax.set_zlabel("Z [m]")
+ax.set_title("Static equilibrium shape")
+ax.legend()
+ax.axis("equal")
+plt.show()
 
 
 # =====================================================
@@ -442,10 +444,6 @@ p_marker_4_ts = g_marker_4_ts[:, :3, 3] + g_marker_4_ts[:, :3, :3] @ jnp.array([
 
 
 
-
-
-
-
 plt.figure()
 plt.plot(ts, g_ee_ts[:, 0, 3], label="End-effector x [m]")
 plt.plot(ts, g_ee_ts[:, 1, 3], label="End-effector y [m]")
@@ -481,3 +479,5 @@ animate_robot_matplotlib(
     interval=100,  # ms
     slider=True,
 )
+
+

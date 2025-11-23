@@ -13,7 +13,10 @@ import numpy as onp
 from typing import Callable, Dict
 from functools import partial
 
+import time
+
 from soromox.systems.tendon_actuated_pcs import TendonActuatedPCS
+from soromox.systems.system_state import SystemState
 
 jax.config.update("jax_enable_x64", True)  # double precision
 
@@ -25,14 +28,12 @@ jnp.set_printoptions(
 )
 jnp.set_printoptions(precision=4, suppress=True)
 
+
 def draw_robot_curve(
-    batched_forward_kinematics: Callable,
-    L_max: float,
-    q: Array,
-    num_points: int = 50,
+    robot: TendonActuatedPCS, L_max: float, q: Array, num_points: int = 50
 ):
     s_ps = jnp.linspace(0, L_max, num_points)
-    g_ps = batched_forward_kinematics(q, s_ps)[:, :3, 3]
+    g_ps = robot.forward_kinematics_batched(q, s_ps)[:, :3, 3]
 
     curve = jnp.array(g_ps, dtype=jnp.float64)
     return curve  # (N, 3)
@@ -68,9 +69,8 @@ def animate_robot_tendons_matplotlib(
             "Cannot use both animation and slider at the same time. Choose one."
         )
 
-    batched_forward_kinematics = jax.vmap(robot.forward_kinematics, in_axes=(None, 0))
     batched_forward_kinematics_tendons = jax.vmap(
-        robot.forward_kinematics_tendons, in_axes=(None, 0), out_axes=1
+        robot.forward_kinematics_active_tendons, in_axes=(None, 0), out_axes=1
     )
     L_max = jnp.sum(robot.L)
 
@@ -88,7 +88,7 @@ def animate_robot_tendons_matplotlib(
     # Precompute all trajectories
     # ---------------------------------------------------
     batched_robot_curve = jax.vmap(
-        lambda q: draw_robot_curve(batched_forward_kinematics, L_max, q, num_points)
+        lambda q: draw_robot_curve(robot, L_max, q, num_points)
     )
     batched_tendon_curve = jax.vmap(
         lambda q: draw_tendon_curves(
@@ -231,7 +231,7 @@ if __name__ == "__main__":
             * params["L"][:, None]
         ).flatten()
     )
-    tendon_routing_params = {
+    active_tendon_routing_params = {
         "ry": 2e-2
         * jnp.array(
             [1.0, -1.0]
@@ -248,13 +248,28 @@ if __name__ == "__main__":
             [1, 0]
         ),  # length of the tendons = x-coordinate of the attachment points [m]
     }
-    # tendon_routing_params = {
-    #     'ry': jnp.array([0., -0.0139, 0.0139, -0.0139, 0., 0.0139]),
-    #     'rz': jnp.array([0.016, -0.008, -0.008, 0.008, -0.016, 0.008]),
-    #     'my': jnp.zeros(6),
-    #     'mz': jnp.zeros(6),
-    #     'idx_seg_att': jnp.array([0, 0, 0, 1, 1, 1]),
-    # }
+    passive_tendon_routing_params = {
+        "ry": 2e-2
+        * jnp.array(
+            [0.0]
+        ),  # y-coordinate of the pulling point of the tendons [m]
+        "rz": 2e-2
+        * jnp.array([1.0]),  # z-coordinate of the pulling point of the tendons [m]
+        "my": jnp.array(
+            [0.0]
+        ),  # slope coefficient in the x-y plane of the tendons [-]
+        "mz": jnp.array(
+            [0.0]
+        ),  # slope coefficient in the x-z plane of the tendons [-]
+        "idx_seg_att": jnp.array(
+            [1]
+        ),  # length of the tendons = x-coordinate of the attachment points [m]
+    }
+    passive_tendon_params = {
+        "k_pt": jnp.array([0.6]),
+        "d_pt": jnp.array([0.1]),
+        "l_pt0": jnp.array([-0.3]),
+    }
 
     # ======================================================
     # Robot initialization
@@ -262,7 +277,9 @@ if __name__ == "__main__":
     robot = TendonActuatedPCS(
         num_segments=num_segments,
         params=params,
-        tendon_routing_params=tendon_routing_params,
+        active_tendon_routing_params=active_tendon_routing_params,
+        passive_tendon_routing_params=passive_tendon_routing_params,
+        passive_tendon_params=passive_tendon_params
     )
 
     # =====================================================
@@ -288,35 +305,56 @@ if __name__ == "__main__":
     print("A =\n", A.shape)
     print(A)
 
-    # tendon lengths
-    l = robot.tendon_length(q0)
-    print("l =\n", l.shape)
-    print(l)
+    # Coupling matrix of the passive tendons
+    P = robot.jacobian_passive_tendon(q0).T
+    print("P =\n", P.shape)
+    print(P)
 
-    # Tendons' position
-    t_s = robot.forward_kinematics_tendons(q0, robot.L_cum[-1])
-    print("t_s =\n", t_s.shape)
-    print(t_s)
+    # Active tendon lengths
+    la = robot.active_tendon_length(q0)
+    print("la =\n", la.shape)
+    print(la)
+
+    # Passive tendon lengths
+    lp = robot.passive_tendon_length(q0)
+    print("lp =\n", lp.shape)
+    print(lp)
+
+    # Active tendons' position
+    ta_s = robot.forward_kinematics_active_tendons(q0, robot.L_cum[-1])
+    print("ta_s =\n", ta_s.shape)
+    print(ta_s)
+
+    # Passive tendons' position
+    tp_s = robot.forward_kinematics_passive_tendons(q0, robot.L_cum[-1])
+    print("tp_s =\n", tp_s.shape)
+    print(tp_s)
     
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    dt = 1e-4
+    solver_dt = 1e-4
     save_dt = 0.01
 
     # Solver
     solver = Tsit5()  # Runge-Kutta 5(4) method
 
-    ts, q_ts, qd_ts = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_time = time.time()
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=t0,
         t1=t1,
-        dt=dt,
+        solver_dt=solver_dt,
         save_dt=save_dt,
         solver=solver,
         max_steps=None,
+    )
+    ts = trajectory.t
+    q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
+    end_time = time.time()
+    print(
+        f"Total simulation time = {round(end_time - initial_time, ndigits=3)} s  |  t0 = {t0}, t1 = {t1}, solver_dt0 = {solver_dt}"
     )
 
     # =====================================================

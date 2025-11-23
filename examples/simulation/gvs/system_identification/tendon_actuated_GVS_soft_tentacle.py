@@ -64,7 +64,7 @@ R_alg2 = jnp.array([[1.0, 0.0, 0.0],
 offset = jnp.array([-0.03, -0.013, 0.0], dtype=jnp.float64)
 
 
-df = pd.read_csv("SoftRob_tests/t2m1_u01.csv", header=None)
+df = pd.read_csv("data/m1_u01.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[12:15]
@@ -79,7 +79,7 @@ p2_m1u01 = res["p2_tr"]
 p3_m1u01 = res["p3_tr"]
 p4_m1u01 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m1_u015.csv", header=None)
+df = pd.read_csv("data/m1_u015.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[9:12]
@@ -94,7 +94,7 @@ p2_m1u015 = res["p2_tr"]
 p3_m1u015 = res["p3_tr"]
 p4_m1u015 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m1_u02.csv", header=None)
+df = pd.read_csv("data/m1_u02.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[9:12]
@@ -109,7 +109,7 @@ p2_m1u02 = res["p2_tr"]
 p3_m1u02 = res["p3_tr"]
 p4_m1u02 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m1_u025.csv", header=None)
+df = pd.read_csv("data/m1_u025.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[12:15]
@@ -124,7 +124,7 @@ p2_m1u025 = res["p2_tr"]
 p3_m1u025 = res["p3_tr"]
 p4_m1u025 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m4_u01.csv", header=None)
+df = pd.read_csv("data/m2_u01.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[6:9]
@@ -139,7 +139,7 @@ p2_m2u01 = res["p2_tr"]
 p3_m2u01 = res["p3_tr"]
 p4_m2u01 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m4_u015.csv", header=None)
+df = pd.read_csv("data/m2_u015.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[9:12]
@@ -154,7 +154,7 @@ p2_m2u015 = res["p2_tr"]
 p3_m2u015 = res["p3_tr"]
 p4_m2u015 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m4_u02.csv", header=None)
+df = pd.read_csv("data/m2_u02.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[9:12]
@@ -169,7 +169,7 @@ p2_m2u02 = res["p2_tr"]
 p3_m2u02 = res["p3_tr"]
 p4_m2u02 = res["p4_tr"]
 
-df = pd.read_csv("SoftRob_tests/t2m4_u025.csv", header=None)
+df = pd.read_csv("data/m2_u025.csv", header=None)
 vals = df.iloc[:, 2:].to_numpy(dtype=float)     
 filtered = jnp.asarray(vals.mean(axis=0))    
 pb = filtered[6:9]
@@ -251,7 +251,7 @@ def solve_equilibrium_Enurho(robot: TendonActuatedGVS, u: jnp.ndarray, q0: jnp.n
         K = K.at[1:, :].multiply(factor_E)
         G = G * factor_rho 
 
-        return K @ q - G - B @ u_m
+        return K @ q + G - B @ u_m
 
     solver = optx.Newton(rtol=1e-6, atol=1e-6)
     statics_eq_jit = jax.jit(statics_eq) 
@@ -272,16 +272,16 @@ def make_loss_fn(u_batch: jnp.ndarray, q0: jnp.ndarray,measured_markers_batch: j
     def loss_fn(params):
         raw_E, raw_nu, raw_rho = params
         # vincoli: E>0, nu in (-0.5, 0.5) ~ materiali elastomerici ~ 0.45
-        E_mix = 1e4
+        E_min = 1e4
         E_max =  1e6
         # E_log_min = jnp.log(1e4)
         # E_log_max = jnp.log(1e6)
-        nu_min = 0.3
+        nu_min = 0.4
         nu_max = 0.5
         rho_min = 1000.0
         rho_max = 2000.0
         rho = 0.5*(rho_min + rho_max) + 0.5 * (rho_max - rho_min) * jnp.tanh(raw_rho) # (1000, 2000)
-        E =  0.5*(E_mix + E_max) + 0.5 * (E_max - E_mix) * jnp.tanh(raw_E) # (1e4, 1e6)
+        E =  0.5*(E_min + E_max) + 0.5 * (E_max - E_min) * jnp.tanh(raw_E) # (1e4, 1e6)
         # E = jnp.exp(0.5 * (E_log_max + E_log_min) +0.5 * (E_log_max - E_log_min) * jnp.tanh(raw_E))
         nu = 0.5*(nu_min + nu_max) + 0.5 * (nu_max - nu_min) * jnp.tanh(raw_nu) # (0.3, 0.5)
 
@@ -324,10 +324,12 @@ def draw_robot_curve(
 link1 = LinkAttributes(
     section="Circular",
     # E=3.04e5,
-    E=4.00e5,
+    # E=4.00e5,
+    E=5.05e5,
     nu=0.45,
     # rho=1310.0,
-    rho=1300.0,
+    # rho=1300.0,
+    rho=1500.0,
     eta=1e4,
     L=0.0250+0.2550+0.0250,
     r_i=0.01541,
@@ -338,10 +340,12 @@ link1 = LinkAttributes(
 link2 = LinkAttributes(
     section="Circular",
     # E=3.04e5,
-    E=4.00e5,
+    # E=4.00e5,
+    E=5.05e5,
     nu=0.45,
     # rho=1310.0,
-    rho=1300.0,
+    # rho=1300.0,
+    rho=1500.0,
     eta=1e4,
     L=0.0550,
     r_i=0.00642,
@@ -389,7 +393,7 @@ rho_init = jnp.asarray(rho0, dtype=jnp.float64) # shape: ()
 E_min = 1e4
 E_max = 1e6
 
-nu_min, nu_max = 0.3, 0.5
+nu_min, nu_max = 0.4, 0.5
 rho_min, rho_max = 1000.0, 2000.0
 
 # helper to avoid going outside (-1,1)
@@ -507,9 +511,11 @@ print("Final loss:", best_loss)
 print("best_step:", best_step)
 
 
-onp.save("E_hat.npy", onp.asarray(E_hat))
-onp.save("nu_hat.npy", onp.asarray(nu_hat))
-onp.save("rho_hat.npy", onp.asarray(rho_hat))
+
+
+# onp.save("E_hat.npy", onp.asarray(E_hat))
+# onp.save("nu_hat.npy", onp.asarray(nu_hat))
+# onp.save("rho_hat.npy", onp.asarray(rho_hat))
 
 
 # ### PLOTTING RESULTS ###
@@ -538,9 +544,9 @@ plt.title("Loss evolution during optimization")
 plt.grid(True, linestyle="--", alpha=0.5)
 plt.legend()
 plt.tight_layout()
-plt.savefig("loss_over_time.svg", format="svg", bbox_inches="tight")
-plt.savefig("loss_over_time.pdf", format="pdf", bbox_inches="tight")
-plt.savefig("loss_over_time.jpg", format="jpg", dpi=300, bbox_inches="tight")
+# plt.savefig("loss_over_time.svg", format="svg", bbox_inches="tight")
+# plt.savefig("loss_over_time.pdf", format="pdf", bbox_inches="tight")
+# plt.savefig("loss_over_time.jpg", format="jpg", dpi=300, bbox_inches="tight")
 plt.show()
 
 plt.figure(figsize=(8, 5))
@@ -552,9 +558,9 @@ plt.title("Marker position errors before vs after optimization")
 plt.legend()
 plt.grid(True, linestyle="--", alpha=0.5)
 plt.tight_layout()
-plt.savefig("rmse_per_marker.svg", format="svg", bbox_inches="tight")
-plt.savefig("rmse_per_marker.pdf", format="pdf", bbox_inches="tight")
-plt.savefig("rmse_per_marker.jpg", format="jpg", dpi=300, bbox_inches="tight")
+# plt.savefig("rmse_per_marker.svg", format="svg", bbox_inches="tight")
+# plt.savefig("rmse_per_marker.pdf", format="pdf", bbox_inches="tight")
+# plt.savefig("rmse_per_marker.jpg", format="jpg", dpi=300, bbox_inches="tight")
 plt.show()
 
 

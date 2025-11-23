@@ -107,7 +107,7 @@ B = robot.inertia_matrix(q)                   # Inertia matrix
 C = robot.coriolis_matrix(q, qd)              # Coriolis matrix
 G = robot.gravitational_force(q)             # Gravity vector
 K_total = robot.stiffness_matrix()           # Total stiffness matrix
-D_total = robot.damping_matrix()             # Total damping matrix
+D_total = robot.damping_matrix(q)            # Total damping matrix
 
 # Actuation
 A_at = robot.actuation_matrix(q)             # Active tendon actuation matrix
@@ -147,6 +147,7 @@ robot_updated = robot.update_tendon_params(new_tendon_params)
 
 ```python
 from diffrax import Tsit5
+from soromox.systems.system_state import SystemState
 
 # Simulation setup
 q0 = jnp.array([jnp.pi/8, -jnp.pi/4])       # Initial angles
@@ -154,15 +155,17 @@ qd0 = jnp.zeros_like(q0)                    # Initial velocities
 u = jnp.array([2.0])                        # Constant motor input
 
 # Time integration
-ts, qs, qds = robot.resolve_upon_time(
-    q0=q0,
-    qd0=qd0,
+initial_state = SystemState(t=0.0, y=jnp.concatenate([q0, qd0]))
+trajectory = robot.rollout_to(
+    initial_state=initial_state,
     u=u,
-    t0=0.0,
     t1=5.0,
-    dt=1e-3,
+    solver_dt=1e-3,
     solver=Tsit5()
 )
+ts = trajectory.t
+qs, qds = jnp.split(trajectory.y, 2, axis=1)
+us = trajectory.u
 ```
 
 ## Configuration Guidelines

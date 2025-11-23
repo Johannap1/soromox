@@ -12,6 +12,7 @@ from functools import partial
 
 import soromox
 from soromox.systems.tendon_actuated_pendulum import TendonActuatedPendulum
+from soromox.systems.system_state import SystemState
 
 import matplotlib.pyplot as plt
 
@@ -38,13 +39,14 @@ q0 = jnp.zeros((num_links,))
 # q0 = jnp.array([jnp.pi / 8, -jnp.pi / 4])
 
 # set simulation parameters
-dt = 1e-4  # time step
-ts = jnp.arange(0.0, 5, dt)  # time steps
-save_dt = dt * 100
+solver_dt = 1e-4  # time step
+t0 = 0.0
+t1 = 5.0
+save_dt = solver_dt * 100
 
 # video settings
 video_width, video_height = 1080, 1080  # img height and width
-video_path = Path(__file__).parent / "videos" / f"pendulum_nl-{num_links}.mp4"
+video_path = Path("videos") / f"tendon_actuated_pendulum_nl-{num_links}.mp4"
 
 
 def draw_robot(
@@ -183,7 +185,7 @@ if __name__ == "__main__":
     print("Lambda:\n", Lambda)
 
     # call the forward dynamics
-    yd = robot.forward_dynamics(ts[0], jnp.concatenate([q0, qd0]), (u,))
+    yd = robot.forward_dynamics(t0, jnp.concatenate([q0, qd0]), (u,))
     print("yd0:\n", yd)
 
     # check tendons' contributions
@@ -207,16 +209,17 @@ if __name__ == "__main__":
     print(robot.passive_tendon_length(q0))
 
     # Integrate using the model's built-in solver
-    ts_out, qs, qds = robot.resolve_upon_time(
-        q0=q0,
-        qd0=qd0,
+    initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
+    trajectory = robot.rollout_to(
+        initial_state=initial_state,
         u=u,
-        t0=ts[0],
-        t1=ts[-1],
-        dt=dt,
+        t1=t1,
+        solver_dt=solver_dt,
         save_dt=save_dt,
     )
-    video_ts = ts_out
+    ts = trajectory.t
+    qs, qds = jnp.split(trajectory.y, 2, axis=1)
+    video_ts = ts
     print("Final configuration:\n", qs[-1])
 
 
@@ -228,9 +231,9 @@ if __name__ == "__main__":
     E_ts_out = jax.vmap(jax.jit(partial(robot.total_energy)))(qs, qds)
 
     plt.figure()
-    plt.plot(ts_out, U_ts_out, label="Potential Energy")
-    plt.plot(ts_out, T_ts_out, label="Kinetic Energy")
-    plt.plot(ts_out, E_ts_out, label="Total Energy")
+    plt.plot(ts, U_ts_out, label="Potential Energy")
+    plt.plot(ts, T_ts_out, label="Kinetic Energy")
+    plt.plot(ts, E_ts_out, label="Total Energy")
     plt.xlabel("Time (s)")
     plt.ylabel("Energy (J)")
     plt.legend()
