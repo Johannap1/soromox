@@ -78,7 +78,8 @@ class GVS(DynamicalSystem):
         Index of the strain basis type used for each segment.
     V_Bdof_params, V_Bodr_params : Array
         Parameters controlling the strain basis DOFs and orders.
-
+    g0 : Array
+        Initial pose of the robot base as an SE(3) transformation matrix.
     Notes
     -----
     - The GVS model generalizes PCS by allowing the strain distribution in each segment
@@ -147,6 +148,8 @@ class GVS(DynamicalSystem):
 
     V_K_joint: Array  # Joint stiffness matrix (num_segments, max_dof, max_dof)
     g: Array  # Gravity vector (6,)
+    p0: Array
+    g0: Array 
 
     # Addition to compute forward kinematics at s
     V_basistype_idx: Array  # Index of the basis type for each segment (num_segments,)
@@ -162,6 +165,7 @@ class GVS(DynamicalSystem):
         gravity_vector: List[float],
         max_dof: Optional[int] = None,
         max_nGauss: Optional[int] = None,
+        p0: Optional[Array] = None,
     ) -> None:
         """
         Initialize the GVS class.
@@ -211,7 +215,9 @@ class GVS(DynamicalSystem):
             Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
         max_nGauss : int, optional
             Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-
+        p0: (optional) List/Array of shape (6,)
+                Initial orientation angle and position in the inertial frame [rad, m]
+                [ψ, θ, φ, x0, y0, z0]
         Raises
         ------
         ValueError
@@ -426,6 +432,18 @@ class GVS(DynamicalSystem):
 
         # Number of actuators
         self.num_actuators = self.dof_tot_system
+
+
+        # Base pose g0: derive from p0 if provided, otherwise keep previous default base rotation
+        if p0 is None:
+            self.p0 = jnp.zeros((6,), dtype=jnp.float64)
+            self.g0 = jnp.eye(4)
+        else:
+            p0_arr = jnp.asarray(p0, dtype=jnp.float64)
+            if p0_arr.size != 6:
+                raise ValueError("p0 must have shape (6,) when provided")
+            self.p0 = p0_arr
+            self.g0 = lie.exp_SE3(p0_arr)
 
 
     def _build_segment_i(
@@ -916,14 +934,7 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        # g_ini = jnp.eye(4)  # Initial transformation matrix (identity)
-        # Initial transform with custom base rotation Rot_in and zero translation
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g_ini = jnp.eye(4).at[:3, :3].set(Rot_in)
-
-
+        g_ini = self.g0
 
         _, g_list = lax.scan(f=body_segment_i, init=g_ini, xs=indices_link)
 
@@ -1119,11 +1130,7 @@ class GVS(DynamicalSystem):
 
             return g_out, g_out
 
-        # g0 = jnp.eye(4)
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
+        g0 = self.g0
         
 
         # we scan *at least* up to segment seg_idx; for subsequent segments, we don't change a thing
@@ -1312,11 +1319,8 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        # g_init = jnp.eye(4)
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g_init = jnp.eye(4).at[:3, :3].set(Rot_in)
+        g_init = self.g0
+
         J_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
 
         _, J_list = lax.scan(f=body_segment_i, init=(g_init, J_init), xs=indices_link)
@@ -1570,11 +1574,7 @@ class GVS(DynamicalSystem):
             J_next = jnp.where(i <= segment_idx, J_curr, carry[1])
             return (g_next, J_next), None
 
-        # g0 = jnp.eye(4)
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
+        g0 = self.g0
 
         J0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         (g_s, J_full), _ = lax.scan(step, (g0, J0), jnp.arange(self.num_segments))
@@ -1777,11 +1777,8 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        # g_init = jnp.eye(4)
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g_init = jnp.eye(4).at[:3, :3].set(Rot_in)
+        g_init = self.g0
+
         Jd_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta_init = jnp.zeros((6,))
 
@@ -2084,11 +2081,8 @@ class GVS(DynamicalSystem):
             eta_next = jnp.where(i <= segment_idx, eta_curr, carry[2])
             return (g_next, Jd_next, eta_next), None
 
-        # g0 = jnp.eye(4)
-        Rot_in = jnp.array([[0.0, 0.0, 1.0],
-                            [0.0, 1.0, 0.0],
-                            [-1.0, 0.0, 0.0]])
-        g0 = jnp.eye(4).at[:3, :3].set(Rot_in)
+        g0 = self.g0
+
         Jd0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta0 = jnp.zeros((6,))
         (g_s, Jd_full, _), _ = lax.scan(

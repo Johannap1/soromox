@@ -2,7 +2,6 @@ import jax
 import pandas as pd
 import jax.numpy as jnp
 from soromox.systems.gvs.attributes import LinkAttributes, JointAttributes, BasisAttributes
-#from soromox.systems.gvs.core import GVS
 from soromox.systems.gvs.tendon_actuated_gvs import TendonActuatedGVS
 from functools import partial
 from IPython.display import HTML
@@ -13,6 +12,9 @@ import optimistix as optx
 import optax
 from jax import Array, lax
 import numpy as onp
+from soromox.systems.system_state import SystemState
+import soromox.utils.lie_algebra as lie
+
 
 jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_platform_name", "gpu")  # or "cpu"
@@ -205,6 +207,8 @@ tendon_routing_params = {
 }
 #attention: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
 
+p0 = jnp.array([-jnp.pi/2, jnp.pi/2, jnp.pi/2, 0.0, 0.0, 0.0])
+
 # 2 link version
 robot = TendonActuatedGVS(
     links_list=[link1, link2],
@@ -213,8 +217,11 @@ robot = TendonActuatedGVS(
     n_gauss_list=n_gauss_list,
     gravity_vector=gravity_vector,
     tendon_routing_params=tendon_routing_params,
+    p0=p0,
 )
-
+# debug: check g0
+# g0_test = lie.exp_SE3(p0)
+# print("g0_test:\n", g0_test[:3,:3])
 
 ### MATRICES CHECKING AND PRINTING ###
 
@@ -239,46 +246,8 @@ for j in range(robot.num_segments):
     dof_link = int(robot.V_dof[j, 1])
     
 #     n_gauss_seg = int(robot.V_nip[j])
-
 #     print(f"segment {j} -> dof_joint={dof_joint}, dof_link={dof_link}")
 
-#     B = jax.device_get(robot.B_select) 
-#     start_seg = j * padded
-#     start_joint = start_seg
-#     start_link = start_seg + max_dof
-#     n_active = B.shape[1]
-#     padded_link_block = B[start_link : start_link + max_dof, :n_active]
-#     compact_link_block = padded_link_block[:dof_link, :]
-
-#     print("B_select compact (segment 0, link) shape:", compact_link_block.shape)
-#     print(compact_link_block)
-
-    # print("robot.B_select.shape[1]", robot.B_select.shape[1])
-    # #bx0 ha dim data (6, max_dof)
-    # BX0 = jax.device_get(robot.V_B_Xs[j, 0])  # usual shape (6, max_dof)
-    # print("  BX0 shape:", onp.array(BX0).shape)
-    # print(onp.array(BX0))
-    # Bq_link = BX0[:, :dof_link]
-    # print("  Bq_link shape:", onp.array(Bq_link).shape)
-    # print(onp.array(Bq_link))
-
-#     #bx_all ha dim data (num_gauss_max, 6, max_dof)
-#     BX_all = jax.device_get(robot.V_B_Xs[j])
-#     print("  BX_all shape:", onp.array(BX_all).shape)
-#     print(onp.array(BX_all))
-
-#     BX_used = BX_all[:n_gauss_seg, :, :dof_link]    # shape (n_gauss_seg, 6, dof_link)
-#     print("  BX_used shape (gauss, 6, dof_link):", onp.array(BX_used).shape)
-
-#     V_flat = robot.V_dof.reshape(-1)
-#     starts = jnp.concatenate([jnp.array([0], dtype=V_flat.dtype), jnp.cumsum(V_flat)[:-1]])
-#     start_col_link = starts[2 * j + 1]
-#     B_xi_i = jnp.zeros((6, robot.B_select.shape[1]))
-#     BXs = jax.device_get(robot.V_B_Xs[j, 1])
-#     B_xi_i = lax.dynamic_update_slice(B_xi_i, BXs[:, :robot.V_dof[j, 1]], (0, start_col_link))
-
-#     print("  B_xi_i shape (6, n_active):", onp.array(B_xi_i).shape)
-#     print(onp.array(B_xi_i))
 
 na = robot.num_actuators
 print("num_actuators:", na)
@@ -296,7 +265,7 @@ J_end = robot.jacobian_bodyframe(q0, s_end)
 M = robot.inertia_matrix(q0)
 K = robot.stiffness_matrix()
 F = robot.gravitational_force(q0)
-D = robot.damping_matrix()
+D = robot.damping_matrix(q0)
 B = robot.actuation_matrix(q0)
 C = robot.coriolis_matrix(q0, q0dot)
 
@@ -378,18 +347,25 @@ plt.show()
 # Simulation time parameters
 t0 = 0.0
 t1 = 2.0
-dt = 1e-4
-ts, q_ts, qd_ts = robot.resolve_upon_time(
-    q0=q0,
-    qd0=q0dot,
+solver_dt = 1e-4
+skip_step = 100  # how many time steps to skip in between video frames
+save_dt = solver_dt * skip_step
+
+
+   
+initial_state = SystemState(t=t0, y=jnp.concatenate([q0, q0dot]))
+trajectory = robot.rollout_to(
+    initial_state=initial_state,
     u=u,
-    t0=t0,
     t1=t1,
-    dt=dt,
-    tau_ext=tau_ext,
+    solver_dt=solver_dt,
+    save_dt=save_dt,
     max_steps=None,
 )
+ts = trajectory.t
+q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
 print(f"Simulation completed with {len(ts)} time steps.")
+
 # =====================================================
 # End-effector position upon time
 # =====================================================
