@@ -1,7 +1,11 @@
 import jax
 import pandas as pd
 import jax.numpy as jnp
-from soromox.systems.gvs.attributes import LinkAttributes, JointAttributes, BasisAttributes
+from soromox.systems.gvs.attributes import (
+    LinkAttributes,
+    JointAttributes,
+    BasisAttributes,
+)
 from soromox.systems.gvs.tendon_actuated_gvs import TendonActuatedGVS
 from functools import partial
 from IPython.display import HTML
@@ -24,29 +28,30 @@ print("JAX devices:", jax.devices())
 
 ### SOFT ROBOT UTILITIES FUNCTIONS ###
 
-#STATIC EQUILIBRIUM EQUATION SOLVER
+
+# STATIC EQUILIBRIUM EQUATION SOLVER
 def solve_equilibrium(robot: TendonActuatedGVS, u: jnp.ndarray, q0: jnp.ndarray):
-    def statics_eq(q,args): 
+    def statics_eq(q, args):
         u = args
         K = robot.stiffness_matrix()
         B = robot.actuation_matrix(q)
         G = robot.gravitational_force(q)
         return K @ q + G - B @ u
-    
+
     solver = optx.Newton(rtol=1e-6, atol=1e-6)
-    statics_eq_jit = jax.jit(statics_eq) 
+    statics_eq_jit = jax.jit(statics_eq)
     return optx.root_find(statics_eq_jit, solver, q0, (u), max_steps=200)
 
-   
     return res
 
 
-# DRAWING FUNCTIONS 
+# DRAWING FUNCTIONS
 jnp.set_printoptions(
     threshold=jnp.inf,
     linewidth=jnp.inf,
     formatter={"float_kind": lambda x: "0" if x == 0 else f"{x:.2e}"},
 )
+
 
 def draw_robot_curve(
     robot: TendonActuatedGVS,
@@ -61,6 +66,7 @@ def draw_robot_curve(
 
     curve = onp.array(g_ps, dtype=onp.float64)
     return curve  # (N, 3)
+
 
 def animate_robot_matplotlib(
     robot: TendonActuatedGVS,
@@ -160,10 +166,9 @@ def animate_robot_matplotlib(
         )  # Slider cannot be converted to HTML
 
 
-
 ### BODY DEFINITION OF THE SOFT ROBOT ###
 
-#2 link version
+# 2 link version
 # Link 1
 link1 = LinkAttributes(
     section="Circular",
@@ -171,7 +176,7 @@ link1 = LinkAttributes(
     nu=0.45,
     rho=1310.0,
     eta=1e4,
-    L=0.0250+0.2550+0.0250,
+    L=0.0250 + 0.2550 + 0.0250,
     r_i=0.01541,
     r_f=0.00642,
 )
@@ -190,8 +195,12 @@ link2 = LinkAttributes(
 joint1 = JointAttributes(jointtype="Fixed")
 joint2 = JointAttributes(jointtype="Fixed")
 
-basis1 = BasisAttributes(basistype="Monomial", Bdof=[1, 1, 1, 1, 0, 0], Bodr=[1, 1, 1, 1, 0, 0])
-basis2 = BasisAttributes(basistype="Monomial", Bdof=[0, 1, 1, 0, 0, 0], Bodr=[0, 0, 0, 0, 0, 0])
+basis1 = BasisAttributes(
+    basistype="Monomial", Bdof=[1, 1, 1, 1, 0, 0], Bodr=[1, 1, 1, 1, 0, 0]
+)
+basis2 = BasisAttributes(
+    basistype="Monomial", Bdof=[0, 1, 1, 0, 0, 0], Bodr=[0, 0, 0, 0, 0, 0]
+)
 
 
 n_gauss_list = [8, 8]
@@ -199,15 +208,23 @@ gravity_vector = [0.0, 0.0, -9.81]
 
 
 tendon_routing_params = {
-     "ry": jnp.array([0.0114*jnp.cos(jnp.pi/180*30), 0.0114*jnp.cos(jnp.pi/180*150)]),
-     "my": jnp.array([-0.0295*jnp.cos(jnp.pi/180*30),-0.0295*jnp.cos(jnp.pi/180*150)]),
-     "rz": jnp.array([0.0114*jnp.sin(jnp.pi/180*30), 0.0114*jnp.sin(jnp.pi/180*150)]),
-     "mz": jnp.array([-0.0295*jnp.sin(jnp.pi/180*30), -0.0295*jnp.sin(jnp.pi/180*150)]),
-     "idx_seg_att": jnp.array([0, 0]),
+    "ry": jnp.array(
+        [0.0114 * jnp.cos(jnp.pi / 180 * 30), 0.0114 * jnp.cos(jnp.pi / 180 * 150)]
+    ),
+    "my": jnp.array(
+        [-0.0295 * jnp.cos(jnp.pi / 180 * 30), -0.0295 * jnp.cos(jnp.pi / 180 * 150)]
+    ),
+    "rz": jnp.array(
+        [0.0114 * jnp.sin(jnp.pi / 180 * 30), 0.0114 * jnp.sin(jnp.pi / 180 * 150)]
+    ),
+    "mz": jnp.array(
+        [-0.0295 * jnp.sin(jnp.pi / 180 * 30), -0.0295 * jnp.sin(jnp.pi / 180 * 150)]
+    ),
+    "idx_seg_att": jnp.array([0, 0]),
 }
-#attention: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
+# attention: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
 
-p0 = jnp.array([-jnp.pi/2, jnp.pi/2, jnp.pi/2, 0.0, 0.0, 0.0])
+p0 = jnp.array([-jnp.pi / 2, jnp.pi / 2, jnp.pi / 2, 0.0, 0.0, 0.0])
 
 # 2 link version
 robot = TendonActuatedGVS(
@@ -227,7 +244,7 @@ robot = TendonActuatedGVS(
 
 print("num_segments:", int(robot.num_segments))
 print("V_dof (joint, link) per segment:\n", robot.V_dof)
-print("max_dof: \n",robot.max_dof)
+print("max_dof: \n", robot.max_dof)
 # max_dof = robot.max_dof
 # padded = 2 * max_dof
 
@@ -240,11 +257,11 @@ print("max_dof: \n",robot.max_dof)
 # xi_ref_b1gp0 = xi_reference[0, 0]
 # print("xi_ref segment 0, gauss 0:", onp.array(xi_ref_b1gp0))
 
-#Bq printing per segment
+# Bq printing per segment
 for j in range(robot.num_segments):
     dof_joint = int(robot.V_dof[j, 0])
     dof_link = int(robot.V_dof[j, 1])
-    
+
 #     n_gauss_seg = int(robot.V_nip[j])
 #     print(f"segment {j} -> dof_joint={dof_joint}, dof_link={dof_link}")
 
@@ -269,11 +286,11 @@ D = robot.damping_matrix(q0)
 B = robot.actuation_matrix(q0)
 C = robot.coriolis_matrix(q0, q0dot)
 
-u = jnp.asarray([-1, -0.00], dtype=q0.dtype)  
+u = jnp.asarray([-1, -0.00], dtype=q0.dtype)
 tau = robot.actuation_force(q0, u)
 
 
-# print("L_cum:", L_cum)  
+# print("L_cum:", L_cum)
 # print("total length:", total_length)
 print("s_end:", s_end)
 print("g(s_end) SE(3):\n", g_end)
@@ -292,14 +309,12 @@ print("g(s_end) SE(3):\n", g_end)
 
 
 # y = jnp.concatenate([q0, q0dot])
-tau_ext = 0* jnp.ones((dof,))
+tau_ext = 0 * jnp.ones((dof,))
 # ydot = robot.forward_dynamics(0.0, y, actuation_args=(u, tau_ext))
 # print("ydot (q0dot, q0ddot):", ydot)
 
-l_tendons = robot.tendon_length(q0)            # jax.Array (num_actuators,)
+l_tendons = robot.tendon_length(q0)  # jax.Array (num_actuators,)
 print("tendon lengths (m):", jax.device_get(l_tendons))
-
-
 
 
 # =====================================================
@@ -318,8 +333,23 @@ curve_init = draw_robot_curve(robot, q0)
 
 fig = plt.figure(figsize=(8, 6))
 ax = fig.add_subplot(111, projection="3d")
-ax.plot(curve_init[:, 0], curve_init[:, 1], curve_init[:, 2], lw=2, color="gray", linestyle="--", label="Initial (q0)")
-ax.plot(curve_stat[:, 0], curve_stat[:, 1], curve_stat[:, 2], lw=4, color="red", label="Static equilibrium (q*)")
+ax.plot(
+    curve_init[:, 0],
+    curve_init[:, 1],
+    curve_init[:, 2],
+    lw=2,
+    color="gray",
+    linestyle="--",
+    label="Initial (q0)",
+)
+ax.plot(
+    curve_stat[:, 0],
+    curve_stat[:, 1],
+    curve_stat[:, 2],
+    lw=4,
+    color="red",
+    label="Static equilibrium (q*)",
+)
 ax.set_xlabel("X [m]")
 ax.set_ylabel("Y [m]")
 ax.set_zlabel("Z [m]")
@@ -352,7 +382,6 @@ skip_step = 100  # how many time steps to skip in between video frames
 save_dt = solver_dt * skip_step
 
 
-   
 initial_state = SystemState(t=t0, y=jnp.concatenate([q0, q0dot]))
 trajectory = robot.rollout_to(
     initial_state=initial_state,
@@ -382,42 +411,49 @@ g_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
 forward_kinematics_marker_1 = jax.jit(
     partial(
         robot.forward_kinematics,
-        s=0.1291,  
+        s=0.1291,
     )
 )
 g_marker_1_ts = jax.vmap(forward_kinematics_marker_1)(q_ts)
-p_marker_1_ts = g_marker_1_ts[:, :3, 3] + g_marker_1_ts[:, :3, :3] @ jnp.array([0.0, 0.0, 0.025]) 
+p_marker_1_ts = g_marker_1_ts[:, :3, 3] + g_marker_1_ts[:, :3, :3] @ jnp.array(
+    [0.0, 0.0, 0.025]
+)
 
 
 forward_kinematics_marker_2 = jax.jit(
     partial(
         robot.forward_kinematics,
-        s=0.2195,  
+        s=0.2195,
     )
 )
 g_marker_2_ts = jax.vmap(forward_kinematics_marker_2)(q_ts)
-p_marker_2_ts = g_marker_2_ts[:, :3, 3] + g_marker_2_ts[:, :3, :3] @ jnp.array([0.0, 0.0, -0.021]) 
+p_marker_2_ts = g_marker_2_ts[:, :3, 3] + g_marker_2_ts[:, :3, :3] @ jnp.array(
+    [0.0, 0.0, -0.021]
+)
 
 
 forward_kinematics_marker_3 = jax.jit(
     partial(
         robot.forward_kinematics,
-        s=0.2800,  
+        s=0.2800,
     )
 )
 g_marker_3_ts = jax.vmap(forward_kinematics_marker_3)(q_ts)
-p_marker_3_ts = g_marker_3_ts[:, :3, 3] + g_marker_3_ts[:, :3, :3] @ jnp.array([0.0, 0.0, 0.02]) 
+p_marker_3_ts = g_marker_3_ts[:, :3, 3] + g_marker_3_ts[:, :3, :3] @ jnp.array(
+    [0.0, 0.0, 0.02]
+)
 
 
 forward_kinematics_marker_4 = jax.jit(
     partial(
         robot.forward_kinematics,
-        s=jnp.sum(robot.V_L), 
+        s=jnp.sum(robot.V_L),
     )
 )
 g_marker_4_ts = jax.vmap(forward_kinematics_marker_4)(q_ts)
-p_marker_4_ts = g_marker_4_ts[:, :3, 3] + g_marker_4_ts[:, :3, :3] @ jnp.array([0.008, 0.0, 0.0]) 
-
+p_marker_4_ts = g_marker_4_ts[:, :3, 3] + g_marker_4_ts[:, :3, :3] @ jnp.array(
+    [0.008, 0.0, 0.0]
+)
 
 
 plt.figure()
@@ -455,5 +491,3 @@ animate_robot_matplotlib(
     interval=100,  # ms
     slider=True,
 )
-
-
