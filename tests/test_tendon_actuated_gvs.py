@@ -314,7 +314,6 @@ def test_tendon_length_gvs():
 
 def test_tendon_length_gradient_matches_actuation_matrix_random_configs():
     """Ensure tendon_length Jacobian equals actuation matrix transpose."""
-    # test actuation matrix GVS vs PCS
     print(
         "\nTesting tendon_length Jacobian equals actuation matrix transpose... ------------------------"
     )
