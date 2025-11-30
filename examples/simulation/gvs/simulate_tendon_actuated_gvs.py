@@ -1,5 +1,5 @@
 import jax
-import pandas as pd
+
 import jax.numpy as jnp
 from soromox.systems.gvs.attributes import (
     LinkAttributes,
@@ -13,11 +13,11 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import optimistix as optx
-import optax
-from jax import Array, lax
+
+from jax import Array
 import numpy as onp
 from soromox.systems.system_state import SystemState
-import soromox.utils.lie_algebra as lie
+
 
 
 jax.config.update("jax_enable_x64", True)
@@ -41,8 +41,6 @@ def solve_equilibrium(robot: TendonActuatedGVS, u: jnp.ndarray, q0: jnp.ndarray)
     solver = optx.Newton(rtol=1e-6, atol=1e-6)
     statics_eq_jit = jax.jit(statics_eq)
     return optx.root_find(statics_eq_jit, solver, q0, (u), max_steps=200)
-
-    return res
 
 
 # DRAWING FUNCTIONS
