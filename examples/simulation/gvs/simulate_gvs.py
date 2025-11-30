@@ -211,7 +211,7 @@ if __name__ == "__main__":
         joints_list=List_joints,
         basis_list=List_basis,
         n_gauss_list=List_nGauss,
-        gravity_vector=[0, 0, 9.81],
+        gravity_vector=[0, 0, -9.81],
     )
 
     print(f"System initialized with {robot.num_segments} segments")
