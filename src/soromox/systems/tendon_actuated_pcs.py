@@ -408,7 +408,7 @@ class TendonActuatedPCS(PCS):
         self, tendon_routing_params: Dict[str, Array]
     ) -> "TendonActuatedPCS":
         """
-        This function updates the parameters of the active tendons of the object.
+        This function updates the parameters of the passive tendons of the object.
 
         Args:
             tendon_routing_params (Dict[str, Array]): parameters of the tendons
