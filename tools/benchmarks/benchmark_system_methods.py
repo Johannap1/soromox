@@ -384,6 +384,21 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark Soromox system implementations")
     add_system_selection_args(parser, registry, default_segment_counts=[1, 2, 4, 8])
     add_integration_args(parser)
+    # Collect all unique method names across all systems
+    all_methods = sorted(
+        {case.name for cfg in registry.values() for case in cfg.cases}
+    )
+    parser.add_argument(
+        "--methods",
+        nargs="*",
+        default=None,
+        choices=all_methods,
+        metavar="METHOD",
+        help=(
+            "Methods to benchmark (default: all). "
+            f"Available: {', '.join(all_methods)}"
+        ),
+    )
     parser.add_argument(
         "--execution-repeats",
         type=int,
@@ -433,11 +448,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for system_name in args.systems:
         system_cfg = registry[system_name]
+        # Filter cases if --methods is specified
+        cases_to_run = (
+            [c for c in system_cfg.cases if c.name in args.methods]
+            if args.methods
+            else system_cfg.cases
+        )
         for size in args.segment_counts:
             print(f"\n=== Benchmarking {system_name} with {system_cfg.size_label}={size} ===")
             system = system_cfg.factory(size)
             ctx = system_cfg.build_context(system)
-            for case in system_cfg.cases:
+            for case in cases_to_run:
                 fn, call_args = case.builder(system, ctx, runtime)
                 print(f"  -> {case.name} ...", end=" ", flush=True)
                 compile_time, exec_time = _measure_jitted_call(fn, call_args, runtime.execution_repeats)
