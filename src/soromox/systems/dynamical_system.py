@@ -49,6 +49,59 @@ class DynamicalSystem(eqx.Module):
             return None
         return jax.tree_util.tree_map(jnp.zeros_like, control_state)
 
+    def _open_loop_forward_dynamics(
+        self, t: Array, ode_state: Array, actuation_args: Tuple[Array, Array]
+    ) -> Array:
+        """Wrapper for forward_dynamics used in open-loop rollouts.
+        
+        This is defined as a class method rather than an inline closure to avoid
+        JAX/XLA compilation overhead associated with closures.
+        """
+        base_u_val, base_tau_ext = actuation_args
+        return self.forward_dynamics(t, ode_state, (base_u_val, base_tau_ext))
+
+    def _closed_loop_forward_dynamics(
+        self,
+        t: Array,
+        ode_state,
+        actuation_args: Tuple[Array, Array, Callable, bool, Optional[Any]],
+    ):
+        """Wrapper for forward_dynamics used in closed-loop rollouts.
+        
+        This is defined as a class method rather than an inline closure to avoid
+        JAX/XLA compilation overhead associated with closures.
+        
+        Args:
+            t: Current time.
+            ode_state: Current ODE state (y or (y, control_state) depending on track_control_state).
+            actuation_args: Tuple containing:
+                - base_u_val: Base actuation vector.
+                - base_tau_ext: External torques/forces.
+                - controller: Controller callable.
+                - track_control_state: Whether to track control state.
+                - zero_control_state_dot: Zero-structured control state derivative.
+        """
+        base_u_val, base_tau_ext, controller, track_control_state, zero_control_state_dot = actuation_args
+        
+        if track_control_state:
+            y, ctrl_state = ode_state
+        else:
+            y = ode_state
+            ctrl_state = None
+
+        system_state = SystemState(t=t, y=y, u=base_u_val, control_state=ctrl_state)
+        u_control, control_state_dot = controller(system_state)
+        if control_state_dot is not None and not track_control_state:
+            raise ValueError(
+                "Controller returned a control_state derivative but no initial control_state was provided."
+            )
+        u_total = base_u_val + u_control
+        yd = self.forward_dynamics(t, y, (u_total, base_tau_ext))
+        if track_control_state:
+            control_state_dot = control_state_dot if control_state_dot is not None else zero_control_state_dot
+            return yd, control_state_dot
+        return yd
+
     def rollout_to(
         self,
         initial_state: SystemState,
@@ -100,17 +153,7 @@ class DynamicalSystem(eqx.Module):
         t0 = float(initial_state.t)
         save_ts = self._compute_save_times(t0, t1, solver_dt, save_dt, save_ts)
 
-        @jit
-        def open_loop_forward_dynamics(
-            t: Array, ode_state, actuation_args: Tuple[Array, Array]
-        ):
-            base_u_val, base_tau_ext = actuation_args
-            y = ode_state
-            return self.forward_dynamics(t, y, (base_u_val, base_tau_ext))
-
-        forward_dynamics = open_loop_forward_dynamics
-
-        term = ODETerm(forward_dynamics)
+        term = ODETerm(self._open_loop_forward_dynamics)
         saveat = SaveAt(ts=save_ts)  # Save at specified time points
 
         sol = diffeqsolve(
@@ -191,34 +234,9 @@ class DynamicalSystem(eqx.Module):
         t0 = float(initial_state.t)
         save_ts = self._compute_save_times(t0, t1, solver_dt, save_dt, save_ts)
 
-        @jit
-        def closed_loop_forward_dynamics(
-            t: Array, ode_state, actuation_args: Tuple[Array, Array]
-        ):
-            """
-            Evaluate the controller at (t, y[, control_state]) and apply it to the forward dynamics.
-            """
-            base_u_val, base_tau_ext = actuation_args
-            if track_control_state:
-                y, ctrl_state = ode_state
-            else:
-                y = ode_state
-                ctrl_state = None
-
-            system_state = SystemState(t=t, y=y, u=base_u_val, control_state=ctrl_state)
-            u_control, control_state_dot = controller(system_state)
-            if control_state_dot is not None and not track_control_state:
-                raise ValueError(
-                    "Controller returned a control_state derivative but no initial control_state was provided."
-                )
-            u_total = base_u_val + u_control
-            yd = self.forward_dynamics(t, y, (u_total, base_tau_ext))
-            if track_control_state:
-                control_state_dot = control_state_dot if control_state_dot is not None else zero_control_state_dot
-                return yd, control_state_dot
-            return yd
-
-        term = ODETerm(closed_loop_forward_dynamics)
+        # Use class method to avoid closure overhead
+        actuation_args = (base_u, tau_ext, controller, track_control_state, zero_control_state_dot)
+        term = ODETerm(self._closed_loop_forward_dynamics)
         saveat = SaveAt(ts=save_ts)  # Save at specified time points
 
         y0_for_solver = (y0, controller_state0) if track_control_state else y0
@@ -230,7 +248,7 @@ class DynamicalSystem(eqx.Module):
             t1=t1 + solver_dt,
             dt0=solver_dt,
             y0=y0_for_solver,
-            args=(base_u, tau_ext),
+            args=actuation_args,
             saveat=saveat,
             stepsize_controller=stepsize_controller,
             max_steps=max_steps,
@@ -357,12 +375,8 @@ class DynamicalSystem(eqx.Module):
             ts_control_interval = jnp.where(valid_mask, save_ts[idxs], t_end)
             ts_control_interval = jnp.concatenate((ts_control_interval, jnp.array([t_end])))
 
-            @jit
-            def open_loop_forward_dynamics(t: Array, y: Array, actuation_args: Tuple[Array, Array]):
-                base_u_val, base_tau_ext = actuation_args
-                return self.forward_dynamics(t, y, (base_u_val, base_tau_ext))
-
-            term = ODETerm(open_loop_forward_dynamics)
+            # Use class method to avoid closure overhead
+            term = ODETerm(self._open_loop_forward_dynamics)
             saveat = SaveAt(ts=ts_control_interval, t1=False)
             sol = diffeqsolve(
                 terms=term,
