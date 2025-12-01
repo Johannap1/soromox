@@ -87,9 +87,7 @@ def _stacked_tendon_params(num_segments: int, num_tendons: int) -> Dict[str, Arr
     }
 
 
-def reference_actuation_matrix(
-    tendon_params: Dict[str, Array], l_tot: Array
-) -> Array:
+def reference_actuation_matrix(tendon_params: Dict[str, Array], l_tot: Array) -> Array:
     """
     Compute the actuation matrix of a soft robot of length l_tot w.r.t. one
     linear tendon at the straight configuration corresponding to vector state
@@ -267,8 +265,8 @@ def test_actuation_matrix_pcs():
         xi = robot.strain(q).reshape((robot.num_segments, 6))
         tendon_params_0 = jax.tree.map(lambda x: x[0], tendon_params)
         target_actuation_basis = robot._local_actuation_basis(
-            0, 
-            xi[0], 
+            0,
+            xi[0],
             s,
             tendon_routing_params_k=tendon_params_0,
             d_s_fn=robot.active_d_s,
@@ -340,7 +338,7 @@ def test_actuation_matrix_with_inactive_strains():
         expected,
         rtol=Tolerance.rtol(),
         atol=Tolerance.atol(),
-        )
+    )
 
 
 def test_constant_curvature_segment_actuation_matches_closed_form_expression_from_pustina2024():
@@ -373,9 +371,7 @@ def test_constant_curvature_segment_actuation_matches_closed_form_expression_fro
         "idx_seg_att": jnp.zeros((3,), dtype=jnp.int32),
     }
     # activate bending about y and z plus axial elongation
-    strain_selector = jnp.array(
-        [False, True, True, True, False, False], dtype=bool
-    )
+    strain_selector = jnp.array([False, True, True, True, False, False], dtype=bool)
 
     robot = _create_robot(
         segment_lengths, tendon_params, strain_selector=strain_selector
@@ -437,14 +433,8 @@ def test_constant_curvature_segment_actuation_matches_closed_form_expression_fro
     y_expr = jnp.array(
         [
             q3 + q6 + d * common_cos,
-            q3
-            + q6
-            - 0.5 * d * common_cos
-            + (jnp.sqrt(3.0) / 2.0) * d * common_sin,
-            q3
-            + q6
-            - 0.5 * d * common_cos
-            - (jnp.sqrt(3.0) / 2.0) * d * common_sin,
+            q3 + q6 - 0.5 * d * common_cos + (jnp.sqrt(3.0) / 2.0) * d * common_sin,
+            q3 + q6 - 0.5 * d * common_cos - (jnp.sqrt(3.0) / 2.0) * d * common_sin,
         ],
         dtype=jnp.float64,
     )
@@ -500,9 +490,7 @@ def test_passive_tendon_length_gradient_matches_jacobian(
     segment_lengths = jnp.linspace(
         0.25, 0.25 + 0.05 * (num_segments - 1), num_segments, dtype=jnp.float64
     )
-    active_params = _stacked_tendon_params(
-        num_segments, max(1, num_passive_tendons)
-    )
+    active_params = _stacked_tendon_params(num_segments, max(1, num_passive_tendons))
     passive_routing_params = _stacked_tendon_params(num_segments, num_passive_tendons)
     passive_tendon_params = {
         "k_pt": jnp.linspace(
@@ -586,8 +574,11 @@ def test_passive_tendons_contribute_to_elastic_terms():
         atol=Tolerance.atol(),
     )
 
-    energy_passive = 0.5 * (l_pt - robot_passive.l_pt0).T @ robot_passive.K_pt @ (
-        l_pt - robot_passive.l_pt0
+    energy_passive = (
+        0.5
+        * (l_pt - robot_passive.l_pt0).T
+        @ robot_passive.K_pt
+        @ (l_pt - robot_passive.l_pt0)
     )
     assert_allclose(
         robot_passive.elastic_energy(q),
@@ -595,6 +586,86 @@ def test_passive_tendons_contribute_to_elastic_terms():
         rtol=Tolerance.rtol(),
         atol=Tolerance.atol(),
     )
+
+
+def test_update_tendon_params():
+    """Verify the update of active and passive tendon parameters."""
+
+    segment_lengths = jnp.array([0.5, 0.5])
+    num_segments = segment_lengths.shape[0]
+    num_tendons = 2
+
+    active_params = _stacked_tendon_params(num_segments, num_tendons)
+    passive_routing = _stacked_tendon_params(num_segments, num_tendons)
+
+    k_init = jnp.array([100.0, 100.0])
+    d_init = jnp.array([1.0, 1.0])
+    l0_init = jnp.array([0.0, 0.0])
+    passive_phys = {
+        "k_pt": k_init,
+        "d_pt": d_init,
+        "l_pt0": l0_init,
+    }
+
+    robot = _create_robot(
+        segment_lengths,
+        active_params,
+        passive_tendon_routing_params=passive_routing,
+        passive_tendon_params=passive_phys,
+    )
+
+    # 1. update_active_tendon_routing_params
+    new_ry = active_params["ry"] + 0.05
+    update_dict_active = {"ry": new_ry}
+    updated_robot_active = robot.update_active_tendon_routing_params(update_dict_active)
+
+    assert_allclose(updated_robot_active.active_tendon_routing_params["ry"], new_ry)
+    assert_allclose(
+        updated_robot_active.active_tendon_routing_params["rz"], active_params["rz"]
+    )
+    assert_allclose(robot.active_tendon_routing_params["ry"], active_params["ry"])
+
+    with pytest.raises(KeyError, match="Attempted to update unknown"):
+        robot.update_active_tendon_routing_params({"invalid_param": jnp.array([1.0])})
+
+    # 2. update_passive_tendon_routing_params
+    new_rz = passive_routing["rz"] - 0.02
+    update_dict_passive_routing = {"rz": new_rz}
+
+    updated_robot_passive_routing = robot.update_passive_tendon_routing_params(
+        update_dict_passive_routing
+    )
+
+    assert_allclose(
+        updated_robot_passive_routing.passive_tendon_routing_params["rz"], new_rz
+    )
+    assert_allclose(robot.passive_tendon_routing_params["rz"], passive_routing["rz"])
+
+    with pytest.raises(KeyError, match="Attempted to update unknown"):
+        robot.update_passive_tendon_routing_params({"invalid_param": jnp.array([1.0])})
+
+    # 3. update_passive_tendon_params
+    new_k = jnp.array([250.0, 300.0])
+    new_d = jnp.array([5.0, 6.0])
+    new_l0 = jnp.array([0.01, 0.02])
+
+    # Case A: partial update
+    updated_robot_phys_k = robot.update_passive_tendon_params({"k_pt": new_k})
+
+    assert_allclose(updated_robot_phys_k.K_pt, jnp.diag(new_k))
+    assert_allclose(updated_robot_phys_k.D_pt, jnp.diag(d_init))
+
+    # Case B: full update
+    updated_robot_phys_all = robot.update_passive_tendon_params(
+        {"k_pt": new_k, "d_pt": new_d, "l_pt0": new_l0}
+    )
+
+    assert_allclose(updated_robot_phys_all.K_pt, jnp.diag(new_k))
+    assert_allclose(updated_robot_phys_all.D_pt, jnp.diag(new_d))
+    assert_allclose(updated_robot_phys_all.l_pt0, new_l0)
+
+    # Verify immutability of original object
+    assert_allclose(robot.K_pt, jnp.diag(k_init))
 
 
 if __name__ == "__main__":
