@@ -43,6 +43,11 @@ class Implementation:
     inertia_fn: Callable[[Array], Array]
     color: str
     linestyle: str = "-"
+    linewidth: float = 2.0
+    marker: str | None = None
+    markevery: int | None = None
+    zorder: int = 2
+    alpha: float = 1.0
 
 
 def _style_axis(ax, xlabel: str, ylabel: str, title: str | None = None) -> None:
@@ -62,6 +67,10 @@ def _pad_limits(y: Array) -> tuple[float, float]:
     span = y_max - y_min
     pad = 0.05 * span if span > 0 else max(1e-3, 0.1 * abs(y_max))
     return y_min - pad, y_max + pad
+
+
+def _nan_to_inf(x: Array) -> Array:
+    return jnp.nan_to_num(x, nan=jnp.inf)
 
 
 def build_soromox_impl(
@@ -95,6 +104,10 @@ def build_soromox_impl(
         jacobian_fn=jacobian,
         inertia_fn=inertia,
         color=color,
+        linestyle="-",
+        linewidth=1.6,
+        alpha=0.7,
+        zorder=1,
     )
 
 
@@ -104,6 +117,10 @@ def build_jsrm_impl(
     label: str,
     color: str,
     linestyle: str = "-",
+    linewidth: float = 1.8,
+    marker: str | None = None,
+    markevery: int | None = None,
+    zorder: int = 3,
 ) -> Implementation:
     strain_selector = jnp.array([True, False, False])
     dill_path = (
@@ -147,15 +164,22 @@ def build_jsrm_impl(
         inertia_fn=inertia,
         color=color,
         linestyle=linestyle,
+        linewidth=linewidth,
+        marker=marker,
+        markevery=markevery,
+        zorder=zorder,
     )
 
 
 def evaluate_impl(impl: Implementation, q_values: Array) -> Dict[str, Array]:
-    chi_vals = jax.vmap(impl.forward_fn)(q_values)
-    jac_vals = jax.vmap(impl.jacobian_fn)(q_values)
-    inertia_vals = jax.vmap(impl.inertia_fn)(q_values)
+    chi_raw = jax.vmap(impl.forward_fn)(q_values)
+    chi_nan_mask = jnp.isnan(chi_raw)
+    chi_vals = _nan_to_inf(chi_raw)
+    jac_vals = _nan_to_inf(jax.vmap(impl.jacobian_fn)(q_values))
+    inertia_vals = _nan_to_inf(jax.vmap(impl.inertia_fn)(q_values))
 
-    grad_chi = jnp.stack(
+    grad_chi = _nan_to_inf(
+        jnp.stack(
         [
             jax.vmap(jax.grad(lambda qq, idx=idx: impl.forward_fn(qq)[idx]))(
                 q_values
@@ -164,10 +188,12 @@ def evaluate_impl(impl: Implementation, q_values: Array) -> Dict[str, Array]:
         ],
         axis=1,
     )
-    grad_inertia = jax.vmap(jax.grad(impl.inertia_fn))(q_values)
+    )
+    grad_inertia = _nan_to_inf(jax.vmap(jax.grad(impl.inertia_fn))(q_values))
 
     return {
         "chi": chi_vals,
+        "chi_nan_mask": chi_nan_mask,
         "jac": jac_vals,
         "inertia": inertia_vals,
         "grad_chi": grad_chi,
@@ -193,7 +219,21 @@ def plot_forward(impls, results, q_values: Array) -> None:
                 label=impl.name,
                 color=impl.color,
                 linestyle=impl.linestyle,
+                linewidth=impl.linewidth,
+                marker=impl.marker,
+                markevery=impl.markevery,
+                zorder=impl.zorder,
+                alpha=impl.alpha,
             )
+            chi_nan_mask = results[impl.name].get("chi_nan_mask")
+            if chi_nan_mask is not None:
+                _plot_nan_marker(
+                    ax,
+                    q_values,
+                    chi_nan_mask[:, comp_idx],
+                    ylims,
+                    impl,
+                )
         ax.set_ylim(*ylims)
         _style_axis(
             ax,
@@ -203,6 +243,61 @@ def plot_forward(impls, results, q_values: Array) -> None:
     axes[0].legend(loc="best")
     fig.suptitle("Forward kinematics at $s=L$")
     fig.tight_layout()
+
+
+def plot_forward_x_only(impls, results, q_values: Array) -> None:
+    fig, ax = plt.subplots(figsize=(6, 4))
+    soromox_x = results["SoRoMoX"]["chi"][:, 1]
+    ylims = _pad_limits(soromox_x)
+    for impl in impls:
+        ax.plot(
+            q_values,
+            results[impl.name]["chi"][:, 1],
+            label=impl.name,
+            color=impl.color,
+            linestyle=impl.linestyle,
+            linewidth=impl.linewidth,
+            marker=impl.marker,
+            markevery=impl.markevery,
+            zorder=impl.zorder,
+            alpha=impl.alpha,
+        )
+        chi_nan_mask = results[impl.name].get("chi_nan_mask")
+        if chi_nan_mask is not None:
+            _plot_nan_marker(ax, q_values, chi_nan_mask[:, 1], ylims, impl)
+    ax.set_ylim(*ylims)
+    _style_axis(
+        ax,
+        xlabel=r"$q = \kappa\,[\mathrm{m}^{-1}]$",
+        ylabel=r"$p_\mathrm{x}(s=L)\;[\mathrm{m}]$",
+        title="Forward kinematics (x only)",
+    )
+    ax.legend(loc="best")
+    fig.tight_layout()
+
+
+def _plot_nan_marker(
+    ax: plt.Axes,
+    q_values: Array,
+    nan_mask: Array,
+    ylims: tuple[float, float],
+    impl: Implementation,
+) -> None:
+    if not bool(jnp.any(nan_mask)):
+        return
+    q_nan = jnp.asarray(q_values)[nan_mask]
+    y_pos = ylims[1] - 0.04 * (ylims[1] - ylims[0])
+    ax.scatter(
+        q_nan,
+        jnp.full_like(q_nan, y_pos),
+        marker="X",
+        s=60,
+        color=impl.color,
+        edgecolors="k",
+        linewidths=0.6,
+        zorder=impl.zorder + 1,
+        label=f"{impl.name} NaN",
+    )
 
 
 def plot_jacobian(impls, results, q_values: Array) -> None:
@@ -223,6 +318,11 @@ def plot_jacobian(impls, results, q_values: Array) -> None:
                 label=impl.name,
                 color=impl.color,
                 linestyle=impl.linestyle,
+                linewidth=impl.linewidth,
+                marker=impl.marker,
+                markevery=impl.markevery,
+                zorder=impl.zorder,
+                alpha=impl.alpha,
             )
         ax.set_ylim(*ylims)
         _style_axis(
@@ -246,6 +346,11 @@ def plot_inertia(impls, results, q_values: Array) -> None:
             label=impl.name,
             color=impl.color,
             linestyle=impl.linestyle,
+            linewidth=impl.linewidth,
+            marker=impl.marker,
+            markevery=impl.markevery,
+            zorder=impl.zorder,
+            alpha=impl.alpha,
         )
     ax.set_ylim(*ylims)
     _style_axis(
@@ -277,6 +382,11 @@ def plot_gradients(impls, results, q_values: Array) -> None:
                 label=impl.name,
                 color=impl.color,
                 linestyle=impl.linestyle,
+                linewidth=impl.linewidth,
+                marker=impl.marker,
+                markevery=impl.markevery,
+                zorder=impl.zorder,
+                alpha=impl.alpha,
             )
         ax.set_ylim(*ylims)
         _style_axis(
@@ -294,6 +404,11 @@ def plot_gradients(impls, results, q_values: Array) -> None:
             label=impl.name,
             color=impl.color,
             linestyle=impl.linestyle,
+            linewidth=impl.linewidth,
+            marker=impl.marker,
+            markevery=impl.markevery,
+            zorder=impl.zorder,
+            alpha=impl.alpha,
         )
     ax_inertia.set_ylim(*ylims_inertia)
     _style_axis(
@@ -339,24 +454,55 @@ def main() -> None:
             eps=1e-6,
             label=r"JSRM ($\varepsilon>0$)",
             color="C0",
+            linestyle="--",
+            linewidth=2.6,
+            marker="o",
+            markevery=7000,
+            zorder=3,
         ),
         build_jsrm_impl(
             params=params_jsrm,
             eps=0.0,
             label=r"JSRM ($\varepsilon=0$)",
             color="C1",
-            linestyle="--",
+            linestyle=":",
+            linewidth=2.4,
+            marker="s",
+            markevery=7000,
+            zorder=4,
         ),
         build_soromox_impl(params=params_soromox, color="C2"),
     ]
 
-    q_values = jnp.linspace(-0.1, 0.1, 201)  # includes q=0 exactly
+    q_values = jnp.linspace(-2e-6, 2e-6, 100001)  # includes q=0 exactly
+    if float(jnp.min(jnp.abs(q_values))) > 0.0:
+        q_values = jnp.sort(jnp.concatenate([q_values, jnp.array([0.0])]))
+
+    chi0_eps = impls[0].forward_fn(jnp.array([0.0]))
+    print("Forward kinematics at q=0 with JSRM (eps>0):", chi0_eps)
+
+    chi0_no_eps = impls[1].forward_fn(jnp.array([0.0]))
+    print("Forward kinematics at q=0 with JSRM (eps=0):", chi0_no_eps)
+
+    chi0_soromox = impls[2].forward_fn(jnp.array([0.0]))
+    print("Forward kinematics at q=0 with SoRoMoX:", chi0_soromox)
+
     results = {impl.name: evaluate_impl(impl, q_values) for impl in impls}
 
+    chi_eps = results["JSRM ($\\varepsilon>0$)"]["chi"]
+    print("chi_eps:", chi_eps)
+    print("min of y (eps>0):", jnp.min(chi_eps[:, 1]))
+    print("max of y (eps>0):", jnp.max(chi_eps[:, 1]))
+
+    chi_no_eps = results["JSRM ($\\varepsilon=0$)"]["chi"]
+    print("min of y (eps=0):", jnp.min(chi_no_eps[:, 1]))
+    print("max of y (eps=0):", jnp.max(chi_no_eps[:, 1]))
+
+    plot_forward_x_only(impls, results, q_values)
     plot_forward(impls, results, q_values)
-    plot_jacobian(impls, results, q_values)
-    plot_inertia(impls, results, q_values)
-    plot_gradients(impls, results, q_values)
+    # plot_jacobian(impls, results, q_values)
+    # plot_inertia(impls, results, q_values)
+    # plot_gradients(impls, results, q_values)
 
     plt.show()
 
