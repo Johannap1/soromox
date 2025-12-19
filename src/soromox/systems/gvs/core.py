@@ -10,10 +10,21 @@ import warnings
 
 
 from soromox.systems.dynamical_system import DynamicalSystem
-from soromox.systems.gvs.attributes import BasisAttributes, JointAttributes, LinkAttributes
+from soromox.systems.gvs.attributes import (
+    BasisAttributes,
+    JointAttributes,
+    LinkAttributes,
+)
 from soromox.systems.gvs.data_classes import SegmentData
 from soromox.systems.gvs.joint_bases import (
-    B_Fixed, B_Free, B_Spherical, B_Planar, B_Cylindrical, B_Helical, B_Prismatic, B_Revolute
+    B_Fixed,
+    B_Free,
+    B_Spherical,
+    B_Planar,
+    B_Cylindrical,
+    B_Helical,
+    B_Prismatic,
+    B_Revolute,
 )
 from soromox.systems.gvs.operands import GeometricOperand, JointOperand
 from soromox.systems.gvs.primitives import Basis, Joint, Link
@@ -78,7 +89,8 @@ class GVS(DynamicalSystem):
         Index of the strain basis type used for each segment.
     V_Bdof_params, V_Bodr_params : Array
         Parameters controlling the strain basis DOFs and orders.
-
+    g0 : Array
+        Initial pose of the robot base as an SE(3) transformation matrix.
     Notes
     -----
     - The GVS model generalizes PCS by allowing the strain distribution in each segment
@@ -147,6 +159,8 @@ class GVS(DynamicalSystem):
 
     V_K_joint: Array  # Joint stiffness matrix (num_segments, max_dof, max_dof)
     g: Array  # Gravity vector (6,)
+    p0: Array
+    g0: Array
 
     # Addition to compute forward kinematics at s
     V_basistype_idx: Array  # Index of the basis type for each segment (num_segments,)
@@ -162,6 +176,7 @@ class GVS(DynamicalSystem):
         gravity_vector: List[float],
         max_dof: Optional[int] = None,
         max_nGauss: Optional[int] = None,
+        p0: Optional[Array] = None,
     ) -> None:
         """
         Initialize the GVS class.
@@ -211,7 +226,9 @@ class GVS(DynamicalSystem):
             Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
         max_nGauss : int, optional
             Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-
+        p0: (optional) List/Array of shape (6,)
+                Initial orientation angle and position in the inertial frame [rad, m]
+                [ψ, θ, φ, x0, y0, z0]
         Raises
         ------
         ValueError
@@ -228,7 +245,9 @@ class GVS(DynamicalSystem):
         - Internal arrays are padded to `max_dof` and `max_nip` to allow vectorized
         batched computations across all segments.
         """
-        warnings.warn("GVS is not fully validated yet and might not match the behavior of PlanarPCS and PCS.")
+        warnings.warn(
+            "GVS is not fully validated yet and might not match the behavior of PlanarPCS and PCS."
+        )
 
         if (
             len(links_list) != len(joints_list)
@@ -427,6 +446,18 @@ class GVS(DynamicalSystem):
         # Number of actuators
         self.num_actuators = self.dof_tot_system
 
+        # Base pose g0: derive from p0 if provided, otherwise keep previous default base rotation
+        if p0 is None:
+            p0_arr = jnp.array(
+                [jnp.pi / 2, jnp.pi / 2, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float64
+            )
+        else:
+            p0_arr = jnp.asarray(p0, dtype=jnp.float64)
+
+        if p0_arr.size != 6:
+            raise ValueError("p0 must have shape (6,) when provided")
+        self.p0 = p0_arr
+        self.g0 = lie.exp_SE3(p0_arr)
 
     def _build_segment_i(
         self,
@@ -724,7 +755,7 @@ class GVS(DynamicalSystem):
             return indices
 
         # Vectorization: apply to (m, 2)
-        get_indices_vmap = vmap(vmap(get_indices, in_axes=(0, )), in_axes=(0, ))
+        get_indices_vmap = vmap(vmap(get_indices, in_axes=(0,)), in_axes=(0,))
         all_indices = get_indices_vmap(start_indices)
 
         # Creating masks
@@ -916,7 +947,7 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_ini = jnp.eye(4)  # Initial transformation matrix (identity)
+        g_ini = self.g0
 
         _, g_list = lax.scan(f=body_segment_i, init=g_ini, xs=indices_link)
 
@@ -1112,7 +1143,7 @@ class GVS(DynamicalSystem):
 
             return g_out, g_out
 
-        g0 = jnp.eye(4)
+        g0 = self.g0
 
         # we scan *at least* up to segment seg_idx; for subsequent segments, we don't change a thing
         def step(carry: Array, i: Array) -> Tuple[Array, None]:
@@ -1156,7 +1187,9 @@ class GVS(DynamicalSystem):
                     d ∈ {0..max_dof-1} : partial derivative with respect to the d-th DoF of the link k_link
         """
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array], Array]:
+        def body_segment_i(
+            carry: Array, i_segment: Array
+        ) -> Tuple[Tuple[Array, Array], Array]:
             """Accumulate transforms/Jacobians for a segment.
 
             Args:
@@ -1213,7 +1246,9 @@ class GVS(DynamicalSystem):
 
             q_i = q_gathered[i_segment, 1]
 
-            def body_eval_points(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array], Array]:
+            def body_eval_points(
+                carry: Array, j_eval: Array
+            ) -> Tuple[Tuple[Array, Array], Array]:
                 """Advance one cell and update the Jacobian via Magnus terms.
 
                 Args:
@@ -1300,7 +1335,8 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_init = jnp.eye(4)
+        g_init = self.g0
+
         J_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
 
         _, J_list = lax.scan(f=body_segment_i, init=(g_init, J_init), xs=indices_link)
@@ -1339,7 +1375,9 @@ class GVS(DynamicalSystem):
         # classify where s lies
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
+        def body_segment_i(
+            carry: Array, i_segment: Array
+        ) -> Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
             """Propagate body-frame Jacobian across a segment up to `s`.
 
             Args:
@@ -1393,7 +1431,9 @@ class GVS(DynamicalSystem):
 
             q_i = q_gathered[i_segment, 1]
 
-            def full_cell(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array], None]:
+            def full_cell(
+                carry: Array, j_eval: Array
+            ) -> Tuple[Tuple[Array, Array], None]:
                 """Consume a full cell; update g and J in body frame.
 
                 Args:
@@ -1411,12 +1451,8 @@ class GVS(DynamicalSystem):
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(
-                    length_i
-                )
-                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(
-                    length_i
-                )
+                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
+                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
@@ -1472,7 +1508,9 @@ class GVS(DynamicalSystem):
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # masked full cells up to j-1
-                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Tuple[Array, Array], None]:
+                def full_cell_masked(
+                    carry: Array, idx: Array
+                ) -> Tuple[Tuple[Array, Array], None]:
                     """Advance only while idx < j; otherwise keep state unchanged.
 
                     Args:
@@ -1554,7 +1592,8 @@ class GVS(DynamicalSystem):
             J_next = jnp.where(i <= segment_idx, J_curr, carry[1])
             return (g_next, J_next), None
 
-        g0 = jnp.eye(4)
+        g0 = self.g0
+
         J0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         (g_s, J_full), _ = lax.scan(step, (g0, J0), jnp.arange(self.num_segments))
 
@@ -1586,7 +1625,9 @@ class GVS(DynamicalSystem):
                 Jacobian derivative matrices at all significant points
         """
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array, Array], Array]:
+        def body_segment_i(
+            carry: Array, i_segment: Array
+        ) -> Tuple[Tuple[Array, Array, Array], Array]:
             """Accumulate transforms/Jacobian derivatives for a segment.
 
             Args:
@@ -1654,7 +1695,9 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
-            def body_eval_points(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array, Array], Array]:
+            def body_eval_points(
+                carry: Array, j_eval: Array
+            ) -> Tuple[Tuple[Array, Array, Array], Array]:
                 """Advance one cell; update Jdot using Magnus/Tangent terms.
 
                 Args:
@@ -1756,7 +1799,8 @@ class GVS(DynamicalSystem):
 
         indices_link = jnp.arange(0, self.num_segments)
 
-        g_init = jnp.eye(4)
+        g_init = self.g0
+
         Jd_init = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta_init = jnp.zeros((6,))
 
@@ -1799,7 +1843,9 @@ class GVS(DynamicalSystem):
         # Segment contenant s et abscisse locale
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
+        def body_segment_i(
+            carry: Array, i_segment: Array
+        ) -> Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
             """Propagate body-frame Jdot across a segment up to `s`.
 
             Args:
@@ -1863,7 +1909,9 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
-            def full_cell(carry: Array, j_eval: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+            def full_cell(
+                carry: Array, j_eval: Array
+            ) -> Tuple[Tuple[Array, Array, Array], None]:
                 """Consume a full cell; update g, Jdot and convective term.
 
                 Args:
@@ -1953,7 +2001,9 @@ class GVS(DynamicalSystem):
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # consume up to j-1 (masked)
-                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+                def full_cell_masked(
+                    carry: Array, idx: Array
+                ) -> Tuple[Tuple[Array, Array, Array], None]:
                     """Advance only for idx < j; keep state otherwise.
 
                     Args:
@@ -2059,7 +2109,8 @@ class GVS(DynamicalSystem):
             eta_next = jnp.where(i <= segment_idx, eta_curr, carry[2])
             return (g_next, Jd_next, eta_next), None
 
-        g0 = jnp.eye(4)
+        g0 = self.g0
+
         Jd0 = jnp.zeros((self.num_segments, 2, 6, self.max_dof))
         eta0 = jnp.zeros((6,))
         (g_s, Jd_full, _), _ = lax.scan(
@@ -2321,9 +2372,10 @@ class GVS(DynamicalSystem):
                 J_j = J_i[i_eval]  # (6, num_segments * 2 * max_dof)
                 M_j = M_i[i_eval]  # (6, 6)
 
-                return (
-                    Ws_j * J_j.T @ M_j @ Ad_g_j_inv @ self.g
+                G_j = (
+                    -Ws_j * J_j.T @ M_j @ Ad_g_j_inv @ self.g
                 )  # (num_segments * 2 * max_dof, 1)
+                return G_j
 
             # we can skip the first and last quadrature points since their weight is zero
             G_blocks_segment_i = vmap(G_eval_points)(
