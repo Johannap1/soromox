@@ -1,11 +1,12 @@
 import jax
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from jax import random
-from jax import numpy as jnp
-import soromox
 from pathlib import Path
 
+from jax import numpy as jnp
+from jax import random
+
+import soromox
 from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL as params
 from soromox.systems.planar_hsa import PlanarHSA
 
@@ -43,9 +44,9 @@ def test_end_effector_kinematics(seed: int = 0):
         print("q = ", q)
 
         # forward kinematics
-        chiee = robot.forward_kinematics_end_effector_fn(q)
+        chiee = robot.forward_kinematics_end_effector(q)
         # inverse kinematics
-        q_rec = robot.inverse_kinematics_end_effector_fn(chiee)
+        q_rec = robot.inverse_kinematics_end_effector(chiee)
 
         if not jnp.allclose(q, q_rec, atol=1e-6):
             print("q = ", q)
