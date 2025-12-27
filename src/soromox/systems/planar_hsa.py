@@ -145,11 +145,15 @@ class PlanarHSA(SoftRobot):
     chiv_lambda_sms: list[Callable]
     chir_lambda_sms: list[Callable]
     chip_lambda_sms: list[Callable]
+    Jv_lambda_sms: list[Callable]  # Jacobian of the virtual backbone at each segment
 
     # kinematic lambda functions
     chiee_lambda: Callable
     Jee_lambda: Callable
     Jeed_lambda: Callable
+
+    # energy lambda functions
+    U_g_lambda: Callable  # gravitational potential energy
 
     # dynamic lambda functions
     B_lambda: Callable
@@ -333,9 +337,6 @@ class PlanarHSA(SoftRobot):
             strain_selector = strain_selector.reshape(num_dofs)
         self.B_xi = compute_strain_basis(strain_selector)
 
-        for key, value in sym_exps["exps"].items():
-            print(key)
-
         # concatenate the list of state symbols
         try:
             state_syms_cat = (
@@ -400,6 +401,24 @@ class PlanarHSA(SoftRobot):
                 "Symbolic expressions file does not contain ['exps']['chip_sms']. Please generate the symbolic expressions first."
             )
         self.chip_lambda_sms = chip_lambda_sms
+
+        # lambdify the Jacobians of the virtual backbone for each segment
+        Jv_lambda_sms = []
+        try:
+            for Jv_exp in sym_exps["exps"]["Jv_sms"]:
+                Jv_lambda = sp.lambdify(
+                    params_syms_cat
+                    + sym_exps["state_syms"]["xi"]
+                    + [sym_exps["state_syms"]["s"]],
+                    Jv_exp,
+                    "jax",
+                )
+                Jv_lambda_sms.append(Jv_lambda)
+        except KeyError:
+            raise KeyError(
+                "Symbolic expressions file does not contain ['exps']['Jv_sms']. Please generate the symbolic expressions first."
+            )
+        self.Jv_lambda_sms = Jv_lambda_sms
 
         # end-effector kinematics
         try:
@@ -468,6 +487,19 @@ class PlanarHSA(SoftRobot):
         except ValueError:
             raise ValueError("Fail to lambdify G. Check the symbolic expressions file.")
         self.G_lambda = G_lambda
+
+        # gravitational potential energy
+        try:
+            U_g_lambda = sp.lambdify(
+                params_syms_cat + sym_exps["state_syms"]["xi"],
+                sym_exps["exps"]["U_g"],
+                "jax",
+            )
+        except ValueError:
+            raise ValueError(
+                "Fail to lambdify U_g. Check the symbolic expressions file."
+            )
+        self.U_g_lambda = U_g_lambda
 
         try:
             Shat_lambda = sp.lambdify(params_syms_cat, sym_exps["exps"]["Shat"], "jax")
@@ -1073,12 +1105,12 @@ class PlanarHSA(SoftRobot):
         return Jee
 
     @eqx.filter_jit
-    def jacobian(self, q: Array, s: Array) -> Array:
+    def jacobian_virtual_backbone(self, q: Array, s: Array) -> Array:
         """
-        Compute the Jacobian of the forward kinematics at a point s along the robot.
+        Compute the Jacobian of the virtual backbone forward kinematics at a point s.
 
         The Jacobian maps configuration space velocities to operational space
-        (Cartesian/task space) velocities at point s.
+        (Cartesian/task space) velocities at point s using the symbolic expressions.
 
         Args:
             q: Generalized coordinates of shape (num_dofs,).
@@ -1088,16 +1120,43 @@ class PlanarHSA(SoftRobot):
             J: Jacobian matrix of shape (3, num_dofs), mapping velocities in
                 configuration space to velocities in operational space [omega_z, v_x, v_y].
         """
-        # Use JAX autograd to compute the Jacobian
-        J = jacfwd(self.forward_kinematics, argnums=0)(q, s)
+        # map the configuration to the strains
+        xi = self.strain(q)
+
+        # add a small number to the bending strain to avoid singularities
+        xi_epsed = self.apply_eps_to_bend_strains(xi)
+
+        # determine in which segment the point is located
+        segment_idx, s_local = self.classify_segment(s)
+
+        # evaluate the symbolic Jacobian expression
+        # The symbolic Jacobian is with respect to strains xi, shape (3, num_dofs)
+        # with rows [p_x, p_y, theta] from symbolic derivation
+        J_xi = lax.switch(
+            segment_idx,
+            self.Jv_lambda_sms,
+            *self.params_for_lambdify,
+            *xi_epsed,
+            s_local,
+        )
+
+        # Reorder rows from [p_x, p_y, theta] to [theta, p_x, p_y] (SE(2) convention)
+        J_xi = jnp.roll(J_xi, 1, axis=0)
+
+        # Chain rule: J_q = J_xi @ B_xi (since xi = B_xi @ q + xi_ref)
+        J = J_xi @ self.B_xi
+
         return J
 
+    # Alias for consistency: jacobian is the same as jacobian_virtual_backbone
+    jacobian = jacobian_virtual_backbone
+
     @eqx.filter_jit
-    def jacobian_and_derivative(
+    def jacobian_and_derivative_virtual_backbone(
         self, q: Array, qd: Array, s: Array
     ) -> tuple[Array, Array]:
         """
-        Compute the Jacobian and its time derivative at a point s along the robot.
+        Compute the Jacobian and its time derivative of the virtual backbone at point s.
 
         Args:
             q: Generalized coordinates of shape (num_dofs,).
@@ -1108,13 +1167,13 @@ class PlanarHSA(SoftRobot):
             J: Jacobian matrix of shape (3, num_dofs).
             Jd: Time derivative of the Jacobian, shape (3, num_dofs).
         """
-        # Compute the Jacobian
-        J = jacfwd(self.forward_kinematics, argnums=0)(q, s)
+        # Compute the Jacobian using the symbolic expression
+        J = self.jacobian_virtual_backbone(q, s)
 
         # Compute the Jacobian derivative: d/dt(J(q(t))) = d(J)/dq @ qd
         # Define a function that computes the Jacobian for a given q
         def jacobian_fn(q: Array) -> Array:
-            return jacfwd(self.forward_kinematics, argnums=0)(q, s)
+            return self.jacobian_virtual_backbone(q, s)
 
         # Compute dJ/dq (shape: 3, num_dofs, num_dofs)
         dJ_dq = jacfwd(jacobian_fn, argnums=0)(q)
@@ -1123,6 +1182,9 @@ class PlanarHSA(SoftRobot):
         Jd = jnp.einsum("ijk,k->ij", dJ_dq, qd)
 
         return J, Jd
+
+    # Alias for consistency: jacobian_and_derivative is the same as jacobian_and_derivative_virtual_backbone
+    jacobian_and_derivative = jacobian_and_derivative_virtual_backbone
 
     @eqx.filter_jit
     def inverse_kinematics_end_effector(self, chiee: Array) -> Array:
@@ -1483,6 +1545,51 @@ class PlanarHSA(SoftRobot):
         Shat = self.Shat_lambda(*self.params_for_lambdify)
 
         return Shat
+
+    @eqx.filter_jit
+    def stiffness_matrix(self) -> Array:
+        """
+        Compute the stiffness matrix of the robot in configuration space.
+
+        Returns:
+            K (Array): Stiffness matrix of shape (num_dofs, num_dofs).
+        """
+        Shat_full = self.Shat()
+        K = self.B_xi.T @ Shat_full @ self.B_xi
+        return K
+
+    # -----------------------------------------
+    # Energy methods
+    # -----------------------------------------
+
+    @eqx.filter_jit
+    def gravitational_energy(self, q: Array, eps: float | None = None) -> Array:
+        """
+        Compute the gravitational potential energy of the robot.
+
+        This uses the symbolic expression U_g derived from the gravitational
+        potential energy of all rods, platforms, and payload.
+
+        Args:
+            q (Array): Generalized coordinates of shape (num_dofs,).
+            eps (float): Small number to avoid singularities. Defaults to 1e4 * global_eps.
+
+        Returns:
+            U_g (Array): Gravitational potential energy [J] (scalar).
+        """
+        # initialize eps if not provided
+        if eps is None:
+            eps = 1e4 * self.global_eps
+
+        xi = self.strain(q)
+
+        # add a small number to the bending strain to avoid singularities
+        xi_epsed = self.apply_eps_to_bend_strains(xi, eps)
+
+        # evaluate the symbolic expression for gravitational potential energy
+        U_g = self.U_g_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
+
+        return U_g
 
     @eqx.filter_jit
     def operational_space_dynamical_matrices(
