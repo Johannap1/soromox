@@ -11,7 +11,7 @@ from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL
 from soromox.utils.numerical_jacobian import approx_derivative
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.systems.planar_hsa import PlanarHSA
+from soromox.systems import PlanarHSA
 
 
 def factory_fn(

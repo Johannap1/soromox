@@ -9,7 +9,7 @@ from jax import random
 
 import soromox
 from soromox.parameters.hsa_params import PARAMS_FPU_CONTROL as params
-from soromox.systems.planar_hsa import PlanarHSA
+from soromox.systems import PlanarHSA
 
 num_segments = 1
 num_rods_per_segment = 2

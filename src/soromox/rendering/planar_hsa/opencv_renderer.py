@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as onp
 from jax import Array, jit, vmap
 
-from soromox.systems.planar_hsa import PlanarHSA
+from soromox.systems import PlanarHSA
 
 
 def draw_robot(
