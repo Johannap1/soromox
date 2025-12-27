@@ -1610,6 +1610,23 @@ class GVS(SoftRobot):
         return J_local
 
     @eqx.filter_jit
+    def jacobian(self, q: Array, s: Array) -> Array:
+        """
+        Compute the Jacobian and its time derivative at a point s along the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+            s (Array): point coordinate along the robot in the interval [0, L].
+
+        Returns:
+            J (Array): Jacobian matrix of shape (6, num_dofs).
+        """
+        # TODO: Properly implement jacobian_and_derivative
+        # This should compute the Jacobian and its time derivative in the inertial frame
+        J = jnp.zeros((6, self.num_dofs))
+        return J
+
+    @eqx.filter_jit
     def _jacobian_derivative_gauss(
         self, q_gathered: Array, qd_gathered: Array
     ) -> Array:
@@ -2128,6 +2145,28 @@ class GVS(SoftRobot):
 
         return Jd_local
 
+    @eqx.filter_jit
+    def jacobian_and_derivative(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """
+        Compute the Jacobian and its time derivative at a point s along the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+            qd (Array): generalized velocities of shape (dof_tot,).
+            s (Array): point coordinate along the robot in the interval [0, L].
+
+        Returns:
+            J (Array): Jacobian matrix of shape (6, num_dofs).
+            Jd (Array): Time derivative of the Jacobian, shape (6, num_dofs).
+        """
+        # TODO: Properly implement jacobian_and_derivative
+        # This should compute the Jacobian and its time derivative in the inertial frame
+        J = jnp.zeros((6, self.num_dofs))
+        Jd = jnp.zeros((6, self.num_dofs))
+        return J, Jd
+
     # ===========================================
     # Dynamical matrices computation
 
@@ -2421,6 +2460,21 @@ class GVS(SoftRobot):
         G = self.B_select.T @ G_full
 
         return G
+
+    @eqx.filter_jit
+    def gravitational_energy(self, q: Array) -> Array:
+        """
+        Compute the gravitational potential energy of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+
+        Returns:
+            U_g (Array): Gravitational potential energy (scalar).
+        """
+        # TODO: Properly implement gravitational energy computation
+        # This should integrate the gravitational potential energy over the robot's mass distribution
+        return jnp.array(0.0)
 
     @eqx.filter_jit
     def _stiffness_full_matrix(self) -> Array:
