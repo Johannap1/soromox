@@ -1895,39 +1895,6 @@ class PlanarPCS(SoftRobot):
         return tau_u
 
     @eqx.filter_jit
-    def kinetic_energy(self, q: Array, qd: Array) -> Array:
-        """
-        Compute the kinetic energy of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-
-        Returns:
-            T (float): Kinetic energy of the robot.
-        """
-        B = self.inertia_matrix(q)
-        T = 0.5 * qd.T @ B @ qd
-
-        return T
-
-    @eqx.filter_jit
-    def elastic_energy(self, q: Array) -> Array:
-        """
-        Compute the elastic energy of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-
-        Returns:
-            U_K (float): Elastic energy of the robot.
-        """
-        K_full = self._stiffness_full_matrix()
-        U_K = 0.5 * (self.B_xi @ q).T @ K_full @ (self.B_xi @ q)
-
-        return U_K
-
-    @eqx.filter_jit
     def gravitational_energy(self, q: Array) -> Array:
         """
         Compute the gravitational energy of the robot.
@@ -1967,39 +1934,6 @@ class PlanarPCS(SoftRobot):
         U_G = jnp.sum(U_G_blocks_tot, axis=(0, 1))  # Sum over segments and Gauss points
 
         return U_G
-
-    @eqx.filter_jit
-    def potential_energy(self, q: Array) -> Array:
-        """
-        Compute the potential energy of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-
-        Returns:
-            U (float): Potential energy of the robot.
-        """
-        U_K = self.elastic_energy(q)
-        U_G = self.gravitational_energy(q)
-
-        return U_K + U_G
-
-    @eqx.filter_jit
-    def total_energy(self, q: Array, qd: Array) -> Array:
-        """
-        Compute the total energy of the robot, which is the sum of kinetic and potential energy.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-
-        Returns:
-            E (float): Total energy of the robot.
-        """
-        T = self.kinetic_energy(q, qd)
-        U = self.potential_energy(q)
-        E = T + U
-        return E
 
     @eqx.filter_jit
     def operational_space_dynamical_matrices(

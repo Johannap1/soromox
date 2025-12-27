@@ -923,25 +923,6 @@ class Pendulum(SoftRobot):
     # ---------------------
     # Energy methods
     # ---------------------
-    @eqx.filter_jit
-    def kinetic_energy(self, q: Array, qd: Array) -> Array:
-        """
-        Compute the kinetic energy of the pendulum system.
-
-        The kinetic energy is computed as:
-        T = 0.5 * qd^T @ B(q) @ qd
-        where B(q) is the generalized inertia matrix.
-
-        Args:
-            q (Array): Joint angles, shape (N,) [rad]
-            qd (Array): Joint velocities, shape (N,) [rad/s]
-
-        Returns:
-            T (Array): Kinetic energy [J] (scalar)
-        """
-        B = self.inertia_matrix(q)
-        T = 0.5 * qd.T @ B @ qd
-        return T
 
     @eqx.filter_jit
     def gravitational_energy(self, q: Array) -> Array:
@@ -981,45 +962,6 @@ class Pendulum(SoftRobot):
         """
         U_K = 0.5 * (q - self.q_ref_k).T @ self.stiffness_matrix() @ (q - self.q_ref_k)
         return U_K
-
-    @eqx.filter_jit
-    def potential_energy(self, q: Array) -> Array:
-        """
-        Compute the total potential energy of the pendulum system.
-
-        The potential energy is the sum of gravitational and elastic energy:
-        U = U_G + U_K
-
-        Args:
-            q (Array): Joint angles, shape (N,) [rad]
-
-        Returns:
-            U (Array): Total potential energy [J] (scalar)
-        """
-        U_G = self.gravitational_energy(q)
-        U_K = self.elastic_energy(q)
-        U = U_G + U_K
-        return U
-
-    @eqx.filter_jit
-    def total_energy(self, q: Array, qd: Array) -> Array:
-        """
-        Compute the total energy of the pendulum system.
-
-        The total energy is the sum of kinetic and potential energy:
-        E = T + U
-
-        Args:
-            q (Array): Joint angles, shape (N,) [rad]
-            qd (Array): Joint velocities, shape (N,) [rad/s]
-
-        Returns:
-            E (Array): Total energy [J] (scalar)
-        """
-        T = self.kinetic_energy(q, qd)
-        U = self.potential_energy(q)
-        E = T + U
-        return E
 
     # --------------------------
     # Operational space dynamics
