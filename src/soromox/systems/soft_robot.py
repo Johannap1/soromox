@@ -295,11 +295,11 @@ class SoftRobot(DynamicalSystem):
             q: Generalized coordinates of shape (num_dofs,).
 
         Returns:
-            U_K: Elastic potential energy (scalar).
+            U_k: Elastic potential energy (scalar).
         """
-        K = self.stiffness_matrix()
-        U_K = 0.5 * q @ K @ q
-        return U_K
+        S = self.stiffness_matrix()
+        U_k = 0.5 * q @ S @ q
+        return U_k
 
     def potential_energy(self, q: Array) -> Array:
         """
