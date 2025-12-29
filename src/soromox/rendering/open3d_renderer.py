@@ -731,7 +731,7 @@ class Open3DRenderer(BaseSoftRobotRenderer):
         self,
         dynamic_spheres_positions: Array | None,
         dynamic_spheres_radii: Array | None,
-        dynamics_spheres_colors: Array | None,
+        dynamic_spheres_colors: Array | None,
         expected_T: int | None,
         default_color: tuple[float, float, float] = (0.2, 0.2, 0.8),
     ) -> DynamicSpheres | None:
@@ -760,7 +760,7 @@ class Open3DRenderer(BaseSoftRobotRenderer):
                 f"dynamic_spheres_radii must have length {N}; got length {radii.shape[0]}"
             )
 
-        colors = self._normalize_color_array(dynamics_spheres_colors, N, default_color)
+        colors = self._normalize_color_array(dynamic_spheres_colors, N, default_color)
         return DynamicSpheres(trajectories=centers, radii=radii, colors=colors)
 
     @staticmethod
