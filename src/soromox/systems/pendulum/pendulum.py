@@ -142,9 +142,19 @@ class Pendulum(SoftRobot):
         self.q_ref_k = jnp.asarray(params.get("q_ref_k", jnp.zeros((n_q,))))
 
     @property
+    def is_planar(self) -> bool:
+        """Pendulum is a planar (2D) model."""
+        return True
+
+    @property
     def length(self) -> Array:
         """Total chain length."""
         return jnp.sum(self.L)
+
+    @property
+    def segment_length(self) -> Array:
+        """Per-link lengths."""
+        return jnp.asarray(self.L)
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
         """Circular cross-section using per-link radius."""
@@ -557,7 +567,7 @@ class Pendulum(SoftRobot):
 
         Args:
             q: Joint angles, shape (N,) [rad].
-            s: Arc-length position in [0, total_length] [m].
+            s: Arc-length position in [0, total_length] (units: m).
 
         Returns:
             chi: Pose [theta, x, y] at position s, shape (3,).
@@ -607,7 +617,7 @@ class Pendulum(SoftRobot):
 
         Args:
             q: Joint angles, shape (N,) [rad].
-            s: Arc-length position in [0, total_length] [m].
+            s: Arc-length position in [0, total_length] (units: m).
 
         Returns:
             J: Jacobian matrix, shape (3, N).
@@ -664,7 +674,7 @@ class Pendulum(SoftRobot):
         Args:
             q: Joint angles, shape (N,) [rad].
             qd: Joint velocities, shape (N,) [rad/s].
-            s: Arc-length position in [0, total_length] [m].
+            s: Arc-length position in [0, total_length] (units: m).
 
         Returns:
             J: Jacobian matrix, shape (3, N).

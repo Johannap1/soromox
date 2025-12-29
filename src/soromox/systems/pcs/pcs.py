@@ -3,6 +3,7 @@ __all__ = ["PCS"]
 
 import equinox as eqx
 import numpy as onp
+from typing import Any
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 
@@ -102,7 +103,7 @@ class PCS(SoftRobot):
         order_gauss: int = 5,
         strain_selector: Array | None = None,
         xi_ref: Array | None = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         Initialize the PCS class.
@@ -224,13 +225,21 @@ class PCS(SoftRobot):
         self.num_actuators = int(self.num_active_strains.item())
 
     @property
+    def is_planar(self) -> bool:
+        """PCS is a spatial (3D) model."""
+        return False
+
+    @property
     def length(self) -> Array:
         """Total backbone length."""
         return jnp.sum(self.L)
 
-    def cross_section_geometry(
-        self, q: Array, s: Array
-    ) -> tuple[Array, Array]:
+    @property
+    def segment_length(self) -> Array:
+        """Per-segment backbone lengths."""
+        return jnp.asarray(self.L)
+
+    def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
         """Circular cross-section with segment radius."""
         segment_idx, _ = self.classify_segment(s)
         radius = jnp.asarray(self.r)[segment_idx]
