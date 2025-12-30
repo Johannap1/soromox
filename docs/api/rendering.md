@@ -301,11 +301,7 @@ supports `multi_robot_layout="overlay"` to stack robots at the same base pose.
 
 ### Tendons and helper geometry
 
-If the robot exposes `forward_kinematics_tendons`:
-
-- Matplotlib renders tendons with `render_tendons=True`
-- Viser renders tendons with `show_tendons=True`
-- Open3D renders tendons automatically (no toggle)
+If the robot exposes `forward_kinematics_tendons`, tendon rendering can be enabled with `render_tendons=True`.
 
 Open3D and Viser also support helper spheres:
 
