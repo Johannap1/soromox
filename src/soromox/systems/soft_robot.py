@@ -5,6 +5,7 @@ __all__ = [
 
 from abc import abstractmethod
 from enum import IntEnum
+from typing import Any
 
 from jax import Array, vmap
 from jax import numpy as jnp
@@ -53,7 +54,7 @@ class SoftRobot(DynamicalSystem):
         """
         return jnp.sqrt(self.global_eps)
 
-    def __init__(self, eps: float | None = None, **kwargs):
+    def __init__(self, eps: float | None = None, **kwargs: Any):
         """Initialize the SoftRobot.
 
         Args:
@@ -320,7 +321,7 @@ class SoftRobot(DynamicalSystem):
             q: Generalized coordinates of shape (num_dofs,).
 
         Returns:
-            U_G: Gravitational potential energy (scalar).
+            U_g: Gravitational potential energy (scalar).
         """
         ...
 
@@ -328,17 +329,17 @@ class SoftRobot(DynamicalSystem):
         """
         Compute the elastic potential energy stored in the system.
 
-        Default implementation: U_k = 0.5 * q^T * K * q
+        Default implementation: U_el = 0.5 * q^T * K * q
 
         Args:
             q: Generalized coordinates of shape (num_dofs,).
 
         Returns:
-            U_k: Elastic potential energy (scalar).
+            U_el: Elastic potential energy (scalar).
         """
         S = self.stiffness_matrix()
-        U_k = 0.5 * q @ S @ q
-        return U_k
+        U_el = 0.5 * q @ S @ q
+        return U_el
 
     def potential_energy(self, q: Array) -> Array:
         """
@@ -353,8 +354,8 @@ class SoftRobot(DynamicalSystem):
             U: Total potential energy (scalar).
         """
         U_g = self.gravitational_energy(q)
-        U_k = self.elastic_energy(q)
-        U = U_g + U_k
+        U_el = self.elastic_energy(q)
+        U = U_g + U_el
         return U
 
     def total_energy(self, q: Array, qd: Array) -> Array:

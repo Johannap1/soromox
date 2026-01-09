@@ -1,7 +1,7 @@
 __all__ = ["GVS"]
 import math
 import warnings
-from typing import cast
+from typing import Any, cast
 
 import equinox as eqx
 import jax
@@ -50,49 +50,27 @@ class GVS(SoftRobot):
     for robots with arbitrary combinations of link cross-sections, joint types, and
     strain basis functions.
 
-    Attributes
-    ----------
-    num_segments : int
-        Number of segments (links) in the robot.
-    max_dof : int
-        Maximum number of degrees of freedom (DOFs) per link or joint.
-    max_nGauss : int
-        Maximum number of Gauss points per link used for integration.
-    max_nip : int
-        Maximum number of integration points per link (= max_nGauss + 2).
-    dof_tot_system : int
-        Total number of DOFs for the robot (sum of joint + link DOFs).
-    dof_tot_max : int
-        Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
-    B_select : Array
-        Strain basis selection matrix mapping active DOFs to the full strain space.
-    V_L, V_L_cum : Array
-        Length of each link, and cumulative link lengths.
-    V_nip : Array
-        Number of integration/evaluation points for each link.
-    V_dof : Array
-        Number of DOFs for each link/joint pair (shape: num_segments x 2).
-    V_Xs, V_Ws : Array
-        Gauss quadrature nodes and weights for each link.
-    V_Ms, V_Es, V_Gs : Array
-        Mass, stiffness, and damping matrices at integration points.
-    V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2 : Array
-        Basis matrices for joints and links at quadrature points and intermediate points.
-    V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2 : Array
-        Reference strain vectors for joints and links.
-    V_K_joint : Array
-        Joint stiffness matrices.
-    g : Array
-        Gravitational acceleration vector in 6D wrench form.
-    V_basistype_idx : Array
-        Index of the strain basis type used for each segment.
-    V_Bdof_params, V_Bodr_params : Array
-        Parameters controlling the strain basis DOFs and orders.
-    g0 : Array
-        Initial pose of the robot base as an SE(3) transformation matrix.
-    scale_rotational_strain_basis : bool
-        If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
-       
+    Attributes:
+        num_segments: Number of segments (links) in the robot.
+        max_dof: Maximum number of degrees of freedom (DOFs) per link or joint.
+        max_nGauss: Maximum number of Gauss points per link used for integration.
+        max_nip: Maximum number of integration points per link (= max_nGauss + 2).
+        dof_tot_system: Total number of DOFs for the robot (sum of joint + link DOFs).
+        dof_tot_max: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
+        B_select: Strain basis selection matrix mapping active DOFs to the full strain space.
+        V_L, V_L_cum: Length of each link, and cumulative link lengths.
+        V_nip: Number of integration/evaluation points for each link.
+        V_dof: Number of DOFs for each link/joint pair (shape: num_segments x 2).
+        V_Xs, V_Ws: Gauss quadrature nodes and weights for each link.
+        V_Ms, V_Es, V_Gs: Mass, stiffness, and damping matrices at integration points.
+        V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2: Basis matrices for joints and links at quadrature points and intermediate points.
+        V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2: Reference strain vectors for joints and links.
+        V_K_joint: Joint stiffness matrices.
+        g: Gravitational acceleration vector in 6D wrench form.
+        V_basistype_idx: Index of the strain basis type used for each segment.
+        V_Bdof_params, V_Bodr_params: Parameters controlling the strain basis DOFs and orders.
+        g0: Initial pose of the robot base as an SE(3) transformation matrix.
+        scale_rotational_strain_basis: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
     Notes
     -----
     - The GVS model generalizes PCS by allowing the strain distribution in each segment
@@ -106,10 +84,19 @@ class GVS(SoftRobot):
       rectangular, and elliptical shapes.
 
     References:
-    ----------
-    - Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020). A geometric variable-strain approach for static modeling of soft manipulators with tendon and fluidic actuation. IEEE Robotics and Automation Letters, 5(3), 4006-4013.
-    - Boyer, F., Lebastard, V., Candelier, F., & Renda, F. (2020). Dynamics of continuum and soft robots: A strain parameterization based approach. IEEE Transactions on Robotics, 37(3), 847-863.
-    - Mathew, A. T., Feliu-Talegon, D., Alkayas, A. Y., Boyer, F., & Renda, F. (2025). Reduced order modeling of hybrid soft-rigid robots using global, local, and state-dependent strain parameterization. The International Journal of Robotics Research, 44(1), 129-154.
+        Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020).
+        A geometric variable-strain approach for static modeling of soft manipulators
+        with tendon and fluidic actuation. IEEE Robotics and Automation Letters,
+        5(3), 4006-4013.
+
+        Boyer, F., Lebastard, V., Candelier, F., & Renda, F. (2020). Dynamics of
+        continuum and soft robots: A strain parameterization based approach. IEEE
+        Transactions on Robotics, 37(3), 847-863.
+
+        Mathew, A. T., Feliu-Talegon, D., Alkayas, A. Y., Boyer, F., & Renda, F.
+        (2025). Reduced order modeling of hybrid soft-rigid robots using global,
+        local, and state-dependent strain parameterization. The International
+        Journal of Robotics Research, 44(1), 129-154.
     """
 
     # Static attributes
@@ -161,7 +148,9 @@ class GVS(SoftRobot):
     g: Array  # Gravity vector (6,)
     p0: Array
     g0: Array
-    scale_rotational_strain_basis: bool  # If True, apply length scaling to angular strain contributions
+    scale_rotational_strain_basis: (
+        bool  # If True, apply length scaling to angular strain contributions
+    )
 
     # Addition to compute forward kinematics at s
     V_basistype_idx: Array  # Index of the basis type for each segment (num_segments,)
@@ -185,62 +174,61 @@ class GVS(SoftRobot):
         max_nGauss: int | None = None,
         p0: Array | None = None,
         scale_rotational_strain_basis: bool | None = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the GVS class.
 
-        Args
-        ----
-        links_list : List[LinkAttributes]
-            List of link property objects (one per segment) containing geometric and
-            material attributes:
-            - cross_section_geometry: CrossSectionGeometry value.
-            - E: Young's modulus [N/m²].
-            - nu: Poisson's ratio [-1, 0.5].
-            - rho: Density [kg/m³].
-            - eta: Material damping [N·s/m].
-            - L: Length of the link [m].
-            - One of the following geometric parameters must be provided based on the section type:
-                - r_i, r_f: Initial and final radius for circular sections.
-                - h_i, h_f: Initial and final height for rectangular sections.
-                - w_i, w_f: Initial and final width for rectangular sections.
-                - a_i, a_f: Initial and final semi-major axis for elliptical sections.
-                - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
-        joints_list : List[JointAttributes]
-            List of joint property objects (one per segment) describing the connection
-            between segments :
-            - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
-                'Planar', 'Spherical', 'Free', 'Fixed').
-            - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
-            - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
-            - pitch: Pitch for helical joints.
-            - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
-              must have shape (dof_joint, dof_joint); otherwise it is ignored and a
-              zero matrix is used. Units match the active DOFs: rotational terms
-              [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
-        basis_list : List[BasisAttributes]
-            List of strain basis attributes (one per segment) defining the parametrization
-            of the variable strain field along the link:
-            - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
-            - Bdof: Array indicating which types of deformation are selected (1) or not (0).
-                e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
-            - Bodr: Array indicating the orders of the basis functions for each type of deformation.
-            - xi_ref: Reference strain values for each type of deformation.
-        n_gauss_list : List[int]
-            Number of Gauss-Legendre quadrature points for integration in each segment.
-        gravity_vector : List[float]
-            3-element gravity vector [gx, gy, gz] in m/s².
-        max_dof : int, optional
-            Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
-        max_nGauss : int, optional
-            Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-        p0: (optional) List/Array of shape (6,)
-                Initial orientation angle and position in the inertial frame [rad, m]
-                [ψ, θ, φ, x0, y0, z0]
-        scale_rotational_strain_basis : bool, optional
-            If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
-        **kwargs: Additional keyword arguments for SoftRobot.__init__.
+        Args:
+            links_list (List[LinkAttributes]):
+                List of link property objects (one per segment) containing geometric and
+                material attributes:
+                - cross_section_geometry: CrossSectionGeometry value.
+                - E: Young's modulus [N/m²].
+                - nu: Poisson's ratio [-1, 0.5].
+                - rho: Density [kg/m³].
+                - eta: Material damping [N·s/m].
+                - L: Length of the link [m].
+                - One of the following geometric parameters must be provided based on the section type:
+                    - r_i, r_f: Initial and final radius for circular sections.
+                    - h_i, h_f: Initial and final height for rectangular sections.
+                    - w_i, w_f: Initial and final width for rectangular sections.
+                    - a_i, a_f: Initial and final semi-major axis for elliptical sections.
+                    - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
+            joints_list (List[JointAttributes]):
+                List of joint property objects (one per segment) describing the connection
+                between segments :
+                - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
+                    'Planar', 'Spherical', 'Free', 'Fixed').
+                - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
+                - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
+                - pitch: Pitch for helical joints.
+                - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
+                must have shape (dof_joint, dof_joint); otherwise it is ignored and a
+                zero matrix is used. Units match the active DOFs: rotational terms
+                [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
+            basis_list (List[BasisAttributes]):
+                List of strain basis attributes (one per segment) defining the parametrization
+                of the variable strain field along the link:
+                - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
+                - Bdof: Array indicating which types of deformation are selected (1) or not (0).
+                    e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
+                - Bodr: Array indicating the orders of the basis functions for each type of deformation.
+                - xi_ref: Reference strain values for each type of deformation.
+            n_gauss_list (List[int]):
+                Number of Gauss-Legendre quadrature points for integration in each segment.
+            gravity_vector (List[float]):
+                3-element gravity vector [gx, gy, gz] in m/s².
+            max_dof (int, optional):
+                Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
+            max_nGauss (int, optional):
+                Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
+            p0 (List/Array of shape (6,), optional):
+                    Initial orientation angle and position in the inertial frame [rad, m]
+                    [ψ, θ, φ, x0, y0, z0]
+            scale_rotational_strain_basis (bool, optional):
+                If True, apply length scaling to the angular component of the strain basis matrix for improved numerical stability.
+            **kwargs: Additional keyword arguments for SoftRobot.__init__.
 
         Raises
         ------
@@ -994,9 +982,9 @@ class GVS(SoftRobot):
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
-                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * (length_i**2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
 
@@ -1143,9 +1131,9 @@ class GVS(SoftRobot):
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
-                Magnus_j = (H / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * (length_i**2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = (H / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
 
                 return g_prev @ g_step, None
@@ -1346,7 +1334,7 @@ class GVS(SoftRobot):
                 g_prev, J_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
-                
+
                 xi_ref_Z1_j = xi_ref_Z1_i[j_eval]
                 xi_ref_Z2_j = xi_ref_Z2_i[j_eval]
 
@@ -1363,13 +1351,13 @@ class GVS(SoftRobot):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)  # shape (4, 4)
                 T_step = lie.Tangent_gi_se3(
@@ -1407,9 +1395,7 @@ class GVS(SoftRobot):
             # (g_tip_link, J_tip_link) = carry
             # J_link = jnp.array(J_link)  # shape (max_nip - 1, num_segments, 6, max_dof)
 
-            J_link = jnp.concatenate(
-                (jnp.expand_dims(J_j, axis=0), J_link), axis=0
-            )
+            J_link = jnp.concatenate((jnp.expand_dims(J_j, axis=0), J_link), axis=0)
             return (g_tip_link, J_tip_link), J_link
 
         indices_link = jnp.arange(0, self.num_segments)
@@ -1504,7 +1490,7 @@ class GVS(SoftRobot):
             length_i = self.V_L[i_segment]
             B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1, 6, max_dof)
-            
+
             q_i = q_gathered[i_segment, 1]
 
             def full_cell(
@@ -1537,13 +1523,13 @@ class GVS(SoftRobot):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) *(length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
                 T_step = lie.Tangent_gi_se3(Magnus_j, 1, eps=self.tangent_eps)
@@ -1631,10 +1617,10 @@ class GVS(SoftRobot):
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
                 Magnus_p = length_i * (Hp / 2) * (xi_Z1_j + xi_Z2_j) + (
-                    jnp.sqrt(3) * (length_i ** 2) * Hp * Hp / 12
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
                 B_Magnus_p = length_i * (Hp / 2) * (Bp_Z1 + Bp_Z2) + (
-                    jnp.sqrt(3) * (length_i ** 2) * Hp * Hp / 12
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
                 ) * (ad_xi_Z1_j @ Bp_Z2 - ad_xi_Z2_j @ Bp_Z1)
 
                 g_step = lie.exp_gn_SE3(Magnus_p, self.global_eps)
@@ -1657,7 +1643,7 @@ class GVS(SoftRobot):
                 lambda _: do_partial_link(),
                 operand=None,
             )
-            
+
             return (g_out, J_out), (g_out, J_out)
 
         # walk the chain, but freeze state after we pass the segment that contains s
@@ -1777,9 +1763,7 @@ class GVS(SoftRobot):
             Jd_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, Jd_tip + Td_g_joint_B_joint_i
             )
-            eta_j = Ad_g_joint_inv @ (
-                eta_tip + T_g_joint @ B_joint_i @ qd_joint_i
-            )
+            eta_j = Ad_g_joint_inv @ (eta_tip + T_g_joint @ B_joint_i @ qd_joint_i)
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
@@ -1826,18 +1810,20 @@ class GVS(SoftRobot):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 Magnusd_j = B_Magnus_j @ qd_i
 
                 Magnusdd_dq_j = (
-                    ((jnp.sqrt(3) * (length_i ** 2) * H**2) / 6) * lie.adjoint_se3(xid_Z1_j) @ B_Z2_j
+                    ((jnp.sqrt(3) * (length_i**2) * H**2) / 6)
+                    * lie.adjoint_se3(xid_Z1_j)
+                    @ B_Z2_j
                 )
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)  # shape (4, 4)
@@ -1886,9 +1872,7 @@ class GVS(SoftRobot):
             # (g_tip_link, Jd_tip_link, eta_tip_link) = carry
             # Jd_link = jnp.array(Jd_link)
 
-            Jd_link = jnp.concatenate(
-                (jnp.expand_dims(Jd_j, axis=0), Jd_link), axis=0
-            )
+            Jd_link = jnp.concatenate((jnp.expand_dims(Jd_j, axis=0), Jd_link), axis=0)
             return (g_tip_link, Jd_tip_link, eta_tip_link), Jd_link
 
         indices_link = jnp.arange(0, self.num_segments)
@@ -1984,9 +1968,7 @@ class GVS(SoftRobot):
             Jd_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, Jd_tip + Td_g_joint_B_joint_i
             )
-            eta_j = Ad_g_joint_inv @ (
-                eta_tip + T_g_joint @ B_joint_i @ qd_joint_i
-            )
+            eta_j = Ad_g_joint_inv @ (eta_tip + T_g_joint @ B_joint_i @ qd_joint_i)
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # (max_nip,)
@@ -2028,18 +2010,18 @@ class GVS(SoftRobot):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2)
 
-                Magnus_j = length_i * (H / 2) * (xi_Z1 + xi_Z2) + (jnp.sqrt(3) * (length_i ** 2) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1 + xi_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2)
 
                 B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
-                    jnp.sqrt(3)* (length_i ** 2) * H**2 / 12
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
                 ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 Magnusd_j = B_Magnus_j @ qd_i
 
                 Magnusdd_dq = (
-                    ((jnp.sqrt(3) * (length_i ** 2) * H**2) / 6)
+                    ((jnp.sqrt(3) * (length_i**2) * H**2) / 6)
                     * lie.adjoint_se3(xid_Z1)
                     @ B_Z2_j
                 )
@@ -2139,15 +2121,17 @@ class GVS(SoftRobot):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2)
 
-                Magnus_p = length_i * (Hp / 2) * (xi_Z1 + xi_Z2) + (jnp.sqrt(3) * (length_i ** 2) * Hp * Hp / 12) * (
-                    ad_xi_Z1_j @ xi_Z2
-                )
+                Magnus_p = length_i * (Hp / 2) * (xi_Z1 + xi_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
+                ) * (ad_xi_Z1_j @ xi_Z2)
                 B_Magnus_p = length_i * (Hp / 2) * (Bp_Z1 + Bp_Z2) + (
-                    jnp.sqrt(3) * (length_i ** 2) * Hp * Hp / 12
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
                 ) * (ad_xi_Z1_j @ Bp_Z2 - ad_xi_Z2_j @ Bp_Z1)
                 Magnusd_p = B_Magnus_p @ qd_i
                 Magnusdd_dq_p = (
-                    ((jnp.sqrt(3) * (length_i ** 2) * Hp * Hp) / 6) * lie.adjoint_se3(xid_Z1) @ Bp_Z2
+                    ((jnp.sqrt(3) * (length_i**2) * Hp * Hp) / 6)
+                    * lie.adjoint_se3(xid_Z1)
+                    @ Bp_Z2
                 )
 
                 g_step = lie.exp_gn_SE3(Magnus_p, self.global_eps)
@@ -2590,13 +2574,12 @@ class GVS(SoftRobot):
                 Ws_j = Ws_i[i_eval]
                 Es_j = Es_i[i_eval]  # (6, 6)
                 B_Xs_j = B_Xs_i[i_eval]  # (6, max_dof)
-                
 
                 if self.scale_rotational_strain_basis:
                     B_Xs_j = B_Xs_j.at[:3, :].divide(length_i)
 
                 return Ws_j * (B_Xs_j.T @ Es_j @ B_Xs_j)
-            
+
             # we can skip the first and last quadrature points since their weight is zero
             K_link_i = (
                 jnp.sum(vmap(K_eval_points)(jnp.arange(1, self.max_nip - 1)), axis=0)

@@ -1,5 +1,6 @@
 __all__ = ["TendonActuatedGVS"]
 from collections.abc import Callable
+from typing import Any
 
 import equinox as eqx
 from jax import Array, vmap
@@ -21,44 +22,25 @@ class TendonActuatedGVS(GVS):
       for robots with arbitrary combinations of link cross-sections, joint types, and
       strain basis functions. Additionally, it includes tendon actuation capabilities.
 
-    Attributes
-      ----------
-      num_segments : int
-          Number of segments (links) in the robot.
-      max_dof : int
-          Maximum number of degrees of freedom (DOFs) per link or joint.
-      max_nGauss : int
-          Maximum number of Gauss points per link used for integration.
-      max_nip : int
-          Maximum number of integration points per link (= max_nGauss + 2).
-      dof_tot_system : int
-          Total number of DOFs for the robot (sum of joint + link DOFs).
-      dof_tot_max : int
-          Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
-      B_select : Array
-          Strain basis selection matrix mapping active DOFs to the full strain space.
-      V_L, V_L_cum : Array
-          Length of each link, and cumulative link lengths.
-      V_nip : Array
-          Number of integration/evaluation points for each link.
-      V_dof : Array
-          Number of DOFs for each link/joint pair (shape: num_segments x 2).
-      V_Xs, V_Ws : Array
-          Gauss quadrature nodes and weights for each link.
-      V_Ms, V_Es, V_Gs : Array
-          Mass, stiffness, and damping matrices at integration points.
-      V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2 : Array
-          Basis matrices for joints and links at quadrature points and intermediate points.
-      V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2 : Array
-          Reference strain vectors for joints and links.
-      V_K_joint : Array
-          Joint stiffness matrices.
-      g : Array
-          Gravitational acceleration vector in 6D wrench form.
-      V_basistype_idx : Array
-          Index of the strain basis type used for each segment.
-      V_Bdof_params, V_Bodr_params : Array
-          Parameters controlling the strain basis DOFs and orders.
+    Attributes:
+        num_segments: Number of segments (links) in the robot.
+        max_dof: Maximum number of degrees of freedom (DOFs) per link or joint.
+        max_nGauss: Maximum number of Gauss points per link used for integration.
+        max_nip: Maximum number of integration points per link (= max_nGauss + 2).
+        dof_tot_system: Total number of DOFs for the robot (sum of joint + link DOFs).
+        dof_tot_max: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
+        B_select: Strain basis selection matrix mapping active DOFs to the full strain space.
+        V_L, V_L_cum: Length of each link, and cumulative link lengths.
+        V_nip: Number of integration/evaluation points for each link.
+        V_dof: Number of DOFs for each link/joint pair (shape: num_segments x 2).
+        V_Xs, V_Ws: Gauss quadrature nodes and weights for each link.
+        V_Ms, V_Es, V_Gs: Mass, stiffness, and damping matrices at integration points.
+        V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2: Basis matrices for joints and links at quadrature points and intermediate points.
+        V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2: Reference strain vectors for joints and links.
+        V_K_joint: Joint stiffness matrices.
+        g: Gravitational acceleration vector in 6D wrench form.
+        V_basistype_idx: Index of the strain basis type used for each segment.
+        V_Bdof_params, V_Bodr_params: Parameters controlling the strain basis DOFs and orders.
 
       Notes
       -----
@@ -84,79 +66,35 @@ class TendonActuatedGVS(GVS):
         *args,
         tendon_routing_basis: dict[str, Callable] | None = None,
         tendon_routing_params: dict[str, Array],
-        **kwargs,
+        **kwargs: Any,
     ):
         """
         Initialize the TendonActuatedGVS class.
 
         Args:
-        ----
-        links_list : List[LinkAttributes]
-            List of link property objects (one per segment) containing geometric and
-            material attributes:
-            - cross_section_geometry: CrossSectionGeometry value.
-            - E: Young's modulus [N/m²].
-            - nu: Poisson's ratio [-1, 0.5].
-            - rho: Density [kg/m³].
-            - eta: Material damping [N·s/m].
-            - L: Length of the link [m].
-            - One of the following geometric parameters must be provided based on the section type:
-                - r_i, r_f: Initial and final radius for circular sections.
-                - h_i, h_f: Initial and final height for rectangular sections.
-                - w_i, w_f: Initial and final width for rectangular sections.
-                - a_i, a_f: Initial and final semi-major axis for elliptical sections.
-                - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
-        joints_list : List[JointAttributes]
-            List of joint property objects (one per segment) describing the connection
-            between segments :
-            - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
-                'Planar', 'Spherical', 'Free', 'Fixed').
-            - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
-            - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
-            - pitch: Pitch for helical joints.
-            - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
-              must have shape (dof_joint, dof_joint); otherwise it is ignored and a
-              zero matrix is used. Units match the active DOFs: rotational terms
-              [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
-        basis_list : List[BasisAttributes]
-            List of strain basis attributes (one per segment) defining the parametrization
-            of the variable strain field along the link:
-            - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
-            - Bdof: Array indicating which types of deformation are selected (1) or not (0).
-                e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
-            - Bodr: Array indicating the orders of the basis functions for each type of deformation.
-            - xi_ref: Reference strain values for each type of deformation.
-        n_gauss_list : List[int]
-            Number of Gauss-Legendre quadrature points for integration in each segment.
-        gravity_vector : List[float]
-            3-element gravity vector [gx, gy, gz] in m/s².
-        max_dof : int, optional
-            Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
-        max_nGauss : int, optional
-            Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-        tendon_routing_basis (Optional[Dict[str, Callable]]):
-            Dictionary with the tendon routing functions. If None, a linear routing is used.
-            Expected keys and signatures:
-            - "d_s": Callable[[Dict[str, Array], Array], Array]
-                Returns the 3D vector [d_x, d_y, d_z] giving the tendon position
-                with respect to the local cross-section at abscissa s. For typical routing,
-                d_x = 0 as the offset lies in the cross-sectional plane.
-            - "dd_s_ds": Callable[[Dict[str, Array], Array], Array]
-                Returns the derivative over s of d_s.
-        tendon_routing_params (Dict[str, Array]):
-            Dictionary describing the tendon routing parameters for each actuator (length n_actuators).
-            When using the default linear routing, the following keys are expected:
-            - "ry": Array (n_actuators,)
-                y-intercept of the tendon line at the base [m].
-            - "my": Array (n_actuators,)
-                Slope in the x–y plane [-].
-            - "rz": Array (n_actuators,)
-                z-intercept of the tendon line at the base [m].
-            - "mz": Array (n_actuators,)
-                Slope in the x–z plane [-].
-            - "idx_seg_att": Array (n_actuators,)
-                Attachment segment index for each tendon (0-based, inclusive). The tendon contributes
-                along the backbone up to and including this segment’s distal end.
+            tendon_routing_basis (Optional[Dict[str, Callable]]):
+                Dictionary with the tendon routing functions. If None, a linear routing is used.
+                Expected keys and signatures:
+                - "d_s": Callable[[Dict[str, Array], Array], Array]
+                    Returns the 3D vector [d_x, d_y, d_z] giving the tendon position
+                    with respect to the local cross-section at abscissa s. For typical routing,
+                    d_x = 0 as the offset lies in the cross-sectional plane.
+                - "dd_s_ds": Callable[[Dict[str, Array], Array], Array]
+                    Returns the derivative over s of d_s.
+            tendon_routing_params (Dict[str, Array]):
+                Dictionary describing the tendon routing parameters for each actuator (length n_actuators).
+                When using the default linear routing, the following keys are expected:
+                - "ry": Array (n_actuators,)
+                    y-intercept of the tendon line at the base [m].
+                - "my": Array (n_actuators,)
+                    Slope in the x–y plane [-].
+                - "rz": Array (n_actuators,)
+                    z-intercept of the tendon line at the base [m].
+                - "mz": Array (n_actuators,)
+                    Slope in the x–z plane [-].
+                - "idx_seg_att": Array (n_actuators,)
+                    Attachment segment index for each tendon (0-based, inclusive). The tendon contributes
+                    along the backbone up to and including this segment’s distal end.
         """
 
         super().__init__(
