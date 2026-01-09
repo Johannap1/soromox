@@ -1,9 +1,8 @@
-__all__ = ["Pendulum", "normalize_joint_angles"]
+__all__ = ["Pendulum"]
 
 
 import equinox as eqx
-import numpy as onp
-from jax import Array, jit, vmap
+from jax import Array, vmap
 from jax import numpy as jnp
 
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
@@ -967,12 +966,12 @@ class Pendulum(SoftRobot):
             q (Array): Joint angles, shape (N,) [rad]
 
         Returns:
-            U_G (Array): Gravitational potential energy [J] (scalar)
+            U_g (Array): Gravitational potential energy [J] (scalar)
         """
         p_coms = self._com_positions(q)  # (n, 2)
         # U_G = -Σ_i m_i * g^T @ p_com_i
-        U_G = -jnp.sum(self.m * jnp.dot(p_coms, self.g))
-        return U_G
+        U_g = -jnp.sum(self.m * jnp.dot(p_coms, self.g))
+        return U_g
 
     @eqx.filter_jit
     def elastic_energy(self, q: Array) -> Array:
@@ -980,88 +979,14 @@ class Pendulum(SoftRobot):
         Compute the elastic potential energy stored in joint springs.
 
         The elastic energy is computed as:
-        U_K = 0.5 * q^T @ K @ q
+        U_k = 0.5 * q^T @ K @ q
         where K is the joint stiffness matrix.
 
         Args:
             q (Array): Joint angles, shape (N,) [rad]
 
         Returns:
-            U_K (Array): Elastic potential energy [J] (scalar)
+            U_k (Array): Elastic potential energy [J] (scalar)
         """
-        U_K = 0.5 * (q - self.q_ref_k).T @ self.stiffness_matrix() @ (q - self.q_ref_k)
-        return U_K
-
-    # --------------------------
-    # Operational space dynamics
-    # --------------------------
-    @eqx.filter_jit
-    def operational_space_dynamical_matrices(
-        self,
-        q: Array,
-        qd: Array,
-        link_idx: Array,
-        operational_space_selector: tuple = (True, True, True),
-    ) -> tuple[Array, Array, Array, Array, Array]:
-        """
-        Compute the operational space dynamical matrices for the tip of the specified link.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            link_idx (Array): index of the link to compute the operational space dynamics for.
-            operational_space_selector (Tuple): Selector for the operational space dimensions.
-                Default is (True, True, True) for all dimensions.
-
-        Returns:
-            Lambda (Array): Inertia matrix in the operational space, shape (num_operational_space_dims, num_operational_space_dims).
-            mu (Array): Coriolis and centrifugal matrix in the operational space, shape (num_operational_space_dims,).
-            J (Array): Jacobian of the forward kinematics at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
-            Jd (Array): Time-derivative of the Jacobian at point s in the body frame, shape (num_operational_space_dims, num_active_strains).
-            JB_pinv (Array): Dynamically-consistent pseudo-inverse of the Jacobian, shape (num_active_strains, num_operational_space_dims).
-        """
-        # make operational_space_selector a boolean array
-        operational_space_selector = onp.array(operational_space_selector, dtype=bool)
-
-        # Jacobian and its time-derivative
-        J_tips, Jd_tips = self.jacobians_and_derivatives_tips(q, qd)
-
-        # select the appropiate link
-        J = J_tips[link_idx]
-        Jd = Jd_tips[link_idx]
-
-        J = J[operational_space_selector, :]
-        Jd = Jd[operational_space_selector, :]
-
-        # inverse of the inertia matrix in the configuration space
-        B = self.inertia_matrix(q)
-        B_inv = jnp.linalg.inv(B)
-        C = self.coriolis_matrix(q, qd)
-
-        Lambda = jnp.linalg.inv(
-            J @ B_inv @ J.T
-        )  # inertia matrix in the operational space
-        mu = Lambda @ (
-            J @ B_inv @ C - Jd
-        )  # coriolis and centrifugal matrix in the operational space
-
-        JB_pinv = (
-            B_inv @ J.T @ Lambda
-        )  # dynamically-consistent pseudo-inverse of the Jacobian
-
-        return Lambda, mu, J, Jd, JB_pinv
-
-
-@jit
-def normalize_joint_angles(q: Array) -> Array:
-    """
-    Normalize joint angles to the interval [-pi, pi].
-
-    Args:
-        q (Array): Joint angles.
-
-    Returns:
-        q_norm (Array): Normalized joint angles.
-    """
-    q_norm = jnp.mod(q + jnp.pi, 2 * jnp.pi) - jnp.pi
-    return q_norm
+        U_k = 0.5 * (q - self.q_ref_k).T @ self.stiffness_matrix() @ (q - self.q_ref_k)
+        return U_k

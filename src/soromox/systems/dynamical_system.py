@@ -1,5 +1,6 @@
 __all__ = ["DynamicalSystem"]
 import warnings
+from abc import abstractmethod
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +26,27 @@ from soromox.systems.system_state import SystemState
 class DynamicalSystem(eqx.Module):
     num_dofs: int = eqx.field(static=True)  # Number of degrees of freedom
     num_actuators: int = eqx.field(static=True)  # Number of actuators
+
+    @abstractmethod
+    def forward_dynamics(
+        self, t: Array, y: Array, actuation_args: tuple | None = None
+    ) -> Array:
+        """
+        Compute the forward dynamics of the system.
+
+        This method computes the state derivative yd = [qd, qdd] given the
+        current time, state, and actuation inputs.
+
+        Args:
+            t (Array): Current time.
+            y (Array): State vector containing configuration and velocity.
+            actuation_args (Optional[Tuple]): Tuple of actuation inputs, typically (u, tau_ext) where
+                u is the control input and tau_ext is the external force/torque.
+
+        Returns:
+            yd (Array): State derivative yd with the same shape as y.
+        """
+        ...
 
     @staticmethod
     def _compute_save_times(

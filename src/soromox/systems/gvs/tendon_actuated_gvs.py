@@ -2,12 +2,11 @@ __all__ = ["TendonActuatedGVS"]
 from collections.abc import Callable
 
 import equinox as eqx
-from jax import Array, lax, vmap
+from jax import Array, vmap
 from jax import numpy as jnp
 
 import soromox.actuation.tendon_actuation as act
 import soromox.utils.lie_algebra as lie
-from soromox.utils.integration import scale_gaussian_quadrature
 
 from .core import GVS
 
@@ -261,18 +260,18 @@ class TendonActuatedGVS(GVS):
         length_i = self.V_L[i]
         if self.scale_rotational_strain_basis:
             B_Xs_j = B_Xs_j.at[:3, :].divide(length_i)
-      
+
         xi_ref_j = self.V_xi_ref_Xs[i, j]
-        xi_j = B_Xs_j @ q_i + xi_ref_j # (6,)
+        xi_j = B_Xs_j @ q_i + xi_ref_j  # (6,)
 
-        d_s = jnp.append(self.d_s(single_tendon_routing_params, s), 1.0)  
-        dd_s = jnp.append(self.dd_s_ds(single_tendon_routing_params, s), 1.0)  
+        d_s = jnp.append(self.d_s(single_tendon_routing_params, s), 1.0)
+        dd_s = jnp.append(self.dd_s_ds(single_tendon_routing_params, s), 1.0)
 
-        term = (dd_s + lie.hat_SE3(xi_j) @ d_s)[:-1]  
-        norm = jnp.linalg.norm(term) 
-        t = term / norm 
+        term = (dd_s + lie.hat_SE3(xi_j) @ d_s)[:-1]
+        norm = jnp.linalg.norm(term)
+        t = term / norm
 
-        return cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])  
+        return cond * jnp.hstack([lie.tilde_SE3(d_s[:-1]) @ t, t])
 
     @eqx.filter_jit
     def _local_actuation_basis(self, q_i: Array, s: Array, i: Array, j: Array) -> Array:
@@ -341,16 +340,14 @@ class TendonActuatedGVS(GVS):
 
                 Phi_a_j = self._local_actuation_basis(q_i, Xs_j * length_i, i, j)
 
-                A_j = B_Xs_j.T @ Phi_a_j 
+                A_j = B_Xs_j.T @ Phi_a_j
 
                 return Ws_j * A_j
 
             # Vectorize the actuation matrix computation for all gaussian points
             A_link_i = (
-                jnp.sum(
-                   vmap(A_point_j)(jnp.arange(1, self.max_nip - 1)),
-                    axis=0
-                ) * length_i
+                jnp.sum(vmap(A_point_j)(jnp.arange(1, self.max_nip - 1)), axis=0)
+                * length_i
             )
 
             # # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
@@ -358,8 +355,8 @@ class TendonActuatedGVS(GVS):
             # print('A_blocks_i =\n', A_blocks_i.shape)
 
             # return A_i # (max_dof, num_actuators)
-            return  jnp.stack([A_joint_i, A_link_i], axis=0)
-        
+            return jnp.stack([A_joint_i, A_link_i], axis=0)
+
         # Vectorize the actuation matrix computation for all segments
         A_blocks = vmap(A_segment_i)(
             jnp.arange(self.num_segments)
@@ -368,17 +365,15 @@ class TendonActuatedGVS(GVS):
         # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
         # A_blocks_tot = jnp.stack([A_segment_i(i) for i in range(self.num_segments)], axis=0)
         # print('A_blocks_tot =\n', A_blocks_tot.shape)
-      
-        A_blocks_flat = A_blocks.reshape(
-            -1, self.max_dof, self.num_actuators
-        )
+
+        A_blocks_flat = A_blocks.reshape(-1, self.max_dof, self.num_actuators)
 
         A_full = A_blocks_flat.reshape(
             -1, self.num_actuators
         )  # (num_segments*2*max_dof, num_actuators)
 
         A = self.B_select.T @ A_full  # Map to active strains only
-      
+
         # print('Actuation matrix A =\n', A) # debug
         return A
 
@@ -461,7 +456,6 @@ class TendonActuatedGVS(GVS):
             B_Xs_i = self.V_B_Xs[i]  # (max_nip, 6, max_dof)
             q_i = q_gathered[i, 1]
 
-
             def tendon_length_density_point_j(j: Array):
                 """
                 Evaluate the tendon length density at the Gauss point j inside segment i.
@@ -505,7 +499,7 @@ class TendonActuatedGVS(GVS):
                     )  # (6,)
 
                     xi_ref_j = self.V_xi_ref_Xs[i, j]
-                    xi_j = B_Xs_j @ q_i + xi_ref_j # (6,)
+                    xi_j = B_Xs_j @ q_i + xi_ref_j  # (6,)
 
                     # compute tendon length density contribution
                     dl_ds_k = jnp.dot(
@@ -537,3 +531,5 @@ class TendonActuatedGVS(GVS):
         l = jnp.sum(dl_ds_blocks, axis=(0, 1))  # Sum over the segments and Gauss points
 
         return l
+
+    actuated_coordinates = tendon_length  # Alias for actuation space dynamics
