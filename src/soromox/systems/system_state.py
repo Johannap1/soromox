@@ -1,6 +1,6 @@
 __all__ = ["SystemState"]
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import jax
 from jax import Array
@@ -12,22 +12,17 @@ class SystemState:
     """
     Container for the system state and optional controller state.
 
-    Attributes
-    ----------
-    t : Array
-        Current simulation time.
-    y : Array
-        Robot state vector, typically concatenated configuration and velocity.
-    u : Optional[Array]
-        Actuation input applied at the current time.
-    control_state : Optional[Any]
-        Additional controller state as a PyTree (e.g., integrator terms).
+    Attributes:
+        t: Current simulation time.
+        y: Robot state vector, typically concatenated configuration and velocity.
+        u: Actuation input applied at the current time.
+        control_state: Additional controller state as a PyTree (e.g., integrator terms).
     """
 
     t: Array
     y: Array
-    u: Optional[Array] = None
-    control_state: Optional[Any] = None
+    u: Array | None = None
+    control_state: Any | None = None
 
     def tree_flatten(self):
         children = [self.t, self.y]

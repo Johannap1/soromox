@@ -1,15 +1,14 @@
 __all__ = ["GVS"]
+import math
+import warnings
+from typing import Any, cast
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import vmap, lax, Array
-import math
-from typing import Callable, ClassVar, List, Optional, Tuple
-from typing import cast
-import warnings
+from jax import Array, lax, vmap
 
-
-from soromox.systems.dynamical_system import DynamicalSystem
+import soromox.utils.lie_algebra as lie
 from soromox.systems.gvs.attributes import (
     BasisAttributes,
     JointAttributes,
@@ -17,33 +16,33 @@ from soromox.systems.gvs.attributes import (
 )
 from soromox.systems.gvs.data_classes import SegmentData
 from soromox.systems.gvs.joint_bases import (
+    B_Cylindrical,
     B_Fixed,
     B_Free,
-    B_Spherical,
-    B_Planar,
-    B_Cylindrical,
     B_Helical,
+    B_Planar,
     B_Prismatic,
     B_Revolute,
+    B_Spherical,
 )
 from soromox.systems.gvs.operands import GeometricOperand, JointOperand
 from soromox.systems.gvs.primitives import Basis, Joint, Link
 from soromox.systems.gvs.strain_bases import (
-    B_Monomial,
-    B_LegendrePolynomial,
+    B_IMQ,
     B_Chebychev,
     B_Fourier,
     B_Gaussian,
-    B_IMQ,
+    B_LegendrePolynomial,
+    B_Monomial,
 )
+from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.basic import compute_strain_basis
 from soromox.utils.integration import gauss_quadrature
-import soromox.utils.lie_algebra as lie
 
 
-class GVS(DynamicalSystem):
+class GVS(SoftRobot):
     """
-    Generalized Variable Strain (GVS) model for 3D soft continuum robots.
+    Geometric Variable Strain (GVS) model for 3D soft continuum robots.
 
     This class implements the geometric and dynamic modeling of a 3D soft robot
     using the Cosserat rod theory with generalized variable strain parametrizations.
@@ -51,46 +50,27 @@ class GVS(DynamicalSystem):
     for robots with arbitrary combinations of link cross-sections, joint types, and
     strain basis functions.
 
-    Attributes
-    ----------
-    num_segments : int
-        Number of segments (links) in the robot.
-    max_dof : int
-        Maximum number of degrees of freedom (DOFs) per link or joint.
-    max_nGauss : int
-        Maximum number of Gauss points per link used for integration.
-    max_nip : int
-        Maximum number of integration points per link (= max_nGauss + 2).
-    dof_tot_system : int
-        Total number of DOFs for the robot (sum of joint + link DOFs).
-    dof_tot_max : int
-        Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
-    B_select : Array
-        Strain basis selection matrix mapping active DOFs to the full strain space.
-    V_L, V_L_cum : Array
-        Length of each link, and cumulative link lengths.
-    V_nip : Array
-        Number of integration/evaluation points for each link.
-    V_dof : Array
-        Number of DOFs for each link/joint pair (shape: num_segments x 2).
-    V_Xs, V_Ws : Array
-        Gauss quadrature nodes and weights for each link.
-    V_Ms, V_Es, V_Gs : Array
-        Mass, stiffness, and damping matrices at integration points.
-    V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2 : Array
-        Basis matrices for joints and links at quadrature points and intermediate points.
-    V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2 : Array
-        Reference strain vectors for joints and links.
-    V_K_joint : Array
-        Joint stiffness matrices.
-    g : Array
-        Gravitational acceleration vector in 6D wrench form.
-    V_basistype_idx : Array
-        Index of the strain basis type used for each segment.
-    V_Bdof_params, V_Bodr_params : Array
-        Parameters controlling the strain basis DOFs and orders.
-    g0 : Array
-        Initial pose of the robot base as an SE(3) transformation matrix.
+    Attributes:
+        num_segments: Number of segments (links) in the robot.
+        max_dof: Maximum number of degrees of freedom (DOFs) per link or joint.
+        max_nGauss: Maximum number of Gauss points per link used for integration.
+        max_nip: Maximum number of integration points per link (= max_nGauss + 2).
+        dof_tot_system: Total number of DOFs for the robot (sum of joint + link DOFs).
+        dof_tot_max: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
+        B_select: Strain basis selection matrix mapping active DOFs to the full strain space.
+        V_L, V_L_cum: Length of each link, and cumulative link lengths.
+        V_nip: Number of integration/evaluation points for each link.
+        V_dof: Number of DOFs for each link/joint pair (shape: num_segments x 2).
+        V_Xs, V_Ws: Gauss quadrature nodes and weights for each link.
+        V_Ms, V_Es, V_Gs: Mass, stiffness, and damping matrices at integration points.
+        V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2: Basis matrices for joints and links at quadrature points and intermediate points.
+        V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2: Reference strain vectors for joints and links.
+        V_K_joint: Joint stiffness matrices.
+        g: Gravitational acceleration vector in 6D wrench form.
+        V_basistype_idx: Index of the strain basis type used for each segment.
+        V_Bdof_params, V_Bodr_params: Parameters controlling the strain basis DOFs and orders.
+        g0: Initial pose of the robot base as an SE(3) transformation matrix.
+        scale_rotational_strain_basis: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
     Notes
     -----
     - The GVS model generalizes PCS by allowing the strain distribution in each segment
@@ -104,10 +84,19 @@ class GVS(DynamicalSystem):
       rectangular, and elliptical shapes.
 
     References:
-    ----------
-    - Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020). A geometric variable-strain approach for static modeling of soft manipulators with tendon and fluidic actuation. IEEE Robotics and Automation Letters, 5(3), 4006-4013.
-    - Boyer, F., Lebastard, V., Candelier, F., & Renda, F. (2020). Dynamics of continuum and soft robots: A strain parameterization based approach. IEEE Transactions on Robotics, 37(3), 847-863.
-    - Mathew, A. T., Feliu-Talegon, D., Alkayas, A. Y., Boyer, F., & Renda, F. (2025). Reduced order modeling of hybrid soft-rigid robots using global, local, and state-dependent strain parameterization. The International Journal of Robotics Research, 44(1), 129-154.
+        Renda, F., Armanini, C., Lebastard, V., Candelier, F., & Boyer, F. (2020).
+        A geometric variable-strain approach for static modeling of soft manipulators
+        with tendon and fluidic actuation. IEEE Robotics and Automation Letters,
+        5(3), 4006-4013.
+
+        Boyer, F., Lebastard, V., Candelier, F., & Renda, F. (2020). Dynamics of
+        continuum and soft robots: A strain parameterization based approach. IEEE
+        Transactions on Robotics, 37(3), 847-863.
+
+        Mathew, A. T., Feliu-Talegon, D., Alkayas, A. Y., Boyer, F., & Renda, F.
+        (2025). Reduced order modeling of hybrid soft-rigid robots using global,
+        local, and state-dependent strain parameterization. The International
+        Journal of Robotics Research, 44(1), 129-154.
     """
 
     # Static attributes
@@ -134,8 +123,6 @@ class GVS(DynamicalSystem):
 
     B_select: Array  # Strain basis functions for the robot (6, max_dof)
 
-    global_eps: ClassVar[float] = float(jnp.finfo(jnp.float64).eps)
-
     # Dynamic attributes
     V_L: Array  # List of lengths for each link (num_segments, )
     V_L_cum: Array  # Cumulative lengths of the links (num_segments + 1, )
@@ -161,74 +148,88 @@ class GVS(DynamicalSystem):
     g: Array  # Gravity vector (6,)
     p0: Array
     g0: Array
+    scale_rotational_strain_basis: (
+        bool  # If True, apply length scaling to angular strain contributions
+    )
 
     # Addition to compute forward kinematics at s
     V_basistype_idx: Array  # Index of the basis type for each segment (num_segments,)
     V_Bdof_params: Array  # Parameters for the basis DOFs (num_segments, max_dof)
     V_Bodr_params: Array  # Parameters for the basis orientation (num_segments, max_dof)
+    V_cross_section_geometry: Array  # CrossSectionGeometry index for each segment
+    V_r_params: Array  # Circular params (num_segments, 2)
+    V_h_params: Array  # Rectangular height params (num_segments, 2)
+    V_w_params: Array  # Rectangular width params (num_segments, 2)
+    V_a_params: Array  # Elliptical semi-major params (num_segments, 2)
+    V_b_params: Array  # Elliptical semi-minor params (num_segments, 2)
 
     def __init__(
         self,
-        links_list: List[LinkAttributes,],
-        joints_list: List[JointAttributes,],
-        basis_list: List[BasisAttributes,],
-        n_gauss_list: List[int],
-        gravity_vector: List[float],
-        max_dof: Optional[int] = None,
-        max_nGauss: Optional[int] = None,
-        p0: Optional[Array] = None,
+        links_list: list[LinkAttributes,],
+        joints_list: list[JointAttributes,],
+        basis_list: list[BasisAttributes,],
+        n_gauss_list: list[int],
+        gravity_vector: list[float],
+        max_dof: int | None = None,
+        max_nGauss: int | None = None,
+        p0: Array | None = None,
+        scale_rotational_strain_basis: bool | None = False,
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the GVS class.
 
-        Args
-        ----
-        links_list : List[LinkAttributes]
-            List of link property objects (one per segment) containing geometric and
-            material attributes:
-            - section: Type of cross-section ('Circular', 'Rectangular', 'Elliptical').
-            - E: Young's modulus [N/m²].
-            - nu: Poisson's ratio [-1, 0.5].
-            - rho: Density [kg/m³].
-            - eta: Material damping [N·s/m].
-            - L: Length of the link [m].
-            - One of the following geometric parameters must be provided based on the section type:
-                - r_i, r_f: Initial and final radius for circular sections.
-                - h_i, h_f: Initial and final height for rectangular sections.
-                - w_i, w_f: Initial and final width for rectangular sections.
-                - a_i, a_f: Initial and final semi-major axis for elliptical sections.
-                - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
-        joints_list : List[JointAttributes]
-            List of joint property objects (one per segment) describing the connection
-            between segments :
-            - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
-                'Planar', 'Spherical', 'Free', 'Fixed').
-            - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
-            - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
-            - pitch: Pitch for helical joints.
-            - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
-              must have shape (dof_joint, dof_joint); otherwise it is ignored and a
-              zero matrix is used. Units match the active DOFs: rotational terms
-              [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
-        basis_list : List[BasisAttributes]
-            List of strain basis attributes (one per segment) defining the parametrization
-            of the variable strain field along the link:
-            - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
-            - Bdof: Array indicating which types of deformation are selected (1) or not (0).
-                e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
-            - Bodr: Array indicating the orders of the basis functions for each type of deformation.
-            - xi_ref: Reference strain values for each type of deformation.
-        n_gauss_list : List[int]
-            Number of Gauss-Legendre quadrature points for integration in each segment.
-        gravity_vector : List[float]
-            3-element gravity vector [gx, gy, gz] in m/s².
-        max_dof : int, optional
-            Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
-        max_nGauss : int, optional
-            Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-        p0: (optional) List/Array of shape (6,)
-                Initial orientation angle and position in the inertial frame [rad, m]
-                [ψ, θ, φ, x0, y0, z0]
+        Args:
+            links_list (List[LinkAttributes]):
+                List of link property objects (one per segment) containing geometric and
+                material attributes:
+                - cross_section_geometry: CrossSectionGeometry value.
+                - E: Young's modulus [N/m²].
+                - nu: Poisson's ratio [-1, 0.5].
+                - rho: Density [kg/m³].
+                - eta: Material damping [N·s/m].
+                - L: Length of the link [m].
+                - One of the following geometric parameters must be provided based on the section type:
+                    - r_i, r_f: Initial and final radius for circular sections.
+                    - h_i, h_f: Initial and final height for rectangular sections.
+                    - w_i, w_f: Initial and final width for rectangular sections.
+                    - a_i, a_f: Initial and final semi-major axis for elliptical sections.
+                    - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
+            joints_list (List[JointAttributes]):
+                List of joint property objects (one per segment) describing the connection
+                between segments :
+                - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
+                    'Planar', 'Spherical', 'Free', 'Fixed').
+                - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
+                - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
+                - pitch: Pitch for helical joints.
+                - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
+                must have shape (dof_joint, dof_joint); otherwise it is ignored and a
+                zero matrix is used. Units match the active DOFs: rotational terms
+                [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
+            basis_list (List[BasisAttributes]):
+                List of strain basis attributes (one per segment) defining the parametrization
+                of the variable strain field along the link:
+                - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
+                - Bdof: Array indicating which types of deformation are selected (1) or not (0).
+                    e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
+                - Bodr: Array indicating the orders of the basis functions for each type of deformation.
+                - xi_ref: Reference strain values for each type of deformation.
+            n_gauss_list (List[int]):
+                Number of Gauss-Legendre quadrature points for integration in each segment.
+            gravity_vector (List[float]):
+                3-element gravity vector [gx, gy, gz] in m/s².
+            max_dof (int, optional):
+                Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
+            max_nGauss (int, optional):
+                Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
+            p0 (List/Array of shape (6,), optional):
+                    Initial orientation angle and position in the inertial frame [rad, m]
+                    [ψ, θ, φ, x0, y0, z0]
+            scale_rotational_strain_basis (bool, optional):
+                If True, apply length scaling to the angular component of the strain basis matrix for improved numerical stability.
+            **kwargs: Additional keyword arguments for SoftRobot.__init__.
+
         Raises
         ------
         ValueError
@@ -245,6 +246,8 @@ class GVS(DynamicalSystem):
         - Internal arrays are padded to `max_dof` and `max_nip` to allow vectorized
         batched computations across all segments.
         """
+        super().__init__(**kwargs)
+
         warnings.warn(
             "GVS is not fully validated yet and might not match the behavior of PlanarPCS and PCS."
         )
@@ -272,6 +275,8 @@ class GVS(DynamicalSystem):
             )
         self.max_nGauss = max_nGauss
         self.max_nip = max_nGauss + 2  # +2 for the boundary points
+
+        self.scale_rotational_strain_basis = scale_rotational_strain_basis
 
         dofs_joint = [Joint.DICT_JOINT_TYPE_DOF[j.jointtype] for j in joints_list]
         dofs_link = [
@@ -348,6 +353,12 @@ class GVS(DynamicalSystem):
         V_basistype_idx = jnp.empty((self.num_segments,), dtype=int)
         V_Bdof_params = jnp.empty((self.num_segments, 6))
         V_Bodr_params = jnp.empty((self.num_segments, 6))
+        V_cross_section_geometry = jnp.empty((self.num_segments,), dtype=int)
+        V_r_params = jnp.empty((self.num_segments, 2))
+        V_h_params = jnp.empty((self.num_segments, 2))
+        V_w_params = jnp.empty((self.num_segments, 2))
+        V_a_params = jnp.empty((self.num_segments, 2))
+        V_b_params = jnp.empty((self.num_segments, 2))
 
         for i_segment in range(self.num_segments):
             # Use the provided attributes from the links_list
@@ -401,6 +412,14 @@ class GVS(DynamicalSystem):
             )
             V_Bdof_params = V_Bdof_params.at[i_segment].set(basis_attrs.Bdof)
             V_Bodr_params = V_Bodr_params.at[i_segment].set(basis_attrs.Bodr)
+            V_cross_section_geometry = V_cross_section_geometry.at[i_segment].set(
+                int(link_attrs.cross_section_geometry)
+            )
+            V_r_params = V_r_params.at[i_segment].set([link_attrs.r_i, link_attrs.r_f])
+            V_h_params = V_h_params.at[i_segment].set([link_attrs.h_i, link_attrs.h_f])
+            V_w_params = V_w_params.at[i_segment].set([link_attrs.w_i, link_attrs.w_f])
+            V_a_params = V_a_params.at[i_segment].set([link_attrs.a_i, link_attrs.a_f])
+            V_b_params = V_b_params.at[i_segment].set([link_attrs.b_i, link_attrs.b_f])
 
         self.V_L = V_L
         self.V_nip = V_nip
@@ -424,6 +443,12 @@ class GVS(DynamicalSystem):
         self.V_basistype_idx = V_basistype_idx
         self.V_Bdof_params = V_Bdof_params
         self.V_Bodr_params = V_Bodr_params
+        self.V_cross_section_geometry = V_cross_section_geometry
+        self.V_r_params = V_r_params
+        self.V_h_params = V_h_params
+        self.V_w_params = V_w_params
+        self.V_a_params = V_a_params
+        self.V_b_params = V_b_params
 
         # Strain selector ========================================================
         strain_selector_full = jnp.concatenate(V_strain_selector, axis=0)
@@ -433,6 +458,7 @@ class GVS(DynamicalSystem):
         self.dof_tot_system = int(
             jnp.sum(V_dof, axis=(0, 1), dtype=int)
         )  # Total DOFs for the robot
+        self.num_dofs = self.dof_tot_system
         self.dof_tot_max = int(
             jnp.array(self.num_segments * 2 * self.max_dof, dtype=int)
         )
@@ -458,6 +484,47 @@ class GVS(DynamicalSystem):
             raise ValueError("p0 must have shape (6,) when provided")
         self.p0 = p0_arr
         self.g0 = lie.exp_SE3(p0_arr)
+
+    @property
+    def is_planar(self) -> bool:
+        """GVS is a spatial (3D) model."""
+        return False
+
+    @property
+    def length(self) -> Array:
+        """Total backbone length."""
+        return jnp.sum(self.V_L)
+
+    @property
+    def segment_length(self) -> Array:
+        """Per-segment backbone lengths."""
+        return jnp.asarray(self.V_L)
+
+    def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
+        """Cross-section geometry evaluated from stored link parameters."""
+        segment_idx, s_local = self.classify_segment(s)
+        length_i = self.V_L[segment_idx]
+        x = jnp.where(length_i > self.global_eps, s_local / length_i, 0.0)
+        cross_section_geometry_idx = self.V_cross_section_geometry[segment_idx]
+        cross_section_geometry_int = int(cross_section_geometry_idx)
+        if cross_section_geometry_int == CrossSectionGeometry.CIRCULAR:
+            params = self.V_r_params[segment_idx]
+            radius = Link.interpolate_param(x, params[0], params[1])
+            tag = jnp.asarray(CrossSectionGeometry.CIRCULAR, dtype=jnp.int32)
+            return tag, jnp.array([radius])
+        if cross_section_geometry_int == CrossSectionGeometry.RECTANGULAR:
+            h_params = self.V_h_params[segment_idx]
+            w_params = self.V_w_params[segment_idx]
+            height = Link.interpolate_param(x, h_params[0], h_params[1])
+            width = Link.interpolate_param(x, w_params[0], w_params[1])
+            tag = jnp.asarray(CrossSectionGeometry.RECTANGULAR, dtype=jnp.int32)
+            return tag, jnp.array([width, height])
+        a_params = self.V_a_params[segment_idx]
+        b_params = self.V_b_params[segment_idx]
+        a_val = Link.interpolate_param(x, a_params[0], a_params[1])
+        b_val = Link.interpolate_param(x, b_params[0], b_params[1])
+        tag = jnp.asarray(CrossSectionGeometry.ELLIPTICAL, dtype=jnp.int32)
+        return tag, jnp.array([a_val, b_val])
 
     def _build_segment_i(
         self,
@@ -554,8 +621,8 @@ class GVS(DynamicalSystem):
         )  # shape (6, max_dof)
 
         # === Link attributes
-        section = link_attrs.section
-        section_idx = Link.SECTION_MAP[section]
+        cross_section_geometry = link_attrs.cross_section_geometry
+        cross_section_geometry_idx = int(cross_section_geometry)
 
         E = jnp.asarray(link_attrs.E)
         nu = jnp.asarray(link_attrs.nu)
@@ -655,7 +722,7 @@ class GVS(DynamicalSystem):
             b_params=b_params,
         )
         Ix_p, Iy_p, Iz_p, A_p = lax.switch(
-            index=section_idx,
+            index=cross_section_geometry_idx,
             branches=Link.geometric_branches(),
             operand=geometric_operand,
         )
@@ -852,7 +919,7 @@ class GVS(DynamicalSystem):
                 Forward kinematics transformation matrices at all significant points
         """
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Array, Array]:
+        def body_segment_i(carry: Array, i_segment: Array) -> tuple[Array, Array]:
             """Propagate transforms for a segment and collect frames.
 
             Args:
@@ -901,22 +968,24 @@ class GVS(DynamicalSystem):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
-
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval]
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval]
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
+
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
 
                 xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
                 xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
-                Magnus_j = (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                Magnus_j = Magnus_j.at[3:6].multiply(length_i)
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
 
                 g_j = g_j_prev @ g_step
@@ -964,7 +1033,7 @@ class GVS(DynamicalSystem):
         return g_list
 
     @eqx.filter_jit
-    def classify_segment(self, s: Array) -> Tuple[Array, Array]:
+    def classify_segment(self, s: Array) -> tuple[Array, Array]:
         """
         Classify the point along the robot to the corresponding segment.
 
@@ -1002,7 +1071,7 @@ class GVS(DynamicalSystem):
         # Compute the point coordinate along the segment in the interval [0, l_segment]
         segment_idx, s_local = self.classify_segment(s)
 
-        def body_segment_i(carry: Array, i_segment: Array) -> Tuple[Array, Array]:
+        def body_segment_i(carry: Array, i_segment: Array) -> tuple[Array, Array]:
             """Compose joint transform and integrate the link up to `s`.
 
             Args:
@@ -1037,7 +1106,7 @@ class GVS(DynamicalSystem):
             q_i = q_gathered[i_segment, 1]
 
             # advance on complete cells if i < seg_idx
-            def full_cell(carry: Array, j: Array) -> Tuple[Array, None]:
+            def full_cell(carry: Array, j: Array) -> tuple[Array, None]:
                 """Integrate one full cell `j` of the link using Magnus.
 
                 Args:
@@ -1051,16 +1120,20 @@ class GVS(DynamicalSystem):
 
                 H = Xs_i[j + 1] - Xs_i[j]
 
-                xi_Z1_j = (B_Z1_i[j] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2_j = (B_Z2_i[j] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
+                B_Z1_j = B_Z1_i[j]
+                B_Z2_j = B_Z2_i[j]
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
+
+                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j]
+                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j]
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
-                Magnus_j = (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
-
-                Magnus_j = Magnus_j.at[3:6].multiply(length_i)
+                Magnus_j = (H / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
 
                 return g_prev @ g_step, None
@@ -1089,7 +1162,7 @@ class GVS(DynamicalSystem):
                 j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
 
                 # compose complete cells up to j-1 without dynamic-length arange
-                def full_cell_masked(carry: Array, idx: Array) -> Tuple[Array, None]:
+                def full_cell_masked(carry: Array, idx: Array) -> tuple[Array, None]:
                     """Advance a cell only if `idx < j`, keep state otherwise.
 
                     Args:
@@ -1114,20 +1187,21 @@ class GVS(DynamicalSystem):
                 )  # length-2, static
 
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2, 6, max_dof)
+                Bp_Z1 = Bp[0]
+                Bp_Z2 = Bp[1]
 
-                xi_Z1_j = (Bp[0] @ q_i) + self.V_xi_ref_Z1[i_segment][j].at[
-                    :3
-                ].multiply(length_i)
-                xi_Z2_j = (Bp[1] @ q_i) + self.V_xi_ref_Z2[i_segment][j].at[
-                    :3
-                ].multiply(length_i)
+                if self.scale_rotational_strain_basis:
+                    Bp_Z1 = Bp_Z1.at[:3, :].divide(length_i)
+                    Bp_Z2 = Bp_Z2.at[:3, :].divide(length_i)
+
+                xi_Z1_j = (Bp_Z1 @ q_i) + self.V_xi_ref_Z1[i_segment][j]
+                xi_Z2_j = (Bp_Z2 @ q_i) + self.V_xi_ref_Z2[i_segment][j]
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
-                Magnus_p = (Hp / 2) * (xi_Z1_j + xi_Z2_j) + (
-                    jnp.sqrt(3) * Hp**2 / 12
+                Magnus_p = (Hp / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp**2 / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
-                Magnus_p = Magnus_p.at[3:6].multiply(length_i)
 
                 g_p = lie.exp_gn_SE3(Magnus_p, self.global_eps)
 
@@ -1146,7 +1220,7 @@ class GVS(DynamicalSystem):
         g0 = self.g0
 
         # we scan *at least* up to segment seg_idx; for subsequent segments, we don't change a thing
-        def step(carry: Array, i: Array) -> Tuple[Array, None]:
+        def step(carry: Array, i: Array) -> tuple[Array, None]:
             """Scan over segments; freeze state after the target segment.
 
             Args:
@@ -1189,7 +1263,7 @@ class GVS(DynamicalSystem):
 
         def body_segment_i(
             carry: Array, i_segment: Array
-        ) -> Tuple[Tuple[Array, Array], Array]:
+        ) -> tuple[tuple[Array, Array], Array]:
             """Accumulate transforms/Jacobians for a segment.
 
             Args:
@@ -1199,7 +1273,7 @@ class GVS(DynamicalSystem):
 
             Returns:
                 Tuple[Tuple[Array, Array], Array]:
-                    - (g_tip_link_scaled, J_tip_link_scaled): scaled tip state with
+                    - (g_tip_link, J_tip_link): tip state with
                       shapes (4, 4) and (num_segments, 2, 6, max_dof).
                     - J_link: per-point Jacobians for this segment, shape
                       (max_nip, num_segments, 2, 6, max_dof).
@@ -1215,7 +1289,7 @@ class GVS(DynamicalSystem):
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
             T_g_joint = lie.Tangent_gi_se3(
-                xi_joint_i, 1, self.global_eps
+                xi_joint_i, 1, eps=self.tangent_eps
             )  # shape (6, 6)
 
             T_g_joint_i_B_joint_i = (
@@ -1226,10 +1300,10 @@ class GVS(DynamicalSystem):
 
             Ad_g_joint_inv = lie.Adjoint_g_inv_SE3(g_joint_i)  # shape (6, 6)
 
-            g_j_scaled = g_tip @ g_joint_i
-            J_j_scaled = jnp.einsum(
+            g_j = g_tip @ g_joint_i  # shape (4, 4)
+            J_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, (J_tip + T_g_joint_i_B_joint_i)
-            )
+            )  # shape (num_segments, 6, max_dof)
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
@@ -1239,16 +1313,11 @@ class GVS(DynamicalSystem):
             B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
 
-            g_j = g_j_scaled.at[0:3, 3].divide(length_i)  # shape (4, 4)
-            J_j = J_j_scaled.at[:, :, 3:6, :].divide(
-                length_i
-            )  # shape (num_segments, 6, max_dof)
-
             q_i = q_gathered[i_segment, 1]
 
             def body_eval_points(
                 carry: Array, j_eval: Array
-            ) -> Tuple[Tuple[Array, Array], Array]:
+            ) -> tuple[tuple[Array, Array], Array]:
                 """Advance one cell and update the Jacobian via Magnus terms.
 
                 Args:
@@ -1259,18 +1328,22 @@ class GVS(DynamicalSystem):
                 Returns:
                     Tuple[Tuple[Array, Array], Array]:
                         - (g_next, J_next): updated carry with same shapes as input.
-                        - J_next_scaled: scaled Jacobian, shape
+                        - J_next: Jacobian, shape
                           (num_segments, 2, 6, max_dof).
                 """
                 g_prev, J_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval]
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval]
 
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
+
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
 
                 xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
                 xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
@@ -1278,17 +1351,17 @@ class GVS(DynamicalSystem):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)  # shape (4, 4)
                 T_step = lie.Tangent_gi_se3(
-                    Magnus_j, 1, self.global_eps
+                    Magnus_j, 1, eps=self.tangent_eps
                 )  # shape (6, 6)
 
                 T_step_B_step = (
@@ -1304,9 +1377,7 @@ class GVS(DynamicalSystem):
                     "ij,nmjk->nmik", Ad_g_step_inv, (J_prev + T_step_B_step)
                 )  # shape (num_segments, 6, max_dof)
 
-                J_next_scaled = J_next.at[:, :, 3:6, :].multiply(length_i)
-
-                return (g_next, J_next), J_next_scaled
+                return (g_next, J_next), J_next
 
             indices_eval_points = jnp.arange(self.max_nip - 1)
 
@@ -1318,20 +1389,14 @@ class GVS(DynamicalSystem):
             # carry = (g_j, J_j)
             # J_link = []
             # for x in indices_eval_points:
-            #     (g_j, J_j), J_j_scaled_here = body_eval_points(carry, x)
+            #     (g_j, J_j), J_j_here = body_eval_points(carry, x)
             #     carry = (g_j, J_j)
-            #     J_link.append(J_j_scaled_here)
+            #     J_link.append(J_j_here)
             # (g_tip_link, J_tip_link) = carry
             # J_link = jnp.array(J_link)  # shape (max_nip - 1, num_segments, 6, max_dof)
 
-            J_link = jnp.concatenate(
-                (jnp.expand_dims(J_j_scaled, axis=0), J_link), axis=0
-            )
-
-            g_tip_link_scaled = g_tip_link.at[0:3, 3].multiply(length_i)
-            J_tip_link_scaled = J_tip_link.at[:, :, 3:6, :].multiply(length_i)
-
-            return (g_tip_link_scaled, J_tip_link_scaled), J_link
+            J_link = jnp.concatenate((jnp.expand_dims(J_j, axis=0), J_link), axis=0)
+            return (g_tip_link, J_tip_link), J_link
 
         indices_link = jnp.arange(0, self.num_segments)
 
@@ -1377,7 +1442,7 @@ class GVS(DynamicalSystem):
 
         def body_segment_i(
             carry: Array, i_segment: Array
-        ) -> Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
+        ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
             """Propagate body-frame Jacobian across a segment up to `s`.
 
             Args:
@@ -1387,7 +1452,7 @@ class GVS(DynamicalSystem):
 
             Returns:
                 Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
-                    - (g_pass, J_pass): scaled tip state to pass forward.
+                    - (g_pass, J_pass): tip state to pass forward.
                     - (g_pass, J_pass): same as scan output.
             """
             g_tip, J_tip = carry
@@ -1400,7 +1465,7 @@ class GVS(DynamicalSystem):
             xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # (4,4)
-            T_g_joint = lie.Tangent_gi_se3(xi_joint_i, 1, self.global_eps)  # (6,6)
+            T_g_joint = lie.Tangent_gi_se3(xi_joint_i, 1, eps=self.tangent_eps)  # (6,6)
 
             # contribution of this joint to its own block
             T_g_joint_i_B_joint_i = (
@@ -1412,8 +1477,9 @@ class GVS(DynamicalSystem):
             # propagate Jacobian through this joint (left-trivialized, body-frame)
             Ad_g_joint_inv = lie.Adjoint_g_inv_SE3(g_joint_i)  # shape (6, 6)
 
-            g_j_scaled = g_tip @ g_joint_i
-            J_j_scaled = jnp.einsum(
+            # Work directly in physical coordinates (consistent with FK scaling)
+            g_j = g_tip @ g_joint_i
+            J_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, (J_tip + T_g_joint_i_B_joint_i)
             )
 
@@ -1425,15 +1491,11 @@ class GVS(DynamicalSystem):
             B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1, 6, max_dof)
 
-            # scale like in _jacobian_gauss (work in normalized coordinate, then rescale)
-            g_j = g_j_scaled.at[0:3, 3].divide(length_i)
-            J_j = J_j_scaled.at[:, :, 3:6, :].divide(length_i)
-
             q_i = q_gathered[i_segment, 1]
 
             def full_cell(
                 carry: Array, j_eval: Array
-            ) -> Tuple[Tuple[Array, Array], None]:
+            ) -> tuple[tuple[Array, Array], None]:
                 """Consume a full cell; update g and J in body frame.
 
                 Args:
@@ -1451,22 +1513,26 @@ class GVS(DynamicalSystem):
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
+
+                xi_Z1_j = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval]
+                xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval]
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
-                T_step = lie.Tangent_gi_se3(Magnus_j, 1, self.global_eps)
+                T_step = lie.Tangent_gi_se3(Magnus_j, 1, eps=self.tangent_eps)
 
                 # add contribution for this link block
                 T_step_B_step = (
@@ -1485,7 +1551,7 @@ class GVS(DynamicalSystem):
                 return (g_next, J_next), None
 
             # If this segment is before the target, consume all cells.
-            def do_full_link() -> Tuple[Array, Array]:
+            def do_full_link() -> tuple[Array, Array]:
                 """Segment before target `s`: consume all its cells.
 
                 Returns:
@@ -1498,7 +1564,7 @@ class GVS(DynamicalSystem):
                 return g_end, J_end
 
             # If this segment is the one containing s, step up to the cell j-1 (masked), then do a partial cell of size Hp.
-            def do_partial_link() -> Tuple[Array, Array]:
+            def do_partial_link() -> tuple[Array, Array]:
                 """Segment containing `s`: consume up to j-1, then partial cell.
 
                 Returns:
@@ -1510,7 +1576,7 @@ class GVS(DynamicalSystem):
                 # masked full cells up to j-1
                 def full_cell_masked(
                     carry: Array, idx: Array
-                ) -> Tuple[Tuple[Array, Array], None]:
+                ) -> tuple[tuple[Array, Array], None]:
                     """Advance only while idx < j; otherwise keep state unchanged.
 
                     Args:
@@ -1537,21 +1603,28 @@ class GVS(DynamicalSystem):
 
                 Xp = jnp.array([Xs_i[j] + self.Z1 * Hp, Xs_i[j] + self.Z2 * Hp])
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2,6,max_dof)
-                xi_Z1_j = (Bp[0] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2_j = (Bp[1] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
+                Bp_Z1 = Bp[0]
+                Bp_Z2 = Bp[1]
+
+                if self.scale_rotational_strain_basis:
+                    Bp_Z1 = Bp_Z1.at[:3, :].divide(length_i)
+                    Bp_Z2 = Bp_Z2.at[:3, :].divide(length_i)
+
+                xi_Z1_j = (Bp_Z1 @ q_i) + xi_ref_Z1_i[j]
+                xi_Z2_j = (Bp_Z2 @ q_i) + xi_ref_Z2_i[j]
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_p = (Hp / 2) * (xi_Z1_j + xi_Z2_j) + (
-                    jnp.sqrt(3) * Hp * Hp / 12
+                Magnus_p = length_i * (Hp / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
-                B_Magnus_p = (Hp / 2) * (Bp[0] + Bp[1]) + (
-                    jnp.sqrt(3) * Hp * Hp / 12
-                ) * (ad_xi_Z1_j @ Bp[1] - ad_xi_Z2_j @ Bp[0])
+                B_Magnus_p = length_i * (Hp / 2) * (Bp_Z1 + Bp_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
+                ) * (ad_xi_Z1_j @ Bp_Z2 - ad_xi_Z2_j @ Bp_Z1)
 
                 g_step = lie.exp_gn_SE3(Magnus_p, self.global_eps)
-                T_step = lie.Tangent_gi_se3(Magnus_p, 1, self.global_eps)
+                T_step = lie.Tangent_gi_se3(Magnus_p, 1, eps=self.tangent_eps)
 
                 T_block = (
                     jnp.zeros((self.num_segments, 2, 6, self.max_dof))
@@ -1571,13 +1644,10 @@ class GVS(DynamicalSystem):
                 operand=None,
             )
 
-            # rescale back like in _jacobian_gauss for the state we pass forward
-            g_pass = g_out.at[0:3, 3].multiply(length_i)
-            J_pass = J_out.at[:, :, 3:6, :].multiply(length_i)
-            return (g_pass, J_pass), (g_pass, J_pass)
+            return (g_out, J_out), (g_out, J_out)
 
         # walk the chain, but freeze state after we pass the segment that contains s
-        def step(carry: Array, i: Array) -> Tuple[Tuple[Array, Array], None]:
+        def step(carry: Array, i: Array) -> tuple[tuple[Array, Array], None]:
             """Walk segments; freeze state after the one containing `s`.
 
             Args:
@@ -1607,6 +1677,23 @@ class GVS(DynamicalSystem):
         return J_local
 
     @eqx.filter_jit
+    def jacobian(self, q: Array, s: Array) -> Array:
+        """
+        Compute the Jacobian and its time derivative at a point s along the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+            s (Array): point coordinate along the robot in the interval [0, L].
+
+        Returns:
+            J (Array): Jacobian matrix of shape (6, num_dofs).
+        """
+        # TODO: Properly implement jacobian_and_derivative
+        # This should compute the Jacobian and its time derivative in the inertial frame
+        J = jnp.zeros((6, self.num_dofs))
+        return J
+
+    @eqx.filter_jit
     def _jacobian_derivative_gauss(
         self, q_gathered: Array, qd_gathered: Array
     ) -> Array:
@@ -1627,7 +1714,7 @@ class GVS(DynamicalSystem):
 
         def body_segment_i(
             carry: Array, i_segment: Array
-        ) -> Tuple[Tuple[Array, Array, Array], Array]:
+        ) -> tuple[tuple[Array, Array, Array], Array]:
             """Accumulate transforms/Jacobian derivatives for a segment.
 
             Args:
@@ -1637,7 +1724,7 @@ class GVS(DynamicalSystem):
 
             Returns:
                 Tuple[Tuple[Array, Array, Array], Array]:
-                    - (g_tip_link_scaled, Jd_tip_link_scaled, eta_tip_link_scaled)
+                    - (g_tip_link, Jd_tip_link, eta_tip_link)
                       with shapes (4, 4), (num_segments, 2, 6, max_dof), (6,).
                     - Jd_link: per-point Jdot blocks, shape
                       (max_nip, num_segments, 2, 6, max_dof).
@@ -1655,10 +1742,10 @@ class GVS(DynamicalSystem):
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
             T_g_joint = lie.Tangent_gi_se3(
-                xi_joint_i, 1, self.global_eps
+                xi_joint_i, 1, eps=self.tangent_eps
             )  # shape (6, 6)
             Td_g_joint = lie.Tangent_derivative_gi_se3(
-                xi_joint_i, xid_joint_i, 1, self.global_eps
+                xi_joint_i, xid_joint_i, 1, eps=self.tangent_eps
             )  # shape (6, 6)
 
             Td_g_joint_B_joint_i = (
@@ -1672,13 +1759,11 @@ class GVS(DynamicalSystem):
 
             Ad_g_joint_inv = lie.Adjoint_g_inv_SE3(g_joint_i)
 
-            g_j_scaled = g_tip @ g_joint_i
-            Jd_j_scaled = jnp.einsum(
+            g_j = g_tip @ g_joint_i
+            Jd_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, Jd_tip + Td_g_joint_B_joint_i
             )
-            eta_j_scaled = Ad_g_joint_inv @ (
-                eta_tip + T_g_joint @ B_joint_i @ qd_joint_i
-            )
+            eta_j = Ad_g_joint_inv @ (eta_tip + T_g_joint @ B_joint_i @ qd_joint_i)
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
@@ -1688,16 +1773,12 @@ class GVS(DynamicalSystem):
             B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
 
-            g_j = g_j_scaled.at[0:3, 3].divide(length_i)
-            Jd_j = Jd_j_scaled.at[:, :, 3:6, :].divide(length_i)
-            eta_j = eta_j_scaled.at[3:6].divide(length_i)
-
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
             def body_eval_points(
                 carry: Array, j_eval: Array
-            ) -> Tuple[Tuple[Array, Array, Array], Array]:
+            ) -> tuple[tuple[Array, Array, Array], Array]:
                 """Advance one cell; update Jdot using Magnus/Tangent terms.
 
                 Args:
@@ -1706,17 +1787,21 @@ class GVS(DynamicalSystem):
 
                 Returns:
                     Tuple[Tuple[Array, Array, Array], Array]: Updated carry and
-                    scaled Jdot block.
+                    Jdot block.
                 """
                 # g_prev, Jd_prev, eta_prev = carry
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_ref_Z1_j = xi_ref_Z1_i[j_eval].at[:3].multiply(length_i)
-                xi_ref_Z2_j = xi_ref_Z2_i[j_eval].at[:3].multiply(length_i)
+                xi_ref_Z1_j = xi_ref_Z1_i[j_eval]
+                xi_ref_Z2_j = xi_ref_Z2_i[j_eval]
 
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
+
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
 
                 xi_Z1_j = B_Z1_j @ q_i + xi_ref_Z1_j
                 xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
@@ -1725,26 +1810,28 @@ class GVS(DynamicalSystem):
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2_j)
 
-                Magnus_j = (H / 2) * (xi_Z1_j + xi_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2_j
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                B_Magnus_j = (H / 2) * (B_Z1_j + B_Z2_j) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j
-                )
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 Magnusd_j = B_Magnus_j @ qd_i
 
                 Magnusdd_dq_j = (
-                    ((jnp.sqrt(3) * H**2) / 6) * lie.adjoint_se3(xid_Z1_j) @ B_Z2_j
+                    ((jnp.sqrt(3) * (length_i**2) * H**2) / 6)
+                    * lie.adjoint_se3(xid_Z1_j)
+                    @ B_Z2_j
                 )
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)  # shape (4, 4)
                 T_Magnus_j = lie.Tangent_gi_se3(
-                    Magnus_j, 1, self.global_eps
+                    Magnus_j, 1, eps=self.tangent_eps
                 )  # shape (6, 6)
                 Td_Magnus_j = lie.Tangent_derivative_gi_se3(
-                    Magnus_j, Magnusd_j, 1, self.global_eps
+                    Magnus_j, Magnusd_j, 1, eps=self.tangent_eps
                 )  # shape (6, 6)
 
                 T_B_Magnus_step = T_Magnus_j @ B_Magnus_j  # shape (6, max_dof)
@@ -1767,9 +1854,7 @@ class GVS(DynamicalSystem):
                 )
                 _eta_j = Ad_g_step_inv @ (eta_j + T_B_Magnus_step @ qd_i)
 
-                Jd_j_scaled = _Jd_j.at[:, :, 3:6, :].multiply(length_i)
-
-                return (_g_j, _Jd_j, _eta_j), Jd_j_scaled
+                return (_g_j, _Jd_j, _eta_j), _Jd_j
 
             indices_eval_points = jnp.arange(self.max_nip - 1)
 
@@ -1781,21 +1866,14 @@ class GVS(DynamicalSystem):
             # carry = (g_j, Jd_j, eta_j)
             # Jd_link = []
             # for x in indices_eval_points:
-            #     (g_j, Jd_j, eta_j), Jd_j_scaled_here = body_eval_points(carry, x)
+            #     (g_j, Jd_j, eta_j), Jd_j_here = body_eval_points(carry, x)
             #     carry = (g_j, Jd_j, eta_j)
-            #     Jd_link.append(Jd_j_scaled_here)
+            #     Jd_link.append(Jd_j_here)
             # (g_tip_link, Jd_tip_link, eta_tip_link) = carry
             # Jd_link = jnp.array(Jd_link)
 
-            Jd_link = jnp.concatenate(
-                (jnp.expand_dims(Jd_j_scaled, axis=0), Jd_link), axis=0
-            )
-
-            g_tip_link_scaled = g_tip_link.at[0:3, 3].multiply(length_i)
-            Jd_tip_link_scaled = Jd_tip_link.at[:, :, 3:6, :].multiply(length_i)
-            eta_tip_link_scaled = eta_tip_link.at[3:6].multiply(length_i)
-
-            return (g_tip_link_scaled, Jd_tip_link_scaled, eta_tip_link_scaled), Jd_link
+            Jd_link = jnp.concatenate((jnp.expand_dims(Jd_j, axis=0), Jd_link), axis=0)
+            return (g_tip_link, Jd_tip_link, eta_tip_link), Jd_link
 
         indices_link = jnp.arange(0, self.num_segments)
 
@@ -1845,7 +1923,7 @@ class GVS(DynamicalSystem):
 
         def body_segment_i(
             carry: Array, i_segment: Array
-        ) -> Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
+        ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array, Array]]:
             """Propagate body-frame Jdot across a segment up to `s`.
 
             Args:
@@ -1854,7 +1932,7 @@ class GVS(DynamicalSystem):
 
             Returns:
                 Tuple[Tuple[Array, Array, Array], Tuple[Array, Array, Array]]:
-                    - (g_pass, Jd_pass, eta_pass): scaled tip state to pass forward.
+                    - (g_pass, Jd_pass, eta_pass):  tip state to pass forward.
                     - (g_pass, Jd_pass, eta_pass): same as scan output.
             """
             g_tip, Jd_tip, eta_tip = carry
@@ -1869,9 +1947,9 @@ class GVS(DynamicalSystem):
             xid_joint_i = B_joint_i @ qd_joint_i  # (6,)
 
             g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # (4,4)
-            T_g_joint = lie.Tangent_gi_se3(xi_joint_i, 1, self.global_eps)  # (6,6)
+            T_g_joint = lie.Tangent_gi_se3(xi_joint_i, 1, eps=self.tangent_eps)  # (6,6)
             Td_g_joint = lie.Tangent_derivative_gi_se3(
-                xi_joint_i, xid_joint_i, 1, self.global_eps
+                xi_joint_i, xid_joint_i, 1, eps=self.tangent_eps
             )  # (6,6)
 
             # contribution dans le bloc "joint" de ce segment
@@ -1886,13 +1964,11 @@ class GVS(DynamicalSystem):
 
             Ad_g_joint_inv = lie.Adjoint_g_inv_SE3(g_joint_i)  # (6,6)
 
-            g_j_scaled = g_tip @ g_joint_i
-            Jd_j_scaled = jnp.einsum(
+            g_j = g_tip @ g_joint_i
+            Jd_j = jnp.einsum(
                 "ij,nmjk->nmik", Ad_g_joint_inv, Jd_tip + Td_g_joint_B_joint_i
             )
-            eta_j_scaled = Ad_g_joint_inv @ (
-                eta_tip + T_g_joint @ B_joint_i @ qd_joint_i
-            )
+            eta_j = Ad_g_joint_inv @ (eta_tip + T_g_joint @ B_joint_i @ qd_joint_i)
 
             # Link ========================
             Xs_i = self.V_Xs[i_segment]  # (max_nip,)
@@ -1902,16 +1978,12 @@ class GVS(DynamicalSystem):
             B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1,6,max_dof)
             B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1,6,max_dof)
 
-            g_j = g_j_scaled.at[0:3, 3].divide(length_i)
-            Jd_j = Jd_j_scaled.at[:, :, 3:6, :].divide(length_i)
-            eta_j = eta_j_scaled.at[3:6].divide(length_i)
-
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
 
             def full_cell(
                 carry: Array, j_eval: Array
-            ) -> Tuple[Tuple[Array, Array, Array], None]:
+            ) -> tuple[tuple[Array, Array, Array], None]:
                 """Consume a full cell; update g, Jdot and convective term.
 
                 Args:
@@ -1925,37 +1997,39 @@ class GVS(DynamicalSystem):
 
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
-                xi_Z1 = (B_Z1_i[j_eval] @ q_i) + xi_ref_Z1_i[j_eval].at[:3].multiply(
-                    length_i
-                )
-                xi_Z2 = (B_Z2_i[j_eval] @ q_i) + xi_ref_Z2_i[j_eval].at[:3].multiply(
-                    length_i
-                )
-                xid_Z1 = B_Z1_i[j_eval] @ qd_i
+                B_Z1_j = B_Z1_i[j_eval]
+                B_Z2_j = B_Z2_i[j_eval]
+                if self.scale_rotational_strain_basis:
+                    B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
+                    B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
+
+                xi_Z1 = (B_Z1_j @ q_i) + xi_ref_Z1_i[j_eval]
+                xi_Z2 = (B_Z2_j @ q_i) + xi_ref_Z2_i[j_eval]
+                xid_Z1 = B_Z1_j @ qd_i
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2)
 
-                Magnus_j = (H / 2) * (xi_Z1 + xi_Z2) + (jnp.sqrt(3) * H**2 / 12) * (
-                    ad_xi_Z1_j @ xi_Z2
-                )
+                Magnus_j = length_i * (H / 2) * (xi_Z1 + xi_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ xi_Z2)
 
-                B_Magnus_j = (H / 2) * (B_Z1_i[j_eval] + B_Z2_i[j_eval]) + (
-                    jnp.sqrt(3) * H**2 / 12
-                ) * (ad_xi_Z1_j @ B_Z2_i[j_eval] - ad_xi_Z2_j @ B_Z1_i[j_eval])
+                B_Magnus_j = length_i * (H / 2) * (B_Z1_j + B_Z2_j) + (
+                    jnp.sqrt(3) * (length_i**2) * H**2 / 12
+                ) * (ad_xi_Z1_j @ B_Z2_j - ad_xi_Z2_j @ B_Z1_j)
 
                 Magnusd_j = B_Magnus_j @ qd_i
 
                 Magnusdd_dq = (
-                    ((jnp.sqrt(3) * H**2) / 6)
+                    ((jnp.sqrt(3) * (length_i**2) * H**2) / 6)
                     * lie.adjoint_se3(xid_Z1)
-                    @ B_Z2_i[j_eval]
+                    @ B_Z2_j
                 )
 
                 g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
-                T_step = lie.Tangent_gi_se3(Magnus_j, 1, self.global_eps)
+                T_step = lie.Tangent_gi_se3(Magnus_j, 1, eps=self.tangent_eps)
                 Td_step = lie.Tangent_derivative_gi_se3(
-                    Magnus_j, Magnusd_j, 1, self.global_eps
+                    Magnus_j, Magnusd_j, 1, eps=self.tangent_eps
                 )
 
                 Td_block_link = (
@@ -1979,7 +2053,7 @@ class GVS(DynamicalSystem):
                 return (g_next, Jd_next, eta_next), None
 
             # Case 1: segment entirely before s → consume every cell
-            def do_full_link() -> Tuple[Array, Array, Array]:
+            def do_full_link() -> tuple[Array, Array, Array]:
                 """Segment before target `s`: integrate all its cells (Jdot).
 
                 Returns:
@@ -1991,7 +2065,7 @@ class GVS(DynamicalSystem):
                 return g_end, Jd_end, eta_end
 
             # Case 2: segment containing s → full cells up to j-1 then partial cell Hp
-            def do_partial_link() -> Tuple[Array, Array, Array]:
+            def do_partial_link() -> tuple[Array, Array, Array]:
                 """Segment containing `s`: consume up to j-1, then partial cell.
 
                 Returns:
@@ -2003,7 +2077,7 @@ class GVS(DynamicalSystem):
                 # consume up to j-1 (masked)
                 def full_cell_masked(
                     carry: Array, idx: Array
-                ) -> Tuple[Tuple[Array, Array, Array], None]:
+                ) -> tuple[tuple[Array, Array, Array], None]:
                     """Advance only for idx < j; keep state otherwise.
 
                     Args:
@@ -2033,29 +2107,37 @@ class GVS(DynamicalSystem):
                     [Xs_i[j] + self.Z1 * Hp, Xs_i[j] + self.Z2 * Hp]
                 )  # two partial Gauss points
                 Bp = self._eval_B_segment(i_segment, Xp)  # (2,6,max_dof)
+                Bp_Z1 = Bp[0]
+                Bp_Z2 = Bp[1]
 
-                xi_Z1 = (Bp[0] @ q_i) + xi_ref_Z1_i[j].at[:3].multiply(length_i)
-                xi_Z2 = (Bp[1] @ q_i) + xi_ref_Z2_i[j].at[:3].multiply(length_i)
-                xid_Z1 = Bp[0] @ qd_i
+                if self.scale_rotational_strain_basis:
+                    Bp_Z1 = Bp_Z1.at[:3, :].divide(length_i)
+                    Bp_Z2 = Bp_Z2.at[:3, :].divide(length_i)
+
+                xi_Z1 = (Bp_Z1 @ q_i) + xi_ref_Z1_i[j]
+                xi_Z2 = (Bp_Z2 @ q_i) + xi_ref_Z2_i[j]
+                xid_Z1 = Bp_Z1 @ qd_i
 
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1)
                 ad_xi_Z2_j = lie.adjoint_se3(xi_Z2)
 
-                Magnus_p = (Hp / 2) * (xi_Z1 + xi_Z2) + (jnp.sqrt(3) * Hp * Hp / 12) * (
-                    ad_xi_Z1_j @ xi_Z2
-                )
-                B_Magnus_p = (Hp / 2) * (Bp[0] + Bp[1]) + (
-                    jnp.sqrt(3) * Hp * Hp / 12
-                ) * (ad_xi_Z1_j @ Bp[1] - ad_xi_Z2_j @ Bp[0])
+                Magnus_p = length_i * (Hp / 2) * (xi_Z1 + xi_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
+                ) * (ad_xi_Z1_j @ xi_Z2)
+                B_Magnus_p = length_i * (Hp / 2) * (Bp_Z1 + Bp_Z2) + (
+                    jnp.sqrt(3) * (length_i**2) * Hp * Hp / 12
+                ) * (ad_xi_Z1_j @ Bp_Z2 - ad_xi_Z2_j @ Bp_Z1)
                 Magnusd_p = B_Magnus_p @ qd_i
                 Magnusdd_dq_p = (
-                    ((jnp.sqrt(3) * Hp * Hp) / 6) * lie.adjoint_se3(xid_Z1) @ Bp[1]
+                    ((jnp.sqrt(3) * (length_i**2) * Hp * Hp) / 6)
+                    * lie.adjoint_se3(xid_Z1)
+                    @ Bp_Z2
                 )
 
                 g_step = lie.exp_gn_SE3(Magnus_p, self.global_eps)
-                T_step = lie.Tangent_gi_se3(Magnus_p, 1, self.global_eps)
+                T_step = lie.Tangent_gi_se3(Magnus_p, 1, eps=self.tangent_eps)
                 Td_step = lie.Tangent_derivative_gi_se3(
-                    Magnus_p, Magnusd_p, 1, self.global_eps
+                    Magnus_p, Magnusd_p, 1, eps=self.tangent_eps
                 )
 
                 Td_block_link = (
@@ -2085,15 +2167,10 @@ class GVS(DynamicalSystem):
                 operand=None,
             )
 
-            # rescale the state passed to the next segment (same as the other functions)
-            g_pass = g_out.at[0:3, 3].multiply(length_i)
-            Jd_pass = Jd_out.at[:, :, 3:6, :].multiply(length_i)
-            eta_pass = eta_out.at[3:6].multiply(length_i)
-
-            return (g_pass, Jd_pass, eta_pass), (g_pass, Jd_pass, eta_pass)
+            return (g_out, Jd_out, eta_out), (g_out, Jd_out, eta_out)
 
         # Traverse the chain; freeze the state after the segment containing s
-        def step(carry: Array, i: Array) -> Tuple[Tuple[Array, Array, Array], None]:
+        def step(carry: Array, i: Array) -> tuple[tuple[Array, Array, Array], None]:
             """Walk segments; freeze state after the segment containing `s`.
 
             Args:
@@ -2124,6 +2201,28 @@ class GVS(DynamicalSystem):
         Jd_local = Jd_flat @ self.B_select  # (6, num_active_strains)
 
         return Jd_local
+
+    @eqx.filter_jit
+    def jacobian_and_derivative(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """
+        Compute the Jacobian and its time derivative at a point s along the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+            qd (Array): generalized velocities of shape (dof_tot,).
+            s (Array): point coordinate along the robot in the interval [0, L].
+
+        Returns:
+            J (Array): Jacobian matrix of shape (6, num_dofs).
+            Jd (Array): Time derivative of the Jacobian, shape (6, num_dofs).
+        """
+        # TODO: Properly implement jacobian_and_derivative
+        # This should compute the Jacobian and its time derivative in the inertial frame
+        J = jnp.zeros((6, self.num_dofs))
+        Jd = jnp.zeros((6, self.num_dofs))
+        return J, Jd
 
     # ===========================================
     # Dynamical matrices computation
@@ -2420,6 +2519,21 @@ class GVS(DynamicalSystem):
         return G
 
     @eqx.filter_jit
+    def gravitational_energy(self, q: Array) -> Array:
+        """
+        Compute the gravitational potential energy of the robot.
+
+        Args:
+            q (Array): generalized coordinates of shape (dof_tot,).
+
+        Returns:
+            U_g (Array): Gravitational potential energy (scalar).
+        """
+        # TODO: Properly implement gravitational energy computation
+        # This should integrate the gravitational potential energy over the robot's mass distribution
+        return jnp.array(0.0)
+
+    @eqx.filter_jit
     def _stiffness_full_matrix(self) -> Array:
         """
         Compute the full stiffness matrix of the robot.
@@ -2461,16 +2575,15 @@ class GVS(DynamicalSystem):
                 Es_j = Es_i[i_eval]  # (6, 6)
                 B_Xs_j = B_Xs_i[i_eval]  # (6, max_dof)
 
-                Es_j_scaled = (
-                    Es_j.at[:3, :].divide(length_i**3).at[3:, :].divide(length_i)
-                )
+                if self.scale_rotational_strain_basis:
+                    B_Xs_j = B_Xs_j.at[:3, :].divide(length_i)
 
-                return Ws_j * (B_Xs_j.T @ Es_j_scaled @ B_Xs_j)
+                return Ws_j * (B_Xs_j.T @ Es_j @ B_Xs_j)
 
             # we can skip the first and last quadrature points since their weight is zero
             K_link_i = (
                 jnp.sum(vmap(K_eval_points)(jnp.arange(1, self.max_nip - 1)), axis=0)
-                * length_i**2
+                * length_i
             )  # (max_nip - 2, max_dof, max_dof)
 
             # Create a (2, max_dof, max_dof) array with K_joint_i and K_segment_i
@@ -2566,16 +2679,15 @@ class GVS(DynamicalSystem):
                 Gs_j = Gs_i[i_eval]  # (6, 6)
                 B_Xs_j = B_Xs_i[i_eval]  # (6, max_dof)
 
-                Gs_j_scaled = (
-                    Gs_j.at[:3, :].divide(length_i**3).at[3:, :].divide(length_i)
-                )
+                if self.scale_rotational_strain_basis:
+                    B_Xs_j = B_Xs_j.at[:3, :].divide(length_i)
 
-                return Ws_j * (B_Xs_j.T @ Gs_j_scaled @ B_Xs_j)
+                return Ws_j * (B_Xs_j.T @ Gs_j @ B_Xs_j)
 
             # we can skip the first and last quadrature points since their weight is zero
             D_link_i = (
                 jnp.sum(vmap(D_eval_points)(jnp.arange(1, self.max_nip - 1)), axis=0)
-                * length_i**2
+                * length_i
             )  # (max_nip - 2, max_dof, max_dof)
 
             # Create a (2, max_dof, max_dof) array with D_joint_i and D_segment_i
@@ -2652,7 +2764,7 @@ class GVS(DynamicalSystem):
 
     @eqx.filter_jit
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: Optional[Tuple] = None
+        self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
         """
         Forward dynamics function.
