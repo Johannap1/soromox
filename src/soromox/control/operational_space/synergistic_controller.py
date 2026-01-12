@@ -1,6 +1,5 @@
 __all__ = ["SynergisticController"]
 
-from typing import Any
 
 import jax.numpy as jnp
 from jax import Array
@@ -11,6 +10,10 @@ from soromox.control.actuation_matrix_utils import (
 )
 from soromox.control.operational_space.base_controller import (
     OperationalSpaceBaseController,
+)
+from soromox.control.pid_control import (
+    PIDControl,
+    PIDControllerState,
 )
 from soromox.control.reference_trajectory import ReferenceTrajectory
 from soromox.coordinate_transformations.operational_space_dynamics import (
@@ -25,21 +28,31 @@ class SynergisticController(OperationalSpaceBaseController):
 
     The control law is:
 
-        τ = (J(q) M^{-1}(q) A(q))^{-1} J(q) M^{-1}(q) J^T(q) (K_x (x^d - x) - D_x ẋ)
+        tau = P_AM @ J(q).T @ (Kp e_x + Ki integral_e_x + Kd e_dx)
+
+        P_AM = (J(q) M(q)^{-1} A(q))^{-1} J(q) M(q)^{-1}
+        e_x = x_des - x
+        e_dx = xd_des - xd
+        integral_e_x = integral of e_x dt
 
     where:
         - A(q) is the actuation matrix
         - M(q) is the inertia matrix
         - J(q) is the operational space Jacobian
-        - K_x is the operational space proportional gain matrix
-        - D_x is the operational space derivative gain matrix
-        - x^d is the desired operational space position
-        - x is the current operational space position
-        - ẋ is the current operational space velocity
+        - Kp is the operational space proportional gain matrix
+        - Ki is the operational space integral gain matrix
+        - Kd is the operational space derivative gain matrix
+        - e_x is the operational space pose error (geometric error for orientation)
+        - e_dx is the operational space velocity error
+        - x is the current operational space pose
+        - x_des is the desired operational space pose
+        - xd is the current operational space velocity
+        - xd_des is the desired operational space velocity
 
     Assumptions:
         (a) Under-actuation: The actuation space has lower dimensionality than
-            the configuration space (m < n). If full actuation, consider using, for example, the impedance control tracker.
+            the configuration space (m < n). If full actuation, consider using,
+            for example, the impedance control tracker.
         (b) The operational space has equal dimensionality of the actuation
             space (o = m)
         (c) The matrix J(q) M^{-1}(q) A(q) ∈ ℝ^{m×m} is full-rank
@@ -47,8 +60,7 @@ class SynergisticController(OperationalSpaceBaseController):
     Attributes:
         operational_space_dynamics: The OperationalSpaceDynamics instance.
         reference_trajectory: The desired trajectory in operational space.
-        K_x: Operational space proportional gain matrix, shape (o, o) or (o,).
-        D_x: Operational space derivative gain matrix, shape (o, o) or (o,).
+        pid_control: The task-space PIDControl instance containing the gains and saturation.
 
     References:
         Della Santina, C., Pallottino, L., Rus, D., & Bicchi, A. (2019). Exact
@@ -57,15 +69,13 @@ class SynergisticController(OperationalSpaceBaseController):
         2508-2515.
     """
 
-    K_x: Array  # Operational space proportional gain
-    D_x: Array  # Operational space derivative gain
+    pid_control: PIDControl
 
     def __init__(
         self,
         operational_space_dynamics: OperationalSpaceDynamics,
         reference_trajectory: ReferenceTrajectory,
-        K_x: float | Array,
-        D_x: float | Array,
+        pid_control: PIDControl,
     ):
         """
         Initialize the synergistic controller.
@@ -78,13 +88,8 @@ class SynergisticController(OperationalSpaceBaseController):
                 Must provide x_des_fn (desired position) and xd_des_fn (desired
                 velocity) as functions of time. The trajectory dimension must match
                 the operational space dimension (n_operational_space).
-            K_x: Operational space proportional gain. Can be:
-                - A scalar (float): applied uniformly to all operational space dimensions.
-                - A 1-d array of shape (o,): diagonal stiffness.
-                - A 2-d array of shape (o, o): full stiffness matrix.
-                Should be positive definite.
-            D_x: Operational space derivative gain. Same format options as K_x.
-                Should be positive definite.
+            pid_control: A task-space PIDControl instance containing the control gains
+                (Kp, Ki, Kd of dimensions o) and optional saturation function.
 
         Raises:
             ValueError: If either assumption (a) or (b) is not met.
@@ -92,34 +97,10 @@ class SynergisticController(OperationalSpaceBaseController):
         self.operational_space_dynamics = operational_space_dynamics
         self.reference_trajectory = reference_trajectory
         self.robot = operational_space_dynamics.robot
-
-        # Convert gains to arrays
-        n_op = operational_space_dynamics.n_operational_space
-        self.K_x = self._process_gain(K_x, n_op, "K_x")
-        self.D_x = self._process_gain(D_x, n_op, "D_x")
+        self.pid_control = pid_control
 
         # Check that the actuation matrix is square and invertible
         self._check_assumptions()
-
-    def _process_gain(self, gain: float | Array, n_op: int, name: str) -> Array:
-        """
-        Process a gain parameter into the appropriate array format.
-
-        Args:
-            gain: The gain value (scalar, 1-d, or 2-d array).
-            n_op: The operational space dimension.
-            name: The name of the gain for error messages.
-
-        Returns:
-            The gain as a JAX array.
-        """
-        gain = jnp.atleast_1d(jnp.asarray(gain))
-
-        if gain.ndim == 0 or (gain.ndim == 1 and gain.shape[0] == 1):
-            # Scalar: expand to diagonal
-            gain = jnp.full((n_op,), float(gain.flatten()[0]))
-
-        return gain
 
     def _check_assumptions(self) -> None:
         """
@@ -147,7 +128,9 @@ class SynergisticController(OperationalSpaceBaseController):
                 f"have the same dimension (o = m). Got m = {n_actuators}, o = {n_op}."
             )
 
-    def __call__(self, system_state: SystemState) -> tuple[Array, Any | None]:
+    def __call__(
+        self, system_state: SystemState
+    ) -> tuple[Array, PIDControllerState | None]:
         """
         Compute the synergistic control action.
 
@@ -161,7 +144,8 @@ class SynergisticController(OperationalSpaceBaseController):
 
         Returns:
             tau_control: The control input, shape (num_actuators,).
-            control_state_dot: None (this controller is stateless).
+            control_state_dot: PIDControllerState derivative if tracking integral
+                error, otherwise None.
         """
         t = system_state.t
         y = system_state.y
@@ -201,8 +185,8 @@ class SynergisticController(OperationalSpaceBaseController):
         # Dynamically-consisted synergistic projector
         P_AM = jnp.linalg.inv(J @ M_inv @ A) @ J @ M_inv
 
-        # PD control in operational space
-        # tau_pd = J^T @ (K_x @ e_x + D_x @ ed_x)
+        # PID control in operational space
+        # tau_pid = J^T @ (Kp @ e_x + Ki integral(e_x) + Kd @ ed_x)
         #
         # IMPORTANT: For orientation, we use the geometric error (shortest path)
         # computed via osd.compute_pose_error(), not naive subtraction (x_des - x).
@@ -220,12 +204,21 @@ class SynergisticController(OperationalSpaceBaseController):
         # Velocity error in operational space (tangent space, naive subtraction is OK)
         ed_x = xd_des - xd
 
-        # PD term: K_x @ e_x + D_x @ ed_x
-        tau_pd = J.T @ (
-            self._apply_gain(self.K_x, e_x) + self._apply_gain(self.D_x, ed_x)
-        )
+        # Get integral error from control state (or zeros if not tracking)
+        control_state: PIDControllerState | None = system_state.control_state
+        if control_state is None:
+            control_state = PIDControllerState.zero(osd.n_operational_space)
+
+        integral_error = control_state.integral_error
+        tau_pid, integral_error_dot = self.pid_control(e_x, ed_x, integral_error)
+
+        # Build control state derivative
+        if control_state is not None:
+            control_state_dot = PIDControllerState(integral_error=integral_error_dot)
+        else:
+            control_state_dot = None
 
         # Total generalized torque
-        tau_control = P_AM @ tau_pd
+        tau_control = P_AM @ J.T @ tau_pid
 
-        return tau_control, None
+        return tau_control, control_state_dot
