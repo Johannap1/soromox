@@ -207,9 +207,11 @@ class SynergisticController(OperationalSpaceBaseController):
         # Get integral error from control state (or zeros if not tracking)
         control_state: PIDControllerState | None = system_state.control_state
         if control_state is None:
-            control_state = PIDControllerState.zero(osd.n_operational_space)
+            integral_error = jnp.zeros_like(ed_x)
+        else:
+            integral_error = control_state.integral_error
 
-        integral_error = control_state.integral_error
+        # evaluate PID control law in operational space
         tau_pid, integral_error_dot = self.pid_control(e_x, ed_x, integral_error)
 
         # Build control state derivative
