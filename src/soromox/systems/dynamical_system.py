@@ -65,7 +65,12 @@ class DynamicalSystem(eqx.Module):
         assert save_dt >= solver_dt, (
             "save_dt must be greater than or equal to the solver step size."
         )
-        return jnp.arange(t0, t1 + save_dt, save_dt)
+        # return jnp.arange(t0, t1 + save_dt, save_dt)
+        t0 = float(t0)
+        t1 = float(t1)
+        save_dt = float(save_dt)
+        num = int((t1 + save_dt - t0) / save_dt)
+        return jnp.linspace(t0, t1 + save_dt, num)
 
     @staticmethod
     def _zero_like_control_state(control_state: Any | None) -> Any | None:
