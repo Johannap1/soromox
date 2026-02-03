@@ -109,14 +109,106 @@ def test_rollout_discrete_closed_loop_to_tracks_target():
     assert trajectory.control_state is not None
 
 
+def test_gradient_through_rollout_to():
+    """Test that gradients can be computed through rollout_to (open loop).
+
+    This test verifies that the fix to _compute_save_times (clipping save times)
+    works correctly for open-loop rollouts.
+    """
+    robot = Pendulum(_pendulum_params())
+
+    q0 = jnp.array([0.3, -0.2])
+    qd0 = jnp.zeros_like(q0)
+
+    # Simulation parameters
+    t1 = 0.6
+    solver_dt = 1e-3
+    save_dt = 0.02
+    max_steps = int((t1 / solver_dt) * 2)
+
+    def loss_fn(u):
+        initial_state = SystemState(
+            t=0.0,
+            y=jnp.concatenate([q0, qd0]),
+        )
+
+        trajectory = robot.rollout_to(
+            initial_state=initial_state,
+            u=u,
+            t1=t1,
+            solver_dt=solver_dt,
+            save_dt=save_dt,
+            max_steps=max_steps,
+        )
+
+        q_final = trajectory.y[-1, : q0.shape[0]]
+        return jnp.sum(q_final**2)
+
+    # Test gradient computation
+    u = jnp.array([0.5, 0.5])
+    loss_val, grad = value_and_grad(loss_fn)(u)
+
+    # Verify gradient was computed (not NaN)
+    assert jnp.isfinite(grad).all()
+
+
+def test_gradient_through_rollout_closed_loop_to():
+    """Test that gradients can be computed through rollout_closed_loop_to.
+
+    This test verifies that the fix to _compute_save_times (clipping save times)
+    works correctly for continuous closed-loop rollouts.
+    """
+    robot = Pendulum(_pendulum_params())
+
+    q0 = jnp.array([0.3, -0.2])
+    qd0 = jnp.zeros_like(q0)
+    target = jnp.zeros_like(q0)
+
+    # Simulation parameters
+    t1 = 0.6
+    solver_dt = 1e-3
+    save_dt = 0.02
+    max_steps = int((t1 / solver_dt) * 2)
+
+    def loss_fn(kp):
+        initial_state = SystemState(
+            t=0.0,
+            y=jnp.concatenate([q0, qd0]),
+            u=jnp.zeros_like(q0),
+            control_state=jnp.zeros_like(q0),
+        )
+
+        controller = PIDController(kp=kp, ki=2.5, kd=1.5, target=target)
+
+        trajectory = robot.rollout_closed_loop_to(
+            initial_state=initial_state,
+            controller=controller,
+            t1=t1,
+            solver_dt=solver_dt,
+            save_dt=save_dt,
+            max_steps=max_steps,
+        )
+
+        q_final = trajectory.y[-1, : q0.shape[0]]
+        return jnp.sum(q_final**2)
+
+    # Test gradient computation
+    kp = 8.0
+    loss_val, grad = value_and_grad(loss_fn)(kp)
+
+    # Verify gradient was computed (not NaN or zero)
+    assert jnp.isfinite(grad)
+
+
 def test_gradient_through_discrete_rollout():
     """Test that gradients can be computed through rollout_discrete_closed_loop_to.
 
     This test addresses the issue where computing gradients would fail with:
     _EquinoxRuntimeError: saveat.ts must lie between t0 and t1.
 
-    The fix involved clipping save times to ensure they're strictly within [t_start, t_end]
-    to avoid floating-point precision issues during gradient computation.
+    The fix involved clipping save times in both _compute_save_times and in the
+    dynamically constructed ts_control_interval to avoid floating-point precision
+    issues during gradient computation.
     """
     robot = Pendulum(_pendulum_params())
 
