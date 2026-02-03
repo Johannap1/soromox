@@ -111,10 +111,10 @@ def test_rollout_discrete_closed_loop_to_tracks_target():
 
 def test_gradient_through_discrete_rollout():
     """Test that gradients can be computed through rollout_discrete_closed_loop_to.
-    
+
     This test addresses the issue where computing gradients would fail with:
     _EquinoxRuntimeError: saveat.ts must lie between t0 and t1.
-    
+
     The fix involved clipping save times to ensure they're strictly within [t_start, t_end]
     to avoid floating-point precision issues during gradient computation.
     """
