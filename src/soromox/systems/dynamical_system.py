@@ -331,7 +331,8 @@ class DynamicalSystem(eqx.Module):
         tau_ext: Array | None = None,
         t1: float | Array = 10.0,
         solver_dt: float | Array = 1e-4,
-        control_dt: float | Array = 1e-2,
+        control_dt: float | Array = 0.01,
+        control_ts: Array | None = None,
         save_dt: float | Array = 0.01,
         save_ts: Array | None = None,
         solver: AbstractSolver | None = None,
@@ -357,7 +358,8 @@ class DynamicalSystem(eqx.Module):
             tau_ext: constant external wrench/force applied during the rollout.
             t1: final time of the simulation.
             solver_dt: initial step size for the solver.
-            control_dt: sampling period for the controller. Must be positive.
+            control_dt: sampling period for the controller. Must be positive. Only used if ``control_ts`` is not provided.
+            control_ts: explicit times to evaluate the controller; falls back to uniform spacing with ``control_dt``.
             save_dt: save interval if ``save_ts`` is not provided.
             save_ts: explicit times to save; falls back to ``save_dt``.
             solver: Diffrax solver.
@@ -386,11 +388,15 @@ class DynamicalSystem(eqx.Module):
         track_control_state = control_state is not None
         zero_control_state_dot = self._zero_like_control_state(control_state)
 
-        t_curr = float(initial_state.t)
-        total_horizon = t1 - t_curr
-        num_control_steps = int(jnp.ceil(total_horizon / control_dt))
-        t_starts = t_curr + control_dt * jnp.arange(num_control_steps)
-        t_ends = jnp.minimum(t_starts + control_dt, t1)
+        if control_ts is None:
+            t_curr = float(initial_state.t)
+            total_horizon = t1 - t_curr
+            num_control_steps = int(jnp.ceil(total_horizon / control_dt))
+            t_starts = t_curr + control_dt * jnp.arange(num_control_steps)
+            t_ends = jnp.minimum(t_starts + control_dt, t1)
+        else:
+            t_starts = control_ts[:-1]
+            t_ends = control_ts[1:]
 
         max_saves = save_ts.shape[0]
         max_save_slots = max_saves + 1  # include control interval end time
