@@ -65,7 +65,10 @@ class DynamicalSystem(eqx.Module):
         assert save_dt >= solver_dt, (
             "save_dt must be greater than or equal to the solver step size."
         )
-        return jnp.arange(t0, t1 + save_dt, save_dt)
+        # Use jnp.arange and clip to ensure all times are within [t0, t1].
+        # This prevents floating-point precision issues during gradient computation.
+        save_times = jnp.arange(t0, t1 + save_dt, save_dt)
+        return jnp.clip(save_times, t0, t1)
 
     @staticmethod
     def _zero_like_control_state(control_state: Any | None) -> Any | None:
@@ -437,6 +440,9 @@ class DynamicalSystem(eqx.Module):
             idxs = jnp.nonzero(mask, size=max_saves, fill_value=0)[0]
             valid_mask = jnp.arange(max_save_slots - 1) < count
             ts_control_interval = jnp.where(valid_mask, save_ts[idxs], t_end)
+            # Clip to ensure all times are strictly within [t_start, t_end] to avoid
+            # floating-point precision issues during gradient computation
+            ts_control_interval = jnp.clip(ts_control_interval, t_start, t_end)
             ts_control_interval = jnp.concatenate(
                 (ts_control_interval, jnp.array([t_end]))
             )
