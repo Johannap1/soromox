@@ -97,7 +97,7 @@ def test_rollout_discrete_closed_loop_to_tracks_target():
     trajectory = robot.rollout_discrete_closed_loop_to(
         initial_state=initial_state,
         controller=controller,
-        t1=0.6,
+        duration=0.6,
         solver_dt=1e-3,
         control_dt=0.02,
         save_dt=0.02,
