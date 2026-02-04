@@ -467,6 +467,10 @@ class DynamicalSystem(eqx.Module):
             u_total = base_u + u_control
 
             ts_control_interval = t_start + save_offsets
+            # Protect against tiny floating-point drift (especially visible during the
+            # backward pass) that can push the final save time slightly outside
+            # [t_start, t_end].
+            ts_control_interval = jnp.clip(ts_control_interval, t_start, t_end)
             saveat = SaveAt(ts=ts_control_interval, t0=False, t1=False)
             sol = diffeqsolve(
                 terms=term,
