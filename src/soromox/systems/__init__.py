@@ -8,6 +8,7 @@ from soromox.systems.system_state import SystemState
 from .gvs import GVS, TendonActuatedGVS
 from .hsa import PlanarHSA
 from .pcs import (
+    HelixPCS,
     PCS,
     ISupport,
     PlanarPCS,
@@ -32,6 +33,7 @@ __all__ = [
     "Pendulum",
     "TendonActuatedPendulum",
     # pcs systems
+    "HelixPCS",
     "PCS",
     "ISupport",
     "PlanarPCS",
