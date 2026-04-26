@@ -405,8 +405,18 @@ class ArticulatedSoftRobot(SoftRobot):
         link_idx, s_local = self.classify_segment(s)
         _, g_links, _, _ = self._kinematic_frames(q)
         L_i = self.segment_length[link_idx]
-        direction = self.p_tip[link_idx] / L_i
-        return g_links[link_idx] @ self._translation(direction * s_local)
+        safe_L_i = jnp.where(L_i > 0, L_i, jnp.ones_like(L_i))
+        direction = jnp.where(
+            L_i > 0,
+            self.p_tip[link_idx] / safe_L_i,
+            jnp.zeros_like(self.p_tip[link_idx]),
+        )
+        displacement = jnp.where(
+            L_i > 0,
+            direction * s_local,
+            jnp.zeros_like(direction),
+        )
+        return g_links[link_idx] @ self._translation(displacement)
 
     @eqx.filter_jit
     def jacobians_coms(self, q: Array) -> Array:
