@@ -110,3 +110,17 @@ Soft robots based on handed shearing auxetics.
 |--------|-----------|----------|
 | [Planar HSA](hsa/planar-hsa.md) | Rod actuation | Auxetic soft robots |
 
+## Future Systems and Roadmap
+
+The following system capabilities are on the roadmap or under consideration for
+future development. They are not committed release targets, but they represent
+areas where contributions would be especially valuable. See the
+[Contributing Guide](../../development/contributing.md) for details on getting
+started.
+
+| Capability | Motivation |
+|------------|------------|
+| Floating-base functionality across all systems | Support robots whose base pose is part of the system state, rather than assuming a fixed base. |
+| Closed-chain kinematics, particularly for GVS | Enable modeling of closed-loop mechanisms and parallel soft robots. |
+| `PlanarGVS` | Provide a faster planar setting for prototyping controllers and algorithms that use higher-order geometric shape parametrizations before moving to full spatial GVS models. |
+| Kinematic trees, particularly for GVS | Extend beyond serial kinematic chains to support branched soft robot architectures. |
