@@ -167,6 +167,9 @@ def render_robot(
     record_path: Path | None = None,
 ) -> None:
     """Render the simulated trajectory with the selected backend."""
+    if record_path is not None:
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+
     camera = CameraConfig(
         position=(1.1, -1.3, 0.9),
         look_at=(0.2, 0.0, 0.25),
@@ -194,7 +197,6 @@ def render_robot(
                 camera_config=camera,
             )
         else:
-            record_path.parent.mkdir(parents=True, exist_ok=True)
             renderer.render_sequence(
                 ts=ts,
                 q_ts=q_ts,
@@ -213,7 +215,8 @@ def render_robot(
                 ts,
                 q_ts,
                 playback_speed=1.0,
-                loop=True,
+                loop=record_path is None,
+                record_path=None if record_path is None else str(record_path),
                 camera_config=open3d_camera,
                 window_name="Articulated Soft Robot",
             )
@@ -235,6 +238,7 @@ def render_robot(
                 autoplay=True,
                 plot_configurations=True,
                 robot_name="ArticulatedSoftRobot",
+                record_path=None if record_path is None else str(record_path),
             )
 
 
@@ -258,7 +262,7 @@ def parse_args() -> argparse.Namespace:
         "--record",
         type=Path,
         default=None,
-        help="Optional Matplotlib animation output path, e.g. videos/articulated.mp4.",
+        help="Optional animation output path, e.g. videos/articulated_soft_robot.mp4.",
     )
     parser.add_argument("--t1", type=float, default=2.0, help="Final time [s].")
     return parser.parse_args()
