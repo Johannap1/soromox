@@ -152,11 +152,15 @@ Let's dive right in with a classic example - simulating a double pendulum to und
 SoRoMoX uses an object-oriented design based on Equinox dataclasses. Systems are instantiated directly as classes:
 
 ```python title="System Creation"
-# For articulated systems (Pendulum)
-robot = Pendulum(params)
+from soromox.systems import (
+    ArticulatedSoftRobot,
+    PCS,
+)
+# For spatial articulated soft robots
+robot = ArticulatedSoftRobot(params)
 
 # For soft continuum robots (PCS, GVS, HSA)
-robot = PlanarPCS(num_segments=3, params=params)
+robot = PCS(num_segments=3, params=params)
 ```
 
 **Key Benefits:**

@@ -64,21 +64,25 @@ SoRoMoX organizes systems into the following categories:
 
 | Category | Description | Dimension |
 |----------|-------------|-----------|
-| [Pendulum Systems](pendulum/index.md) | Articulated N-link chains | 2D |
+| [Articulated Systems](articulated/index.md) | Planar and spatial articulated chains, including compliant joints and tendon actuation | 2D & 3D |
 | [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots | 2D & 3D |
 | [GVS Systems](gvs/index.md) | Generalized Variable Strain robots | 3D |
 | [HSA Systems](hsa/index.md) | Handed Shearing Auxetics robots | 2D |
 
 ## System Summary
 
-### Pendulum Systems
+### Articulated Systems
 
-Articulated robot systems modeled as N-link chains with revolute joints.
+Planar and spatial articulated robot systems modeled as serial rigid-link
+chains. `Pendulum` provides the planar benchmark, `TendonActuatedPendulum`
+adds cable-driven actuation, and `ArticulatedSoftRobot` extends the interface
+to spatial screw-axis chains with optional joint stiffness and damping.
 
 | System | Actuation | Use Case |
 |--------|-----------|----------|
-| [Pendulum](pendulum/pendulum.md) | Direct torque | Benchmarking, rigid-body dynamics |
+| [Pendulum](pendulum/pendulum.md) | Direct torque | Planar benchmark and special case |
 | [Tendon Actuated Pendulum](pendulum/tendon-actuated-pendulum.md) | Tendons | Cable-driven articulated robots |
+| [Articulated Soft Robot](articulated/articulated-soft-robot.md) | Direct torque | Spatial rigid-link chains with compliant joints |
 
 ### PCS Systems
 

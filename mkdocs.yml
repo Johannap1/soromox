@@ -67,10 +67,11 @@ nav:
       - Overview: api/overview.md
       - Systems:
           - Overview: api/systems/index.md
-          - Pendulum Systems:
-            - Overview: api/systems/pendulum/index.md
+          - Articulated Systems:
+            - Overview: api/systems/articulated/index.md
             - Pendulum: api/systems/pendulum/pendulum.md
             - Tendon Actuated Pendulum: api/systems/pendulum/tendon-actuated-pendulum.md
+            - Articulated Soft Robot: api/systems/articulated/articulated-soft-robot.md
           - PCS Systems:
             - Overview: api/systems/pcs/index.md
             - PCS (Spatial): api/systems/pcs/pcs.md
@@ -227,4 +228,3 @@ extra:
 
 watch:
   - src/soromox
-
