@@ -794,25 +794,84 @@ class ArticulatedSoftRobot(SoftRobot):
         qdd = self._aba_forward_accelerations(q, qd, tau)
         return jnp.concatenate([qd, qdd])
 
+    def _validate_updated_param(self, key: str, value: Any) -> Array:
+        """
+        Coerce and validate a mutable parameter update.
+
+        Args:
+            key: Parameter name to update.
+            value: Replacement value.
+
+        Returns:
+            Validated parameter value as a JAX array.
+
+        Raises:
+            ValueError: If the replacement value has an incompatible shape.
+        """
+        value = jnp.asarray(value)
+
+        expected_shapes = {
+            "joint_screws": (self.num_links, 6),
+            "g_parent_joint": (self.num_links, 4, 4),
+            "p_tip": (self.num_links, 3),
+            "p_com": (self.num_links, 3),
+            "m": (self.num_links,),
+            "I_com": (self.num_links, 3, 3),
+            "g": (3,),
+            "K": (self.num_dofs, self.num_dofs),
+            "D": (self.num_dofs, self.num_dofs),
+            "q_ref_k": (self.num_dofs,),
+            "r": (self.num_links,),
+        }
+
+        expected_shape = expected_shapes[key]
+        if value.shape != expected_shape:
+            raise ValueError(
+                f"Parameter '{key}' must have shape {expected_shape}, got {value.shape}."
+            )
+
+        return value
+
     def update_params(self, params: dict[str, Array]) -> "ArticulatedSoftRobot":
         """
         Return an updated copy with selected parameters replaced.
 
         Args:
-            params: Parameter updates. Supported keys are any constructor
-                parameter stored on the instance.
+            params: Parameter updates for mutable constructor parameters only.
 
         Returns:
             Updated `ArticulatedSoftRobot` instance.
 
         Raises:
-            KeyError: If an unknown parameter name is supplied.
+            KeyError: If an unknown or non-updatable parameter name is supplied.
+            ValueError: If a replacement value has an incompatible shape.
         """
+        allowed_params = {
+            "joint_screws",
+            "g_parent_joint",
+            "p_tip",
+            "p_com",
+            "m",
+            "I_com",
+            "g",
+            "K",
+            "D",
+            "q_ref_k",
+            "r",
+        }
+        static_params = {"num_links", "num_dofs", "num_actuators"}
+
         updated = self
         for key, value in params.items():
-            if not hasattr(updated, key):
+            if key in static_params:
+                raise KeyError(
+                    f"Attempted to update static parameter '{key}', which is not allowed."
+                )
+            if key not in allowed_params:
                 raise KeyError(f"Attempted to update unknown parameter '{key}'.")
+
+            validated_value = updated._validate_updated_param(key, value)
             updated = eqx.tree_at(
-                lambda x, name=key: getattr(x, name), updated, jnp.asarray(value)
+                lambda x, name=key: getattr(x, name), updated, validated_value
             )
         return updated
