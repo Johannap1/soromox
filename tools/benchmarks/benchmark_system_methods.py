@@ -4,8 +4,8 @@
 
 This script measures both the ahead-of-time JIT compilation cost and the steady-state
 execution time (after compilation) for selected systems and core methods. It supports
-benchmarking the Pendulum, PlanarPCS, and PCS implementations over a sweep of link or
-segment counts, and can optionally visualise the results.
+benchmarking articulated, Pendulum, PlanarPCS, and PCS implementations over a sweep
+of link or segment counts, and can optionally visualise the results.
 """
 
 from __future__ import annotations
@@ -14,9 +14,10 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -24,6 +25,7 @@ if __package__ in (None, ""):
 try:
     import jax
     import jax.numpy as jnp
+
     jax.config.update("jax_enable_x64", True)
 except ImportError as exc:  # pragma: no cover - this is a runtime guard
     raise ImportError(
@@ -33,13 +35,13 @@ except ImportError as exc:  # pragma: no cover - this is a runtime guard
 
 import matplotlib.pyplot as plt
 
+from soromox.systems import SystemState
 from tools.benchmarks._benchmark_common import (
     add_integration_args,
     add_system_selection_args,
     block_until_ready,
     get_system_registry,
 )
-from soromox.systems import SystemState
 
 Array = jax.Array
 Tree = Any
@@ -60,7 +62,10 @@ class BenchmarkCase:
     """A single benchmarked callable for a system."""
 
     name: str
-    builder: Callable[[Any, Mapping[str, Array], RuntimeConfig], Tuple[Callable[..., Tree], Tuple[Any, ...]]]
+    builder: Callable[
+        [Any, Mapping[str, Array], RuntimeConfig],
+        tuple[Callable[..., Tree], tuple[Any, ...]],
+    ]
     description: str = ""
 
 
@@ -74,11 +79,47 @@ class SystemBenchmark:
     cases: Sequence[BenchmarkCase]
 
 
+def _dense_forward_dynamics(
+    system: Any, t: Array, y: Array, actuation_args: tuple | None
+) -> Array:
+    """Compute forward dynamics by explicitly assembling dense matrix terms."""
+    del t
+    q, qd = jnp.split(y, 2)
+    if actuation_args is None:
+        u, tau_ext = None, None
+    elif len(actuation_args) == 1:
+        u, tau_ext = actuation_args[0], None
+    elif len(actuation_args) == 2:
+        u, tau_ext = actuation_args
+    else:
+        raise ValueError("actuation_args must be None, (u,), or (u, tau_ext).")
+
+    if u is None:
+        u = jnp.zeros((system.num_actuators,), dtype=y.dtype)
+    if tau_ext is None:
+        tau_ext = jnp.zeros((system.num_dofs,), dtype=y.dtype)
+
+    M = system.inertia_matrix(q)
+    C = system.coriolis_matrix(q, qd)
+    G = system.gravitational_force(q)
+    D = system.damping_matrix(q)
+    rhs = (
+        system.actuation_force(q, u)
+        + tau_ext
+        - C @ qd
+        - G
+        - system.elastic_force(q)
+        - D @ qd
+    )
+    qdd = jnp.linalg.solve(M, rhs)
+    return jnp.concatenate([qd, qdd])
+
+
 def _measure_jitted_call(
     fn: Callable[..., Tree],
-    args: Tuple[Any, ...],
+    args: tuple[Any, ...],
     repeats: int,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Measure compile (first-call) and averaged execution time for a callable.
 
     The first invocation is treated as "compile + execute" time. Subsequent invocations
@@ -93,7 +134,7 @@ def _measure_jitted_call(
     block_until_ready(first)
     first_time = time.perf_counter() - start
 
-    exec_times: List[float] = []
+    exec_times: list[float] = []
     for _ in range(repeats):
         loop_start = time.perf_counter()
         out = fn(*args)
@@ -162,10 +203,77 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         ),
     )
 
+    articulated_cases = (
+        BenchmarkCase(
+            name="forward_kinematics",
+            description="Tip pose forward kinematics",
+            builder=lambda sys, ctx, _: (sys.forward_kinematics_tips, (ctx["q"],)),
+        ),
+        BenchmarkCase(
+            name="jacobian",
+            description="Tip Jacobians",
+            builder=lambda sys, ctx, _: (sys.jacobians_tips, (ctx["q"],)),
+        ),
+        BenchmarkCase(
+            name="jacobian_and_derivative",
+            description="Tip Jacobians and their derivatives",
+            builder=lambda sys, ctx, _: (
+                sys.jacobians_and_derivatives_tips,
+                (ctx["q"], ctx["qd"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_dynamics",
+            description="ABA-backed forward dynamics",
+            builder=lambda sys, ctx, _: (
+                lambda t, y, args: sys.forward_dynamics(t, y, args),
+                (ctx["t"], ctx["y"], (ctx["u"], ctx["tau_ext"])),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_dynamics_dense",
+            description="Dense Jacobian-energy matrix solve",
+            builder=lambda sys, ctx, _: (
+                lambda t, y, args: _dense_forward_dynamics(sys, t, y, args),
+                (ctx["t"], ctx["y"], (ctx["u"], ctx["tau_ext"])),
+            ),
+        ),
+        BenchmarkCase(
+            name="total_energy",
+            builder=lambda sys, ctx, _: (sys.total_energy, (ctx["q"], ctx["qd"])),
+        ),
+        BenchmarkCase(
+            name="rollout_to",
+            builder=lambda sys, ctx, runtime: (
+                lambda q0, qd0, u, tau, t0, t1, solver_dt, save_dt: sys.rollout_to(
+                    initial_state=SystemState(t=t0, y=jnp.concatenate([q0, qd0])),
+                    u=u,
+                    tau_ext=tau,
+                    t1=t1,
+                    solver_dt=solver_dt,
+                    save_dt=save_dt,
+                ),
+                (
+                    ctx["q"],
+                    ctx["qd"],
+                    ctx["u"],
+                    ctx["tau_ext"],
+                    jnp.array(0.0),
+                    jnp.array(runtime.duration),
+                    jnp.array(runtime.solver_dt),
+                    runtime.save_dt,
+                ),
+            ),
+        ),
+    )
+
     planar_cases = (
         BenchmarkCase(
             name="forward_kinematics",
-            builder=lambda sys, ctx, _: (sys.forward_kinematics, (ctx["q"], ctx["s_tip"])),
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics,
+                (ctx["q"], ctx["s_tip"]),
+            ),
         ),
         BenchmarkCase(
             name="inverse_kinematics",
@@ -222,7 +330,10 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
     pcs_cases = (
         BenchmarkCase(
             name="forward_kinematics",
-            builder=lambda sys, ctx, _: (sys.forward_kinematics, (ctx["q"], ctx["s_tip"])),
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics,
+                (ctx["q"], ctx["s_tip"]),
+            ),
         ),
         BenchmarkCase(
             name="forward_kinematics_batched",
@@ -290,6 +401,12 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             build_context=shared["pendulum"].build_context,
             cases=pendulum_cases,
         ),
+        "articulated_soft_robot": SystemBenchmark(
+            factory=shared["articulated_soft_robot"].factory,
+            size_label=shared["articulated_soft_robot"].size_label,
+            build_context=shared["articulated_soft_robot"].build_context,
+            cases=articulated_cases,
+        ),
         "planar_pcs": SystemBenchmark(
             factory=shared["planar_pcs"].factory,
             size_label=shared["planar_pcs"].size_label,
@@ -305,13 +422,17 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
     }
 
 
-def _plot_results(results: Sequence[Mapping[str, Any]], output: Path | None, show: bool) -> None:
+def _plot_results(
+    results: Sequence[Mapping[str, Any]], output: Path | None, show: bool
+) -> None:
     if not results:
         print("No results to plot.")
         return
 
     systems = sorted({res["system"] for res in results})
-    fig, axes = plt.subplots(len(systems), 2, figsize=(12, 4 * len(systems)), squeeze=False, sharex="col")
+    fig, axes = plt.subplots(
+        len(systems), 2, figsize=(12, 4 * len(systems)), squeeze=False, sharex="col"
+    )
 
     for row, system in enumerate(systems):
         subset = [res for res in results if res["system"] == system]
@@ -381,13 +502,13 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     registry = _build_system_registry()
-    parser = argparse.ArgumentParser(description="Benchmark Soromox system implementations")
+    parser = argparse.ArgumentParser(
+        description="Benchmark Soromox system implementations"
+    )
     add_system_selection_args(parser, registry, default_segment_counts=[1, 2, 4, 8])
     add_integration_args(parser)
     # Collect all unique method names across all systems
-    all_methods = sorted(
-        {case.name for cfg in registry.values() for case in cfg.cases}
-    )
+    all_methods = sorted({case.name for cfg in registry.values() for case in cfg.cases})
     parser.add_argument(
         "--methods",
         nargs="*",
@@ -395,8 +516,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         choices=all_methods,
         metavar="METHOD",
         help=(
-            "Methods to benchmark (default: all). "
-            f"Available: {', '.join(all_methods)}"
+            f"Methods to benchmark (default: all). Available: {', '.join(all_methods)}"
         ),
     )
     parser.add_argument(
@@ -444,7 +564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     registry = _build_system_registry()
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for system_name in args.systems:
         system_cfg = registry[system_name]
@@ -455,13 +575,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             else system_cfg.cases
         )
         for size in args.segment_counts:
-            print(f"\n=== Benchmarking {system_name} with {system_cfg.size_label}={size} ===")
+            print(
+                f"\n=== Benchmarking {system_name} with {system_cfg.size_label}={size} ==="
+            )
             system = system_cfg.factory(size)
             ctx = system_cfg.build_context(system)
             for case in cases_to_run:
                 fn, call_args = case.builder(system, ctx, runtime)
                 print(f"  -> {case.name} ...", end=" ", flush=True)
-                compile_time, exec_time = _measure_jitted_call(fn, call_args, runtime.execution_repeats)
+                compile_time, exec_time = _measure_jitted_call(
+                    fn, call_args, runtime.execution_repeats
+                )
 
                 per_point_note = ""
                 if case.name == "forward_kinematics_batched" and len(call_args) >= 2:
@@ -479,7 +603,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         exec_time /= num_points
                         per_point_note = f" (per point over {num_points})"
 
-                print(f"compile {compile_time:.4f}s | exec {exec_time:.4f}s{per_point_note}")
+                print(
+                    f"compile {compile_time:.4f}s | exec {exec_time:.4f}s{per_point_note}"
+                )
                 results.append(
                     {
                         "system": system_name,
@@ -495,7 +621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                 )
 
-    artifacts: List[str] = []
+    artifacts: list[str] = []
 
     if args.json:
         _write_json(results, args.json)
@@ -513,7 +639,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         for path in artifacts:
             print(f" - {path}")
     else:
-        print("\nNo benchmark artifacts were written. Pass --json/--csv/--plot to export data.")
+        print(
+            "\nNo benchmark artifacts were written. Pass --json/--csv/--plot to export data."
+        )
 
     return 0
 

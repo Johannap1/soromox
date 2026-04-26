@@ -12,7 +12,7 @@
 
     SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). Key improvements include:
 
-    - **Extended System Support**: Spatial PCS and GVS systems
+    - **Extended System Support**: Spatial PCS, GVS, and articulated soft robot systems
     - **Numerical Implementation**: Replaced symbolic derivations with numerical implementations for better scalability and significantly reduced JIT compilation times
     - **Object-Oriented Architecture**: Migration from functional to Equinox dataclasses-based design enabling easy extendability and modification of methods
     - **Model-Based Control**: Comprehensive suite of model-based controllers for soft robots
@@ -54,10 +54,10 @@ SoRoMoX provides three core capabilities for soft robotics research and developm
 
 === "Soft Robot Models"
 
+    - **Articulated Systems**: Planar pendulums, tendon-actuated pendulums, and spatial articulated soft robots
     - **PCS (Piecewise Constant Strain)**: Continuum robots with constant strain segments
     - **GVS (Generalized Variable Strain)**: Flexible strain basis functions (Legendre, Chebyshev, Fourier)
     - **HSA (Handed Shearing Auxetics)**: Robots with auxetic material properties
-    - **Pendulum Systems**: Classical and tendon-actuated N-link articulated robots
     - **Multiple Actuators**: Support for tendon and pneumatic actuation
 
 === "Model-Based Controllers"
@@ -81,8 +81,8 @@ SoRoMoX provides three core capabilities for soft robotics research and developm
 
 SoRoMoX supports both planar (2D) and spatial (3D) soft robot architectures:
 
-!!! note "Pendulum Systems"
-    Classical and tendon-actuated N-link articulated robots for benchmarking and cable-driven mechanisms
+!!! success "Articulated Systems"
+    Planar and spatial rigid-link chains. Includes `Pendulum` for planar benchmark dynamics, `TendonActuatedPendulum` for cable-driven articulated mechanisms, and `ArticulatedSoftRobot` for spatial screw-axis chains with optional joint stiffness and damping.
 
 !!! tip "PCS Systems (Piecewise Constant Strain)"
     Continuum soft robots with constant strain segments, available in both planar and spatial variants with tendon or pneumatic actuation

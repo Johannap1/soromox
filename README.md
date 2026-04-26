@@ -15,7 +15,7 @@
 
 </div>
 
-> **📢 Note**: SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). It introduces significant improvements including support for an extended set of systems (Spatial PCS and GVS), replacement of symbolic derivations with numerical implementations for better scalability and faster JIT compilation, and migration from a functional to an object-oriented architecture using Equinox dataclasses for enhanced extendability.
+> **📢 Note**: SoRoMoX is the successor to the [JSRM package](https://github.com/tud-phi/jax-soft-robot-modeling). It introduces significant improvements including support for an extended set of systems (Spatial PCS, GVS, and articulated soft robots), replacement of symbolic derivations with numerical implementations for better scalability and faster JIT compilation, and migration from a functional to an object-oriented architecture using Equinox dataclasses for enhanced extendability.
 
 SoRoMoX provides three core capabilities for soft robotics research:
 
@@ -23,11 +23,11 @@ SoRoMoX provides three core capabilities for soft robotics research:
 - **Model-Based Control**: Comprehensive suite of controllers including PID, gravity cancellation, potential shaping, impedance control, and computed torque
 - **Visualization**: Multiple rendering backends (Matplotlib, Open3D, Viser, OpenCV) for 2D and 3D visualization
 
-We focus on strain-based models suitable for modeling slender structures (Cosserat rods). The following systems are implemented:
+SoRoMoX includes strain-based continuum models for slender structures (Cosserat rods), planar benchmarks, and spatial articulated soft robot systems. The following systems are implemented:
 
 | System Type | Variants |
 |-------------|----------|
-| Pendulum | [N-link](examples/simulation/pendulum/simulate_pendulum.py), [Tendon-Actuated](examples/simulation/pendulum/simulate_tendon_actuated_pendulum.py) |
+| Articulated Systems | [Pendulum](examples/simulation/pendulum/simulate_pendulum.py), [Tendon-Actuated Pendulum](examples/simulation/pendulum/simulate_tendon_actuated_pendulum.py), [Articulated Soft Robot](examples/simulation/articulated/simulate_articulated_soft_robot.py) |
 | PCS (Piecewise Constant Strain) | [Planar](examples/simulation/pcs/simulate_planar_pcs.py), [Spatial](examples/simulation/pcs/simulate_pcs.py), [Tendon-Actuated](examples/simulation/pcs/simulate_tendon_actuated_pcs.py), [Pneumatic-Actuated](examples/simulation/pcs/simulate_pneumatic_actuated_planar_pcs.py) |
 | GVS (Geometric Variable Strain) | [Spatial](examples/simulation/gvs/simulate_gvs.py), [Tendon-Actuated](examples/simulation/gvs/simulate_tendon_actuated_gvs.py) |
 | HSA (Handed Shearing Auxetics) | [Planar](examples/simulation/hsa/simulate_planar_hsa.py) |
