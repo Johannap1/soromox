@@ -297,6 +297,10 @@ class ArticulatedSoftRobot(SoftRobot):
     def _world_joint_screws(self, q: Array) -> Array:
         """Return joint screw axes expressed in the base frame."""
         g_joints, _, _, _ = self._kinematic_frames(q)
+        return self._world_joint_screws_from_joint_frames(g_joints)
+
+    def _world_joint_screws_from_joint_frames(self, g_joints: Array) -> Array:
+        """Return base-frame screw axes from precomputed joint frames."""
         return vmap(lambda g, s: lie.Adjoint_g_SE3(g) @ s)(g_joints, self.joint_screws)
 
     def _jacobian_for_point(self, q: Array, link_idx: Array, p_world: Array) -> Array:
@@ -317,10 +321,9 @@ class ArticulatedSoftRobot(SoftRobot):
         return J_cols.T
 
     def _jacobians_for_points(
-        self, q: Array, link_idxs: Array, p_worlds: Array
+        self, screws: Array, link_idxs: Array, p_worlds: Array
     ) -> Array:
-        """Compute point Jacobians while sharing the FK-derived screw pass."""
-        screws = self._world_joint_screws(q)
+        """Compute point Jacobians using precomputed world-frame screws."""
         return vmap(lambda i, p: self._jacobian_for_point_from_screws(screws, i, p))(
             link_idxs, p_worlds
         )
@@ -429,10 +432,11 @@ class ArticulatedSoftRobot(SoftRobot):
         Returns:
             COM Jacobians, shape `(num_links, 6, num_links)`.
         """
-        _, _, g_coms, _ = self._kinematic_frames(q)
+        g_joints, _, g_coms, _ = self._kinematic_frames(q)
+        screws = self._world_joint_screws_from_joint_frames(g_joints)
         idxs = jnp.arange(self.num_links)
         positions = g_coms[:, :3, 3]
-        return self._jacobians_for_points(q, idxs, positions)
+        return self._jacobians_for_points(screws, idxs, positions)
 
     @eqx.filter_jit
     def jacobians_tips(self, q: Array) -> Array:
@@ -445,10 +449,11 @@ class ArticulatedSoftRobot(SoftRobot):
         Returns:
             Tip Jacobians, shape `(num_links, 6, num_links)`.
         """
-        _, _, _, g_tips = self._kinematic_frames(q)
+        g_joints, _, _, g_tips = self._kinematic_frames(q)
+        screws = self._world_joint_screws_from_joint_frames(g_joints)
         idxs = jnp.arange(self.num_links)
         positions = g_tips[:, :3, 3]
-        return self._jacobians_for_points(q, idxs, positions)
+        return self._jacobians_for_points(screws, idxs, positions)
 
     def jacobian_tips(self, q: Array) -> Array:
         """Alias for `jacobians_tips`."""
@@ -466,9 +471,10 @@ class ArticulatedSoftRobot(SoftRobot):
             Joint-origin Jacobians, shape `(num_links, 6, num_links)`.
         """
         g_joints, _, _, _ = self._kinematic_frames(q)
+        screws = self._world_joint_screws_from_joint_frames(g_joints)
         idxs = jnp.arange(self.num_links)
         positions = g_joints[:, :3, 3]
-        return self._jacobians_for_points(q, idxs - 1, positions)
+        return self._jacobians_for_points(screws, idxs - 1, positions)
 
     @eqx.filter_jit
     def jacobian(self, q: Array, s: Array) -> Array:
@@ -482,9 +488,23 @@ class ArticulatedSoftRobot(SoftRobot):
         Returns:
             Spatial Jacobian, shape `(6, num_links)`.
         """
-        link_idx, _ = self.classify_segment(s)
-        g_s = self.forward_kinematics(q, s)
-        return self._jacobian_for_point(q, link_idx, g_s[:3, 3])
+        link_idx, s_local = self.classify_segment(s)
+        g_joints, g_links, _, _ = self._kinematic_frames(q)
+        L_i = self.segment_length[link_idx]
+        safe_L_i = jnp.where(L_i > 0, L_i, jnp.ones_like(L_i))
+        direction = jnp.where(
+            L_i > 0,
+            self.p_tip[link_idx] / safe_L_i,
+            jnp.zeros_like(self.p_tip[link_idx]),
+        )
+        displacement = jnp.where(
+            L_i > 0,
+            direction * s_local,
+            jnp.zeros_like(direction),
+        )
+        g_s = g_links[link_idx] @ self._translation(displacement)
+        screws = self._world_joint_screws_from_joint_frames(g_joints)
+        return self._jacobian_for_point_from_screws(screws, link_idx, g_s[:3, 3])
 
     @eqx.filter_jit
     def jacobians_and_derivatives_tips(
@@ -532,8 +552,11 @@ class ArticulatedSoftRobot(SoftRobot):
         Returns:
             Inertia matrix, shape `(num_links, num_links)`.
         """
-        J_coms = self.jacobians_coms(q)
-        _, g_links, _, _ = self._kinematic_frames(q)
+        g_joints, g_links, g_coms, _ = self._kinematic_frames(q)
+        screws = self._world_joint_screws_from_joint_frames(g_joints)
+        idxs = jnp.arange(self.num_links)
+        positions = g_coms[:, :3, 3]
+        J_coms = self._jacobians_for_points(screws, idxs, positions)
         R_links = g_links[:, :3, :3]
         I_world = jnp.einsum("nij,njk,nlk->nil", R_links, self.I_com, R_links)
         Jw = J_coms[:, :3, :]
