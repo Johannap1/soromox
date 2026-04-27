@@ -26,7 +26,7 @@ The [Systems](systems/index.md) module contains implementations for various robo
 SoRoMoX includes four main system categories:
 - **Articulated Systems**: Planar pendulums, tendon-actuated pendulums, and spatial articulated soft robots
 - **PCS Systems**: Piecewise Constant Strain continuum robots (2D & 3D)
-- **GVS Systems**: Generalized Variable Strain robots (3D)
+- **GVS Systems**: Geometric Variable Strain robots (3D)
 - **HSA Systems**: Handed Shearing Auxetics robots (2D)
 
 ---

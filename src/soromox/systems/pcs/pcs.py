@@ -168,7 +168,9 @@ class PCS(SoftRobot):
             )
         if order_gauss < 1:
             raise ValueError(f"param_integration must be at least 1, got {order_gauss}")
-        Xs, Ws, num_gauss_points = gauss_quadrature(order_gauss, a=0.0, b=1.0)
+        Xs, Ws, num_gauss_points = gauss_quadrature(
+            order_gauss, a=jnp.array(0.0), b=jnp.array(1.0)
+        )
         self.Xs = Xs
         self.Ws = Ws
         self.num_gauss_points = num_gauss_points
@@ -219,13 +221,7 @@ class PCS(SoftRobot):
         # Number of actuators
         self.num_actuators = int(self.num_active_strains.item())
 
-        (
-            self.M_segments,
-            self.K_full,
-            self.K,
-            self.D_full,
-            self.D_active,
-        ) = self._compute_constant_matrices()
+        self.precompute()
 
     @property
     def is_planar(self) -> bool:
@@ -503,9 +499,9 @@ class PCS(SoftRobot):
                 raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
             updated_self = eqx.tree_at(lambda m: m.D, updated_self, D)
 
-        return updated_self._with_refreshed_constant_matrices()
+        return updated_self._with_refreshed_precomputed_matrices()
 
-    def _compute_constant_matrices(self) -> tuple[Array, Array, Array, Array, Array]:
+    def _precomputed_matrices(self) -> tuple[Array, Array, Array, Array, Array]:
         """Compute state-independent matrices cached by the model."""
         M_segments = vmap(self._compute_local_mass_matrix)(
             jnp.arange(self.num_segments)
@@ -516,12 +512,27 @@ class PCS(SoftRobot):
         D_active = self.B_xi.T @ D_full @ self.B_xi
         return M_segments, K_full, K, D_full, D_active
 
-    def _with_refreshed_constant_matrices(self) -> "PCS":
+    def precompute(self) -> None:
+        """Refresh state-independent matrices cached by the model."""
+        (
+            M_segments,
+            K_full,
+            K,
+            D_full,
+            D_active,
+        ) = self._precomputed_matrices()
+        object.__setattr__(self, "M_segments", M_segments)
+        object.__setattr__(self, "K_full", K_full)
+        object.__setattr__(self, "K", K)
+        object.__setattr__(self, "D_full", D_full)
+        object.__setattr__(self, "D_active", D_active)
+
+    def _with_refreshed_precomputed_matrices(self) -> "PCS":
         """Return a copy with cached state-independent matrices refreshed."""
         return eqx.tree_at(
             lambda m: (m.M_segments, m.K_full, m.K, m.D_full, m.D_active),
             self,
-            self._compute_constant_matrices(),
+            self._precomputed_matrices(),
         )
 
     @eqx.filter_jit
@@ -587,6 +598,7 @@ class PCS(SoftRobot):
             Args:
                 g_base_i (Array): transformation matrix of the base of the segment, shape (4, 4).
                 i (Array): index of the segment.
+
             Returns:
                 g_i (Array): transformation matrix of the point s_local if i == segment_idx, otherwise the tip of the segment, shape (4, 4).
                 g_i (Array): transformation matrix of the point s_local if i == segment_idx, otherwise the tip of the segment, shape (4, 4).
@@ -722,6 +734,7 @@ class PCS(SoftRobot):
             Args:
                 g_prev_i (Array): previous segment tip transform of shape (4, 4).
                 g_curr_i (Array): current segment tip transform of shape (4, 4).
+
             Returns:
                 g_rel (Array): relative transform of shape (4, 4).
             """
@@ -766,6 +779,7 @@ class PCS(SoftRobot):
             Args:
                 g_rel_i (Array): relative transform of shape (4, 4).
                 length_i (Array): length of the segment.
+
             Returns:
                 xi (Array): strain twist of shape (6,).
             """
@@ -800,77 +814,6 @@ class PCS(SoftRobot):
         J_final = J_full.transpose(1, 0, 2).reshape(6, self.num_strains)
 
         return J_final
-
-    @eqx.filter_jit
-    def _J_local(self, q: Array, s: Array) -> Array:
-        """
-        Compute the Jacobian of the forward kinematics at a point s along the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            s (Array): point coordinate along the robot in the interval [0, L].
-
-        Returns:
-            J_local (Array): Jacobian of the forward kinematics at point s, shape (6, num_strains)
-            where each row corresponds to a segment.
-        """
-        xi = self.strain(q).reshape(self.num_segments, 6)
-
-        segment_idx, s_local = self.classify_segment(s)
-
-        zeros = jnp.zeros((self.num_segments, 6, 6), dtype=xi.dtype)
-        zero_slice = jnp.zeros((6, 6), dtype=xi.dtype)
-
-        def integrate_segment(
-            J_prev: Array,
-            i: Array,
-            xi_i: Array,
-            arc_len: Array,
-        ) -> Array:
-            Ad_inv = lie.Adjoint_gi_se3_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se3(xi_i, arc_len, eps=self.tangent_eps)
-
-            J_rot = jnp.einsum("ij, njk->nik", Ad_inv, J_prev)
-            J_next = J_rot.at[i].set(Ad_inv @ T)
-
-            return J_next
-
-        def scan_body(
-            carry: tuple[Array, Array, Array],
-            i: Array,
-        ) -> tuple[tuple[Array, Array, Array], Array]:
-            J_prev, J_local, done = carry
-
-            def compute_branch(_: None) -> tuple[tuple[Array, Array, Array], Array]:
-                xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
-                L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
-                arc_len = jnp.where(i == segment_idx, s_local, L_i)
-
-                J_next = integrate_segment(J_prev, i, xi_i, arc_len)
-
-                is_target = i == segment_idx
-                J_target_next = jnp.where(is_target, J_next, J_local)
-                done_next = jnp.logical_or(done, is_target)
-
-                return (J_next, J_target_next, done_next), zero_slice
-
-            def skip_branch(_: None) -> tuple[tuple[Array, Array, Array], Array]:
-                return (J_prev, J_local, done), zero_slice
-
-            return lax.cond(done, skip_branch, compute_branch, operand=None)
-
-        carry_init = (
-            zeros,
-            zeros,
-            jnp.array(False, dtype=jnp.bool_),
-        )
-
-        indices = jnp.arange(self.num_segments, dtype=segment_idx.dtype)
-        (_, J_target, _), _ = lax.scan(scan_body, carry_init, indices)
-
-        J_local = self._final_size_jacobian(J_target)
-
-        return J_local
 
     @eqx.filter_jit
     def _J_local_tips(self, q: Array) -> Array:
@@ -980,9 +923,83 @@ class PCS(SoftRobot):
         Returns:
             J_local (Array): Jacobian of the forward kinematics at point s in the body frame, shape (6, num_active_strains)
         """
-        J_local = self._J_local(q, s) @ self.B_xi
+        xi = self.strain(q).reshape(self.num_segments, 6)
+
+        segment_idx, s_local = self.classify_segment(s)
+
+        zeros = jnp.zeros((self.num_segments, 6, 6), dtype=xi.dtype)
+        zero_slice = jnp.zeros((6, 6), dtype=xi.dtype)
+
+        def integrate_segment(
+            J_prev: Array,
+            i: Array,
+            xi_i: Array,
+            arc_len: Array,
+        ) -> Array:
+            Ad_inv = lie.Adjoint_gi_se3_inv(xi_i, arc_len, eps=self.global_eps)
+            T = lie.Tangent_gi_se3(xi_i, arc_len, eps=self.global_eps)
+
+            J_rot = jnp.einsum("ij, njk->nik", Ad_inv, J_prev)
+            J_next = J_rot.at[i].set(Ad_inv @ T)
+
+            return J_next
+
+        def scan_body(
+            carry: tuple[Array, Array, Array],
+            i: Array,
+        ) -> tuple[tuple[Array, Array, Array], Array]:
+            J_prev, J_local, done = carry
+
+            def compute_branch(_: None) -> tuple[tuple[Array, Array, Array], Array]:
+                xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
+                L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
+                arc_len = jnp.where(i == segment_idx, s_local, L_i)
+
+                J_next = integrate_segment(J_prev, i, xi_i, arc_len)
+
+                is_target = i == segment_idx
+                J_target_next = jnp.where(is_target, J_next, J_local)
+                done_next = jnp.logical_or(done, is_target)
+
+                return (J_next, J_target_next, done_next), zero_slice
+
+            def skip_branch(_: None) -> tuple[tuple[Array, Array, Array], Array]:
+                return (J_prev, J_local, done), zero_slice
+
+            return lax.cond(done, skip_branch, compute_branch, operand=None)
+
+        carry_init = (
+            zeros,
+            zeros,
+            jnp.array(False, dtype=jnp.bool_),
+        )
+
+        indices = jnp.arange(self.num_segments, dtype=segment_idx.dtype)
+        (_, J_target, _), _ = lax.scan(scan_body, carry_init, indices)
+
+        J_local = self._final_size_jacobian(J_target) @ self.B_xi
 
         return J_local
+
+    @eqx.filter_jit
+    def jacobian_bodyframe_batched(self, q: Array, s_ps: Array) -> Array:
+        """
+        Compute the Jacobian of the forward kinematics at a batch of points s_ps along the robot in the body frame.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+            s_ps (Array): point coordinates along the robot in the interval [0, L] of shape (N,).
+
+        Returns:
+            J_local_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
+        """
+        J_local_ps_ = self._J_local_batched(q, s_ps)  # shape (N, 6, num_strains)
+
+        J_local_ps = jnp.einsum(
+            "ijk, kl->ijl", J_local_ps_, self.B_xi
+        )  # shape (N, 6, num_active_strains)
+
+        return J_local_ps
 
     @eqx.filter_jit
     def jacobian_inertialframe(self, q: Array, s: Array) -> Array:
@@ -997,7 +1014,7 @@ class PCS(SoftRobot):
             J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
         """
         # compute the Jacobian in the body frame
-        J_local = self._J_local(q, s)
+        J_local = self.jacobian_bodyframe(q, s)  # shape (6, num_active_strains)
 
         g_s = self.forward_kinematics(q, s)
         # construct g with zero translation for the Adjoint transformation
@@ -1006,120 +1023,68 @@ class PCS(SoftRobot):
         )
         Ad_g = lie.Adjoint_g_SE3(g_rot)
 
-        J_global_ = jnp.einsum("ij, jk->ik", Ad_g, J_local)
-        J_global = J_global_ @ self.B_xi
+        J_global = jnp.einsum("ij, jk->ik", Ad_g, J_local)
 
         return J_global
 
     @eqx.filter_jit
-    def _J_Jd_local(self, q: Array, qd: Array, s: Array) -> tuple[Array, Array]:
+    def jacobian_inertialframe_batched(self, q: Array, s_ps: Array) -> Array:
         """
-        Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot.
+        Compute the Jacobian of the forward kinematics at a batch of points s_ps along the robot in the inertial frame.
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+            s_ps (Array): point coordinates along the robot in the interval [0, L] of shape (N,).
+
+        Returns:
+            J_global_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
+        """
+        # compute the Jacobian in the body frame
+        J_local_ps = self.jacobian_bodyframe_batched(
+            q, s_ps
+        )  # shape (N, 6, num_active_strains)
+
+        g_ps = self.forward_kinematics_batched(q, s_ps)  # shape (N, 4, 4)
+        # construct g with zero translation for the Adjoint transformation
+        g_rot_ps = jnp.block(
+            [
+                [g_ps[:, :3, :3], jnp.zeros((g_ps.shape[0], 3, 1))],
+                [jnp.zeros((g_ps.shape[0], 1, 3)), jnp.ones((g_ps.shape[0], 1, 1))],
+            ]
+        )  # shape (N, 4, 4)
+        Ad_g_ps = vmap(lie.Adjoint_g_SE3)(g_rot_ps)  # shape (N, 6, 6)
+
+        J_global_ps = jnp.einsum(
+            "nij, njk->nik", Ad_g_ps, J_local_ps
+        )  # shape (N, 6, num_active_strains)
+
+        return J_global_ps
+
+    @eqx.filter_jit
+    def jacobian_tips(self, q: Array) -> Array:
+        """
+        Compute inertial-frame Jacobians at all segment tips.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
-            J_local (Array): Jacobian of the forward kinematics at point s, shape (6, num_strains)
-            Jd_local (Array): Time-derivative of the Jacobian at point s, shape (6, num_strains)
+            J_tips (Array): inertial-frame Jacobians at each segment tip, shape
+                (num_segments, 6, num_active_strains).
         """
-        xi = self.strain(q).reshape(self.num_segments, 6)
-        xid = (self.B_xi @ qd).reshape(self.num_segments, 6)
+        J_local_tips = jnp.einsum("ijk,kl->ijl", self._J_local_tips(q), self.B_xi)
+        g_tips = self.forward_kinematics_tips(q)
 
-        segment_idx, s_local = self.classify_segment(s)
-
-        zeros = jnp.zeros((self.num_segments, 6, 6), dtype=xi.dtype)
-        zero_slice = jnp.zeros((6, 6), dtype=xi.dtype)
-
-        def integrate_segment(
-            J_prev: Array,
-            Jd_prev: Array,
-            i: Array,
-            xi_i: Array,
-            xid_i: Array,
-            arc_len: Array,
-        ) -> tuple[Array, Array]:
-            Ad_inv = lie.Adjoint_gi_se3_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se3(xi_i, arc_len, eps=self.tangent_eps)
-            Td = lie.Tangent_derivative_gi_se3(
-                xi_i, xid_i, arc_len, eps=self.tangent_eps
+        def rotate_pair(g_i: Array, J_i: Array) -> Array:
+            R = g_i[:3, :3]
+            g_rot = jnp.block(
+                [
+                    [R, jnp.zeros((3, 1), dtype=R.dtype)],
+                    [jnp.zeros((1, 3), dtype=R.dtype), jnp.ones((1, 1), dtype=R.dtype)],
+                ]
             )
+            return lie.Adjoint_g_SE3(g_rot) @ J_i
 
-            J_rot = jnp.einsum("ij, njk->nik", Ad_inv, J_prev)
-            J_next = J_rot.at[i].set(Ad_inv @ T)
-
-            J_next_slice = lax.dynamic_index_in_dim(J_next, i, axis=0, keepdims=False)
-            eta = jnp.matmul(J_next_slice, xid_i)
-
-            Ad_inv_dot = -lie.adjoint_se3(eta) @ Ad_inv
-
-            Jd_rot = jnp.einsum("ij, njk->nik", Ad_inv, Jd_prev) + jnp.einsum(
-                "ij, njk->nik", Ad_inv_dot, J_prev
-            )
-            Jd_next = Jd_rot.at[i].set(Ad_inv_dot @ T + Ad_inv @ Td)
-
-            return J_next, Jd_next
-
-        def scan_body(
-            carry: tuple[Array, Array, Array, Array, Array],
-            i: Array,
-        ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
-            J_prev, Jd_prev, J_target, Jd_target, done = carry
-
-            def compute_branch(
-                _: None,
-            ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
-                xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
-                xid_i = lax.dynamic_index_in_dim(xid, i, axis=0, keepdims=False)
-                L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
-                arc_len = jnp.where(i == segment_idx, s_local, L_i)
-
-                J_next, Jd_next = integrate_segment(
-                    J_prev,
-                    Jd_prev,
-                    i,
-                    xi_i,
-                    xid_i,
-                    arc_len,
-                )
-
-                is_target = i == segment_idx
-                J_target_next = jnp.where(is_target, J_next, J_target)
-                Jd_target_next = jnp.where(is_target, Jd_next, Jd_target)
-                done_next = jnp.logical_or(done, is_target)
-
-                return (
-                    J_next,
-                    Jd_next,
-                    J_target_next,
-                    Jd_target_next,
-                    done_next,
-                ), zero_slice
-
-            def skip_branch(
-                _: None,
-            ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
-                return (J_prev, Jd_prev, J_target, Jd_target, done), zero_slice
-
-            return lax.cond(done, skip_branch, compute_branch, operand=None)
-
-        carry_init = (
-            zeros,
-            zeros,
-            zeros,
-            zeros,
-            jnp.array(False, dtype=jnp.bool_),
-        )
-
-        indices = jnp.arange(self.num_segments, dtype=segment_idx.dtype)
-        (_, _, J_target, Jd_target, _), _ = lax.scan(scan_body, carry_init, indices)
-
-        J_local = self._final_size_jacobian(J_target)
-        Jd_local = self._final_size_jacobian(Jd_target)
-
-        return J_local, Jd_local
+        return vmap(rotate_pair)(g_tips, J_local_tips)
 
     @eqx.filter_jit
     def _J_Jd_local_tips(self, q: Array, qd: Array) -> tuple[Array, Array]:
@@ -1296,12 +1261,130 @@ class PCS(SoftRobot):
             J_local (Array): Jacobian of the forward kinematics at point s in the body frame, shape (6, num_active_strains)
             Jd_local (Array): Time-derivative of the Jacobian at point s in the body frame, shape (6, num_active_strains)
         """
-        J_local_, Jd_local_ = self._J_Jd_local(q, qd, s)
+        xi = self.strain(q).reshape(self.num_segments, 6)
+        xid = (self.B_xi @ qd).reshape(self.num_segments, 6)
 
-        J_local = J_local_ @ self.B_xi
-        Jd_local = Jd_local_ @ self.B_xi
+        segment_idx, s_local = self.classify_segment(s)
+
+        zeros = jnp.zeros((self.num_segments, 6, 6), dtype=xi.dtype)
+        zero_slice = jnp.zeros((6, 6), dtype=xi.dtype)
+
+        def integrate_segment(
+            J_prev: Array,
+            Jd_prev: Array,
+            i: Array,
+            xi_i: Array,
+            xid_i: Array,
+            arc_len: Array,
+        ) -> tuple[Array, Array]:
+            Ad_inv = lie.Adjoint_gi_se3_inv(xi_i, arc_len, eps=self.global_eps)
+            T = lie.Tangent_gi_se3(xi_i, arc_len, eps=self.global_eps)
+            Td = lie.Tangent_derivative_gi_se3(
+                xi_i, xid_i, arc_len, eps=self.global_eps
+            )
+
+            J_rot = jnp.einsum("ij, njk->nik", Ad_inv, J_prev)
+            J_next = J_rot.at[i].set(Ad_inv @ T)
+
+            J_next_slice = lax.dynamic_index_in_dim(J_next, i, axis=0, keepdims=False)
+            eta = jnp.matmul(J_next_slice, xid_i)
+
+            Ad_inv_dot = -lie.adjoint_se3(eta) @ Ad_inv
+
+            Jd_rot = jnp.einsum("ij, njk->nik", Ad_inv, Jd_prev) + jnp.einsum(
+                "ij, njk->nik", Ad_inv_dot, J_prev
+            )
+            Jd_next = Jd_rot.at[i].set(Ad_inv_dot @ T + Ad_inv @ Td)
+
+            return J_next, Jd_next
+
+        def scan_body(
+            carry: tuple[Array, Array, Array, Array, Array],
+            i: Array,
+        ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
+            J_prev, Jd_prev, J_target, Jd_target, done = carry
+
+            def compute_branch(
+                _: None,
+            ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
+                xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
+                xid_i = lax.dynamic_index_in_dim(xid, i, axis=0, keepdims=False)
+                L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
+                arc_len = jnp.where(i == segment_idx, s_local, L_i)
+
+                J_next, Jd_next = integrate_segment(
+                    J_prev,
+                    Jd_prev,
+                    i,
+                    xi_i,
+                    xid_i,
+                    arc_len,
+                )
+
+                is_target = i == segment_idx
+                J_target_next = jnp.where(is_target, J_next, J_target)
+                Jd_target_next = jnp.where(is_target, Jd_next, Jd_target)
+                done_next = jnp.logical_or(done, is_target)
+
+                return (
+                    J_next,
+                    Jd_next,
+                    J_target_next,
+                    Jd_target_next,
+                    done_next,
+                ), zero_slice
+
+            def skip_branch(
+                _: None,
+            ) -> tuple[tuple[Array, Array, Array, Array, Array], Array]:
+                return (J_prev, Jd_prev, J_target, Jd_target, done), zero_slice
+
+            return lax.cond(done, skip_branch, compute_branch, operand=None)
+
+        carry_init = (
+            zeros,
+            zeros,
+            zeros,
+            zeros,
+            jnp.array(False, dtype=jnp.bool_),
+        )
+
+        indices = jnp.arange(self.num_segments, dtype=segment_idx.dtype)
+        (_, _, J_target, Jd_target, _), _ = lax.scan(scan_body, carry_init, indices)
+
+        J_local = self._final_size_jacobian(J_target) @ self.B_xi
+        Jd_local = self._final_size_jacobian(Jd_target) @ self.B_xi
 
         return J_local, Jd_local
+
+    @eqx.filter_jit
+    def jacobian_and_derivative_bodyframe_batched(
+        self, q: Array, qd: Array, s_ps: Array
+    ) -> tuple[Array, Array]:
+        """
+        Compute the Jacobian and its time-derivative for the forward kinematics at a batch of points s_ps along the robot in the body frame.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_active_strains,).
+            qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
+            s_ps (Array): point coordinates along the robot in the interval [0, L] of shape (N,).
+
+        Returns:
+            J_local_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
+            Jd_local_ps (Array): Time-derivative of the Jacobians, shape (N, 6, num_active_strains)
+        """
+        J_local_ps_, Jd_local_ps_ = self._J_Jd_local_batched(
+            q, qd, s_ps
+        )  # shape (N, 6, num_strains)
+
+        J_local_ps = jnp.einsum(
+            "ijk, kl->ijl", J_local_ps_, self.B_xi
+        )  # shape (N, 6, num_active_strains)
+        Jd_local_ps = jnp.einsum(
+            "ijk, kl->ijl", Jd_local_ps_, self.B_xi
+        )  # shape (N, 6, num_active_strains)
+
+        return J_local_ps, Jd_local_ps
 
     @eqx.filter_jit
     def jacobian_and_derivative_inertialframe(
@@ -1319,7 +1402,7 @@ class PCS(SoftRobot):
             J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
             Jd_global (Array): Time-derivative of the Jacobian at point s in the inertial frame, shape (6, num_active_strains)
         """
-        J_local_, Jd_local_ = self._J_Jd_local(q, qd, s)
+        J_local, Jd_local = self.jacobian_and_derivative_bodyframe(q, qd, s)
 
         # compute the Adjoint transformation matrix at point s
         g_s = self.forward_kinematics(q, s)
@@ -1329,59 +1412,76 @@ class PCS(SoftRobot):
         Ad_g = lie.Adjoint_g_SE3(g_rot)
 
         # compute the body twist eta
-        J_body = J_local_ @ self.B_xi
-        eta_body = J_body @ qd
+        eta_body = J_local @ qd
 
+        # compute the time-derivative of the Adjoint transformation matrix
         omega = eta_body[:3]
         eta_rot = jnp.concatenate([omega, jnp.zeros(3, dtype=eta_body.dtype)])
         Ad_g_dot = Ad_g @ lie.adjoint_se3(eta_rot)
 
         # rotate both J and Jd to the inertial frame
-        J_global_ = jnp.einsum("ij, jk->ik", Ad_g, J_local_)
-        Jd_global_ = jnp.einsum("ij, jk->ik", Ad_g, Jd_local_) + jnp.einsum(
-            "ij, jk->ik", Ad_g_dot, J_local_
+        J_global = jnp.einsum("ij, jk->ik", Ad_g, J_local)
+        Jd_global = jnp.einsum("ij, jk->ik", Ad_g, Jd_local) + jnp.einsum(
+            "ij, jk->ik", Ad_g_dot, J_local
         )
-
-        J_global = J_global_ @ self.B_xi
-        Jd_global = Jd_global_ @ self.B_xi
 
         return J_global, Jd_global
 
-    @eqx.filter_jit
-    def jacobian(self, q: Array, s: Array) -> Array:
-        """
-        Compute the Jacobian of the forward kinematics at a point s along the robot in the inertial frame.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            s (Array): point coordinate along the robot in the interval [0, L].
-
-        Returns:
-            J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
-        """
-        J_global = self.jacobian_inertialframe(q, s)
-
-        return J_global
-
-    @eqx.filter_jit
-    def jacobian_and_derivative(
-        self, q: Array, qd: Array, s: Array
+    def jacobian_and_derivative_inertialframe_batched(
+        self, q: Array, qd: Array, s_ps: Array
     ) -> tuple[Array, Array]:
         """
-        Compute the Jacobian and its time-derivative for the forward kinematics at a point s along the robot in the inertial frame.
+        Compute the Jacobian and its time-derivative for the forward kinematics at a batch of points s_ps along the robot in the inertial frame.
 
         Args:
             q (Array): generalized coordinates of shape (num_active_strains,).
             qd (Array): time-derivative of the generalized coordinates of shape (num_active_strains,).
-            s (Array): point coordinate along the robot in the interval [0, L].
+            s_ps (Array): point coordinates along the robot in the interval [0, L] of shape (N,).
 
         Returns:
-            J_global (Array): Jacobian of the forward kinematics at point s in the inertial frame, shape (6, num_active_strains)
-            Jd_global (Array): Time-derivative of the Jacobian at point s in the inertial frame, shape (6, num_active_strains)
+            J_global_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
+            Jd_global_ps (Array): Time-derivative of the Jacobians, shape (N, 6, num_active_strains)
         """
-        J_global, Jd_global = self.jacobian_and_derivative_inertialframe(q, qd, s)
+        J_local_ps, Jd_local_ps = self.jacobian_and_derivative_bodyframe_batched(
+            q, qd, s_ps
+        )  # shape (N, 6, num_active_strains)
 
-        return J_global, Jd_global
+        g_ps = self.forward_kinematics_batched(q, s_ps)  # shape (N, 4, 4)
+        # construct g with zero translation for the Adjoint transformation
+        g_rot_ps = jnp.block(
+            [
+                [g_ps[:, :3, :3], jnp.zeros((g_ps.shape[0], 3, 1))],
+                [jnp.zeros((g_ps.shape[0], 1, 3)), jnp.ones((g_ps.shape[0], 1, 1))],
+            ]
+        )  # shape (N, 4, 4)
+        Ad_g_ps = vmap(lie.Adjoint_g_SE3)(g_rot_ps)  # shape (N, 6, 6)
+
+        # compute the body twist eta for all points
+        eta_body_ps = jnp.einsum("ijk, k->ij", J_local_ps, qd)  # shape (N, 6)
+
+        # compute the time-derivative of the Adjoint transformation matrix for all points
+        omega_ps = eta_body_ps[:, :3]
+        eta_rot_ps = jnp.concatenate(
+            [omega_ps, jnp.zeros((omega_ps.shape[0], 3), dtype=omega_ps.dtype)],
+            axis=1,
+        )  # shape (N, 6)
+        Ad_g_dot_ps = jnp.einsum(
+            "nij, njk->nik", Ad_g_ps, vmap(lie.adjoint_se3)(eta_rot_ps)
+        )  # shape (N, 6, 6)
+
+        # rotate both J and Jd to the inertial frame
+        J_global_ps = jnp.einsum(
+            "nij, njk->nik", Ad_g_ps, J_local_ps
+        )  # shape (N, 6, num_active_strains)
+        Jd_global_ps = jnp.einsum("nij, njk->nik", Ad_g_ps, Jd_local_ps) + jnp.einsum(
+            "nij, njk->nik", Ad_g_dot_ps, J_local_ps
+        )  # shape (N, 6, num_active_strains)
+        return J_global_ps, Jd_global_ps
+
+    jacobian = jacobian_inertialframe
+    jacobian_batched = jacobian_inertialframe_batched
+    jacobian_and_derivative = jacobian_and_derivative_inertialframe
+    jacobian_and_derivative_batched = jacobian_and_derivative_inertialframe_batched
 
     # ==========================================
     # Useful functions for the system
@@ -1428,6 +1528,7 @@ class PCS(SoftRobot):
 
         Args:
             i (Array): index of the segment as array of shape ()
+
         Returns:
             M_i (Array): local mass matrix of shape (6, 6) for the i-th segment
         """
@@ -1822,26 +1923,6 @@ class PCS(SoftRobot):
         return A
 
     @eqx.filter_jit
-    def actuation_force(self, q: Array, u: Array) -> Array:
-        """
-        Compute the actuation force acting on the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_active_strains,).
-            u (Array): actuation/control input of shape (num_actuators,).
-
-        Returns:
-            tau_u (Array): Actuation force of shape (num_active_strains, ).
-        """
-        # evaluate the actuation matrix
-        A = self.actuation_matrix(q)
-
-        # compute the actuation force
-        tau_u = A @ u
-
-        return tau_u
-
-    @eqx.filter_jit
     def gravitational_energy(self, q: Array) -> Array:
         """
         Compute the gravitational energy of the robot.
@@ -2084,8 +2165,9 @@ class PCS(SoftRobot):
                 Shape is (2 * num_strains,).
             actuation_args (tuple, optional): Additional arguments for the actuation mapping function.
                 Default is None.
+
         Returns:
-            yd: Time derivative of the state vector.
+            yd (Array): Time derivative of the state vector.
         """
         # Split the state vector into configuration and velocity
         q, qd = jnp.split(y, 2)

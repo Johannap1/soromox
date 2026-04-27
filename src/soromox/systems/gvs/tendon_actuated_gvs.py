@@ -17,7 +17,7 @@ class TendonActuatedGVS(GVS):
       Geometric Variable Strain (GVS) model for 3D soft continuum robots with tendon actuation.
 
       This class implements the geometric and dynamic modeling of a 3D soft robot
-      using the Cosserat rod theory with generalized variable strain parametrizations.
+      using the Cosserat rod theory with geometric variable strain parametrizations.
       It supports computation of forward kinematics, Jacobians, and dynamic matrices
       for robots with arbitrary combinations of link cross-sections, joint types, and
       strain basis functions. Additionally, it includes tendon actuation capabilities.

@@ -1,10 +1,10 @@
-# GVS (Generalized Variable Strain)
+# GVS (Geometric Variable Strain)
 
 3D continuum soft robots with generalized strain basis functions.
 
 ## Overview
 
-`GVS` (Generalized Variable Strain) extends the PCS approach by allowing arbitrary strain basis functions instead of piecewise constant assumptions. This provides:
+`GVS` (Geometric Variable Strain) extends the PCS approach by allowing arbitrary strain basis functions instead of piecewise constant assumptions. This provides:
 
 - **Flexible strain parametrization**: Multiple basis function types
 - **Arbitrary joint types**: Various joint configurations at segment boundaries

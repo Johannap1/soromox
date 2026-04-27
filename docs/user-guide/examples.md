@@ -165,7 +165,7 @@ python examples/simulation/hsa/demo_planar_hsa_motor2ee_jacobian.py
 
 **Key concepts:** HSA mechanics, auxetic materials, motor-space to task-space mapping
 
-### GVS (Generalized Variable Strain) Robots
+### GVS (Geometric Variable Strain) Robots
 
 GVS robots use flexible strain basis functions for advanced continuum robot modeling.
 
@@ -179,7 +179,7 @@ python examples/simulation/gvs/simulate_tendon_actuated_gvs.py
 ```
 
 **What you'll learn:**
-- Generalized Variable Strain modeling
+- Geometric Variable Strain modeling
 - Flexible strain basis functions
 - Advanced continuum robot dynamics
 

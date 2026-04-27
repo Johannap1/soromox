@@ -66,7 +66,7 @@ SoRoMoX organizes systems into the following categories:
 |----------|-------------|-----------|
 | [Articulated Systems](articulated/index.md) | Planar and spatial articulated chains, including compliant joints and tendon actuation | 2D & 3D |
 | [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots | 2D & 3D |
-| [GVS Systems](gvs/index.md) | Generalized Variable Strain robots | 3D |
+| [GVS Systems](gvs/index.md) | Geometric Variable Strain robots | 3D |
 | [HSA Systems](hsa/index.md) | Handed Shearing Auxetics robots | 2D |
 
 ## System Summary
@@ -99,7 +99,7 @@ Continuum soft robots using piecewise constant strain modeling.
 
 ### GVS Systems
 
-Continuum robots with generalized variable strain parametrization.
+Continuum robots with Geometric Variable Strain (GVS) parametrization.
 
 | System | Actuation | Use Case |
 |--------|-----------|----------|

@@ -339,7 +339,7 @@ class Pendulum(SoftRobot):
         chi_coms = jnp.concatenate([theta[:, None], p_coms], axis=-1)
         return chi_coms
 
-    def _linear_jacobians_coms(self, q: Array) -> Array:
+    def _linear_jacobian_coms(self, q: Array) -> Array:
         """
         Compute linear velocity Jacobians for all link centers of mass.
 
@@ -366,7 +366,7 @@ class Pendulum(SoftRobot):
         Jv_coms = jnp.stack([col_x, col_y], axis=1)  # (n,2,n)
         return Jv_coms
 
-    def _linear_jacobians_tips(self, q: Array) -> Array:
+    def _linear_jacobian_tips(self, q: Array) -> Array:
         """
         Compute linear velocity Jacobians for the distal tips of all links.
 
@@ -407,7 +407,7 @@ class Pendulum(SoftRobot):
         return Jw_links
 
     @eqx.filter_jit
-    def jacobians_joints(self, q: Array) -> Array:
+    def jacobian_joints(self, q: Array) -> Array:
         """
         Spatial Jacobians at proximal joint positions for all links.
 
@@ -423,7 +423,7 @@ class Pendulum(SoftRobot):
             J_joints (Array): array of spatial Jacobians with shape (N, 3, N), where for each i:
                    J_joints[i] = [Jw; Jv_x; Jv_y] with shape (3, N) at joint i.
         """
-        Jv_tip = self._linear_jacobians_tips(q)  # (N,2,N)
+        Jv_tip = self._linear_jacobian_tips(q)  # (N,2,N)
         # Build linear Jacobians at joints: i=0 -> zeros; i>0 -> tip of (i-1)
         Jv_joints = jnp.zeros_like(Jv_tip)
         Jv_joints = Jv_joints.at[1:].set(Jv_tip[:-1])
@@ -434,9 +434,9 @@ class Pendulum(SoftRobot):
         return J_joints
 
     @eqx.filter_jit
-    def jacobians_tips(self, q: Array) -> Array:
+    def jacobian_tips(self, q: Array) -> Array:
         """
-        Spatial Jacobian for the distal tip of a specified link.
+        Spatial Jacobians for all link tips.
 
         Args:
             q (Array): Joint angles, shape (N,) [rad]
@@ -445,15 +445,13 @@ class Pendulum(SoftRobot):
             J_tips (Array): array of spatial Jacobians with shape (N, 3, N), where for each i:
                    J_tips[i] = [Jw; Jv_x; Jv_y] with shape (3, N) at tip i.
         """
-        Jv_all_tip = self._linear_jacobians_tips(q)  # (N,2,N)
+        Jv_all_tip = self._linear_jacobian_tips(q)  # (N,2,N)
         Jw_all = self._angular_jacobians()  # (N,N)
         J_tips = jnp.concatenate([Jw_all[:, None, :], Jv_all_tip], axis=1)
         return J_tips
 
     @eqx.filter_jit
-    def jacobians_and_derivatives_tips(
-        self, q: Array, qd: Array
-    ) -> tuple[Array, Array]:
+    def jacobian_and_derivatives_tips(self, q: Array, qd: Array) -> tuple[Array, Array]:
         """
         Spatial Jacobians and their time-derivatives at all link tips.
 
@@ -475,12 +473,12 @@ class Pendulum(SoftRobot):
         N = self.num_links
 
         # compute the Jacobians at the tips
-        J_tips = self.jacobians_tips(q)
+        J_tips = self.jacobian_tips(q)
         # the linear part of the jacobian
         Jv_tips = J_tips[:, 1:, :]
 
-        # compute the jacobians at the joints
-        J_joints = self.jacobians_joints(q)
+        # compute the jacobian at the joints
+        J_joints = self.jacobian_joints(q)
         # linear part of the jacobian
         Jv_joints = J_joints[:, 1:, :]
 
@@ -501,7 +499,7 @@ class Pendulum(SoftRobot):
         return J_tips, Jd_tips
 
     @eqx.filter_jit
-    def jacobians_coms(self, q: Array) -> Array:
+    def jacobian_coms(self, q: Array) -> Array:
         """
         Spatial Jacobian for the center of mass (COM) of a specified link.
 
@@ -512,7 +510,7 @@ class Pendulum(SoftRobot):
             J_coms (Array): array of spatial Jacobians with shape (N, 3, N), where for each i:
                    J_coms[i] = [Jw; Jv_x; Jv_y] with shape (3, N) at COM i.
         """
-        Jv_all_com = self._linear_jacobians_coms(q)  # (N,2,N)
+        Jv_all_com = self._linear_jacobian_coms(q)  # (N,2,N)
         Jw_all = self._angular_jacobians()  # (N,N)
         J_coms = jnp.concatenate([Jw_all[:, None, :], Jv_all_com], axis=1)
         return J_coms
@@ -688,7 +686,7 @@ class Pendulum(SoftRobot):
         chi = self.forward_kinematics(q, s)
 
         # Joint positions and velocities
-        J_joints = self.jacobians_joints(q)  # (N, 3, N)
+        J_joints = self.jacobian_joints(q)  # (N, 3, N)
         Jv_joints = J_joints[:, 1:, :]  # (N, 2, N) linear part
         v_joints = jnp.einsum("icj,j->ic", Jv_joints, qd)  # (N, 2)
 
@@ -744,7 +742,7 @@ class Pendulum(SoftRobot):
         Returns:
             B (Array): Generalized mass matrix, shape (N, N) [kg⋅m²]
         """
-        Jv = self._linear_jacobians_coms(q)  # (n,2,n)
+        Jv = self._linear_jacobian_coms(q)  # (n,2,n)
         Jw = self._angular_jacobians()  # (n,n)
         # B = Σ ( m_i Jv_i^T Jv_i + I_i Jw_i^T Jw_i )
         m_terms = jnp.einsum("i,ika,ikb->ab", self.m, Jv, Jv)
@@ -776,8 +774,8 @@ class Pendulum(SoftRobot):
         """
         N = self.num_links
         # Linear Jacobians at COMs and at joints (proximal ends)
-        Jv = self._linear_jacobians_coms(q)  # (N, 2, N) for COMs
-        Jv_tip = self._linear_jacobians_tips(q)  # (N, 2, N) for tips
+        Jv = self._linear_jacobian_coms(q)  # (N, 2, N) for COMs
+        Jv_tip = self._linear_jacobian_tips(q)  # (N, 2, N) for tips
         # Build joint linear Jacobians: joint 0 at origin (zero), joint j>0 equals tip of link j-1
         Jv_joints = jnp.zeros_like(Jv_tip)
         Jv_joints = Jv_joints.at[1:].set(Jv_tip[:-1])  # (N, 2, N)
@@ -815,7 +813,7 @@ class Pendulum(SoftRobot):
         Returns:
             G (Array): Generalized gravity vector, shape (N,) [N⋅m]
         """
-        Jv = self._linear_jacobians_coms(
+        Jv = self._linear_jacobian_coms(
             q
         )  # (N,2,N) -> indices (link, component, joint)
         # Force on COM i: f_i = m_i * g
@@ -875,20 +873,6 @@ class Pendulum(SoftRobot):
         """
         A = jnp.eye(self.num_links)
         return A
-
-    def actuation_force(self, q: Array, u: Array) -> Array:
-        """
-        Compute generalized actuation forces from control inputs.
-
-        Args:
-            q (Array): Joint angles, shape (N,) [rad] (unused)
-            u (Array): Control torques, shape (N,) [N⋅m]
-
-        Returns:
-            tau_u (Array): Generalized actuation forces τ_u = u, shape (N,) [N⋅m]
-        """
-        tau_u = self.actuation_matrix(q) @ u
-        return tau_u
 
     @eqx.filter_jit
     def forward_dynamics(

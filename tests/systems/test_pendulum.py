@@ -4,7 +4,6 @@ jax.config.update("jax_enable_x64", True)  # double precision
 import jax.numpy as jnp
 import numpy as onp
 import pytest
-
 from numpy.testing import assert_allclose
 
 from soromox.systems import Pendulum
@@ -63,12 +62,12 @@ def test_forward_kinematics_simple_configs(N):
 
 
 @pytest.mark.parametrize("N", [2, 3])
-def test_jacobians_match_autodiff(N):
+def test_jacobian_match_autodiff(N):
     robot = make_pendulum(N)
     q = jnp.linspace(-0.3, 0.4, N)
 
     # Tips
-    J_tips_impl = robot.jacobians_tips(q)  # (N,3,N)
+    J_tips_impl = robot.jacobian_tips(q)  # (N,3,N)
     # Autodiff jacobian for each link's [theta, px, py]
     for i in range(robot.num_links):
         f_tip_i = lambda q_: robot.forward_kinematics_tips(q_)[i]
@@ -81,7 +80,7 @@ def test_jacobians_match_autodiff(N):
         )
 
     # COMs
-    J_coms_impl = robot.jacobians_coms(q)
+    J_coms_impl = robot.jacobian_coms(q)
     for i in range(robot.num_links):
         f_com_i = lambda q_: robot.forward_kinematics_coms(q_)[i]
         J_ad_i = jax.jacfwd(f_com_i)(q)
@@ -93,7 +92,7 @@ def test_jacobians_match_autodiff(N):
         )
 
     # Joints
-    J_joints_impl = robot.jacobians_joints(q)
+    J_joints_impl = robot.jacobian_joints(q)
     for i in range(robot.num_links):
         f_joint_i = lambda q_: robot.forward_kinematics_joints(q_)[i]
         J_ad_i = jax.jacfwd(f_joint_i)(q)
@@ -112,11 +111,11 @@ def test_jacobian_time_derivative_matches_jvp(N):
     qd = jnp.linspace(0.6, -0.5, N)
 
     # Closed-form J and Jdot at tips
-    J_closed, Jd_closed = robot.jacobians_and_derivatives_tips(q, qd)
+    J_closed, Jd_closed = robot.jacobian_and_derivatives_tips(q, qd)
 
     # Jdot via directional derivative with JAX JVP
     def J_of_q(q_):
-        return robot.jacobians_tips(q_)
+        return robot.jacobian_tips(q_)
 
     _, Jdot_dir = jax.jvp(J_of_q, (q,), (qd,))
 
@@ -135,14 +134,14 @@ def test_tip_jacobian_time_derivative_autodiff_contraction(N):
     q = jnp.linspace(-0.2, 0.3, N)
     qd = jnp.linspace(0.7, -0.4, N)
 
-    J_tips = robot.jacobians_tips(q)
-    J_tips_closed, Jd_tips_closed = robot.jacobians_and_derivatives_tips(q, qd)
+    J_tips = robot.jacobian_tips(q)
+    J_tips_closed, Jd_tips_closed = robot.jacobian_and_derivatives_tips(q, qd)
 
     # dJ/dq via autodiff, then Jdot = (dJ/dq) · qd
-    dJdq_tips = jax.jacrev(robot.jacobians_tips)(q)  # (N,3,N,N)
+    dJdq_tips = jax.jacrev(robot.jacobian_tips)(q)  # (N,3,N,N)
     Jd_tips_auto = jnp.einsum("ijkl,l->ijk", dJdq_tips, qd)
 
-    # J returned by jacobians_and_derivatives_tips matches jacobians_tips
+    # J returned by jacobian_and_derivatives_tips matches jacobian_tips
     assert_allclose(
         J_tips,
         J_tips_closed,
@@ -289,8 +288,12 @@ def test_forward_kinematics_at_base(N):
     expected_theta = theta_cumsum[0]
     expected_pos = onp.array([0.0, 0.0])
 
-    assert_allclose(chi_s[0], expected_theta, rtol=Tolerance.rtol(), atol=Tolerance.atol())
-    assert_allclose(chi_s[1:], expected_pos, rtol=Tolerance.rtol(), atol=Tolerance.atol())
+    assert_allclose(
+        chi_s[0], expected_theta, rtol=Tolerance.rtol(), atol=Tolerance.atol()
+    )
+    assert_allclose(
+        chi_s[1:], expected_pos, rtol=Tolerance.rtol(), atol=Tolerance.atol()
+    )
 
 
 @pytest.mark.parametrize("N", [2, 3])
@@ -334,13 +337,13 @@ def test_forward_kinematics_interpolates_along_link(N):
 
 
 @pytest.mark.parametrize("N", [2, 3])
-def test_jacobian_at_tips_matches_jacobians_tips(N):
-    """Test that jacobian(q, s) at link tips matches jacobians_tips."""
+def test_jacobian_at_tips_matches_jacobian_tips(N):
+    """Test that jacobian(q, s) at link tips matches jacobian_tips."""
     robot = make_pendulum(N)
     q = jnp.linspace(-0.3, 0.4, N)
 
     # Get Jacobians using both methods
-    J_tips_direct = robot.jacobians_tips(q)
+    J_tips_direct = robot.jacobian_tips(q)
 
     # Get Jacobians using arc-length method
     L_cum = onp.array(robot.L_cum)
@@ -381,13 +384,13 @@ def test_jacobian_matches_autodiff(N):
 
 @pytest.mark.parametrize("N", [2, 3])
 def test_jacobian_and_derivative_at_tips(N):
-    """Test jacobian_and_derivative at tips matches jacobians_and_derivatives_tips."""
+    """Test jacobian_and_derivative at tips matches jacobian_and_derivatives_tips."""
     robot = make_pendulum(N)
     q = jnp.linspace(-0.3, 0.4, N)
     qd = jnp.linspace(0.6, -0.5, N)
 
     # Get from tips method
-    J_tips_direct, Jd_tips_direct = robot.jacobians_and_derivatives_tips(q, qd)
+    J_tips_direct, Jd_tips_direct = robot.jacobian_and_derivatives_tips(q, qd)
 
     # Get using arc-length method
     L_cum = onp.array(robot.L_cum)
@@ -445,23 +448,11 @@ def test_batched_methods(N):
 
     # Jacobian batched
     J_batched = robot.jacobian_batched(q, s_ps)
-    J_tips = robot.jacobians_tips(q)
+    J_tips = robot.jacobian_tips(q)
     assert_allclose(J_batched, J_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
 
     # Jacobian and derivative batched
     J_batched, Jd_batched = robot.jacobian_and_derivative_batched(q, qd, s_ps)
-    J_tips, Jd_tips = robot.jacobians_and_derivatives_tips(q, qd)
+    J_tips, Jd_tips = robot.jacobian_and_derivatives_tips(q, qd)
     assert_allclose(J_batched, J_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
     assert_allclose(Jd_batched, Jd_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
-
-
-if __name__ == "__main__":
-    # Allow running this file directly for ad-hoc checks
-    for N in (2, 3):
-        test_forward_kinematics_simple_configs(N)
-        test_jacobians_match_autodiff(N)
-        test_jacobian_time_derivative_matches_jvp(N)
-        test_inertia_matrix_at_zero_config_matches_closed_form(N)
-        test_coriolis_christoffel_identity(N)
-        test_gravity_matches_negative_potential_gradient(N)
-        test_forward_dynamics_rest_with_zero_forces(N)

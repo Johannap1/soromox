@@ -25,12 +25,17 @@ import seaborn as sns
 
 jax.config.update("jax_enable_x64", True)
 
-from soromox.systems import DynamicalSystem, SystemState
-from tools.benchmarks._benchmark_common import (
+from soromox.systems import DynamicalSystem, SystemState  # noqa: E402
+from tools.benchmarks._benchmark_common import (  # noqa: E402
+    add_gauss_point_args,
     add_integration_args,
     add_system_selection_args,
     block_until_ready,
+    build_system_with_gauss_points,
+    gauss_point_sweep_values,
     get_system_registry,
+    normalize_gauss_point_values,
+    system_gauss_point_metadata,
 )
 
 Array = jax.Array
@@ -125,6 +130,8 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "system",
         "size_label",
         "segment_count",
+        "gauss_points",
+        "integration_points",
         "dof",
         "batch_size",
         "duration_s",
@@ -194,23 +201,44 @@ def _plot_results(
         subset = [row for row in results if row["system"] == system]
         size_label = subset[0]["size_label"]
         segment_values = sorted({row["segment_count"] for row in subset})
+        gauss_values = sorted(
+            {
+                row.get("gauss_points")
+                for row in subset
+                if row.get("gauss_points") not in (None, "")
+            }
+        )
+        gauss_groups: Sequence[int | None] = gauss_values if gauss_values else [None]
         for seg in segment_values:
-            seg_rows = sorted(
-                (row for row in subset if row["segment_count"] == seg),
-                key=lambda r: r["batch_size"],
-            )
-            x = [row["batch_size"] for row in seg_rows]
-            y_per_env = [
-                row.get("per_env_speed_ratio", row.get("speed_ratio"))
-                for row in seg_rows
-            ]
-            y_total = [
-                row.get("total_speed_ratio", row.get("throughput_ratio"))
-                for row in seg_rows
-            ]
-            label = f"{size_label}={seg}"
-            ax_per_env.plot(x, y_per_env, marker="o", label=label)
-            ax_total.plot(x, y_total, marker="o", label=label)
+            for gauss_points in gauss_groups:
+                seg_rows = sorted(
+                    (
+                        row
+                        for row in subset
+                        if row["segment_count"] == seg
+                        and (
+                            gauss_points is None
+                            or row.get("gauss_points") == gauss_points
+                        )
+                    ),
+                    key=lambda r: r["batch_size"],
+                )
+                if not seg_rows:
+                    continue
+                x = [row["batch_size"] for row in seg_rows]
+                y_per_env = [
+                    row.get("per_env_speed_ratio", row.get("speed_ratio"))
+                    for row in seg_rows
+                ]
+                y_total = [
+                    row.get("total_speed_ratio", row.get("throughput_ratio"))
+                    for row in seg_rows
+                ]
+                label = f"{size_label}={seg}"
+                if len(gauss_values) > 1:
+                    label = f"{label}, gauss={gauss_points}"
+                ax_per_env.plot(x, y_per_env, marker="o", label=label)
+                ax_total.plot(x, y_total, marker="o", label=label)
 
         ax_per_env.set_title(f"{system} – per-env speed")
         ax_total.set_title(f"{system} – total throughput")
@@ -242,6 +270,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         description="Measure Soromox simulation throughput vs. batched environments."
     )
     add_system_selection_args(parser, registry, default_segment_counts=[1, 3, 5])
+    add_gauss_point_args(parser)
     add_integration_args(parser)
     parser.add_argument(
         "--batch-sizes",
@@ -318,6 +347,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("All --batch-sizes entries must be >= 1.")
     if any(seg < 1 for seg in args.segment_counts):
         parser.error("All --segment-counts entries must be >= 1.")
+    if args.gauss_points is not None and any(value < 1 for value in args.gauss_points):
+        parser.error("All --gauss-points entries must be >= 1.")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1.")
     if args.warmup_runs < 0:
@@ -325,6 +356,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     args.batch_sizes = sorted(dict.fromkeys(args.batch_sizes))
     args.segment_counts = sorted(dict.fromkeys(args.segment_counts))
+    args.gauss_points = normalize_gauss_point_values(args.gauss_points)
     return args
 
 
@@ -344,70 +376,92 @@ def main(argv: Sequence[str] | None = None) -> int:
     results: list[dict[str, Any]] = []
     for system_name in args.systems:
         config = registry[system_name]
+        gauss_values = gauss_point_sweep_values(config, args.gauss_points)
+        if not gauss_values:
+            print(
+                f"\n[!] Skipping {system_name}: --gauss-points is not applicable "
+                "or all requested values are below the system minimum."
+            )
+            continue
         print(f"\n=== {system_name} ({config.size_label} sweep) ===")
         for size in args.segment_counts:
-            system = config.factory(size)
-            ctx = config.build_context(system)
-            dof = int(ctx["q"].shape[0])
+            for requested_gauss_points in gauss_values:
+                system = build_system_with_gauss_points(
+                    config, size, requested_gauss_points
+                )
+                ctx = config.build_context(system)
+                dof = int(ctx["q"].shape[0])
+                gauss_points, integration_points = system_gauss_point_metadata(system)
 
-            print(f"  -> {config.size_label}={size}, dof={dof}")
-            for batch in args.batch_sizes:
-                q_batch, key = _repeat_with_noise(
-                    ctx["q"], batch, args.noise_scale, key
-                )
-                qd_batch, key = _repeat_with_noise(
-                    ctx["qd"], batch, args.noise_scale, key
-                )
-                u_batch = _repeat(ctx["u"], batch)
-                tau_batch = _repeat(ctx["tau_ext"], batch)
+                gauss_note = ""
+                if requested_gauss_points is not None:
+                    gauss_note = (
+                        f", gauss_points={gauss_points}, "
+                        f"integration_points={integration_points}"
+                    )
 
-                solver = _build_batched_solver(system, runtime)
-                wall_time, outputs = _measure_wall_time(
-                    solver,
-                    (q_batch, qd_batch, u_batch, tau_batch),
-                    warmup_runs=args.warmup_runs,
-                    repeats=args.repeats,
-                )
-                ts_last, *_ = outputs
-                sim_time = float(jnp.mean(ts_last) - runtime.t0)
-                total_sim_time = sim_time * batch
-                per_env_speed = sim_time / wall_time if wall_time > 0 else float("inf")
-                total_speed = (
-                    total_sim_time / wall_time if wall_time > 0 else float("inf")
-                )
-                per_env_wall = wall_time / batch
+                print(f"  -> {config.size_label}={size}, dof={dof}{gauss_note}")
+                for batch in args.batch_sizes:
+                    q_batch, key = _repeat_with_noise(
+                        ctx["q"], batch, args.noise_scale, key
+                    )
+                    qd_batch, key = _repeat_with_noise(
+                        ctx["qd"], batch, args.noise_scale, key
+                    )
+                    u_batch = _repeat(ctx["u"], batch)
+                    tau_batch = _repeat(ctx["tau_ext"], batch)
 
-                print(
-                    f"     batch={batch:>4d} | wall={wall_time:.4f}s | "
-                    f"per-env sim/wall={per_env_speed:.2f}x | "
-                    f"total sim/wall={total_speed:.2f}x | "
-                    f"per-env wall={per_env_wall:.5f}s"
-                )
+                    solver = _build_batched_solver(system, runtime)
+                    wall_time, outputs = _measure_wall_time(
+                        solver,
+                        (q_batch, qd_batch, u_batch, tau_batch),
+                        warmup_runs=args.warmup_runs,
+                        repeats=args.repeats,
+                    )
+                    ts_last, *_ = outputs
+                    sim_time = float(jnp.mean(ts_last) - runtime.t0)
+                    total_sim_time = sim_time * batch
+                    per_env_speed = (
+                        sim_time / wall_time if wall_time > 0 else float("inf")
+                    )
+                    total_speed = (
+                        total_sim_time / wall_time if wall_time > 0 else float("inf")
+                    )
+                    per_env_wall = wall_time / batch
 
-                results.append(
-                    {
-                        "system": system_name,
-                        "size_label": config.size_label,
-                        "segment_count": size,
-                        "dof": dof,
-                        "batch_size": batch,
-                        "duration_s": args.duration,
-                        "solver_dt": args.solver_dt,
-                        "save_dt": args.save_dt,
-                        "wall_time_s": wall_time,
-                        "per_env_wall_time_s": per_env_wall,
-                        "simulated_time_s": sim_time,
-                        "total_simulated_time_s": total_sim_time,
-                        "per_env_speed_ratio": per_env_speed,
-                        "total_speed_ratio": total_speed,
-                        "speed_ratio": per_env_speed,
-                        "noise_scale": args.noise_scale,
-                        "warmup_runs": args.warmup_runs,
-                        "timing_repeats": args.repeats,
-                        "device": device.platform,
-                        "device_id": device_id,
-                    }
-                )
+                    print(
+                        f"     batch={batch:>4d} | wall={wall_time:.4f}s | "
+                        f"per-env sim/wall={per_env_speed:.2f}x | "
+                        f"total sim/wall={total_speed:.2f}x | "
+                        f"per-env wall={per_env_wall:.5f}s"
+                    )
+
+                    results.append(
+                        {
+                            "system": system_name,
+                            "size_label": config.size_label,
+                            "segment_count": size,
+                            "gauss_points": gauss_points,
+                            "integration_points": integration_points,
+                            "dof": dof,
+                            "batch_size": batch,
+                            "duration_s": args.duration,
+                            "solver_dt": args.solver_dt,
+                            "save_dt": args.save_dt,
+                            "wall_time_s": wall_time,
+                            "per_env_wall_time_s": per_env_wall,
+                            "simulated_time_s": sim_time,
+                            "total_simulated_time_s": total_sim_time,
+                            "per_env_speed_ratio": per_env_speed,
+                            "total_speed_ratio": total_speed,
+                            "speed_ratio": per_env_speed,
+                            "noise_scale": args.noise_scale,
+                            "warmup_runs": args.warmup_runs,
+                            "timing_repeats": args.repeats,
+                            "device": device.platform,
+                            "device_id": device_id,
+                        }
+                    )
 
     if args.csv:
         _write_csv(results, args.csv)

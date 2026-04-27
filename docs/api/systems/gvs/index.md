@@ -1,6 +1,6 @@
-# GVS Systems (Generalized Variable Strain)
+# GVS Systems (Geometric Variable Strain)
 
-This section covers continuum soft robots modeled using the Generalized Variable Strain (GVS) approach, which extends PCS with flexible strain basis functions.
+This section covers continuum soft robots modeled using the Geometric Variable Strain (GVS) approach, which extends PCS with flexible strain basis functions.
 
 ## Overview
 
