@@ -79,6 +79,13 @@ def random_q(model, key=jax.random.PRNGKey(0), scale=0.1):
     return scale * jax.random.normal(key, (n,))
 
 
+def expected_selection_basis(num_rows: int, active_indices: tuple[int, ...]) -> Array:
+    basis = jnp.zeros((num_rows, len(active_indices)), dtype=jnp.float64)
+    for col, row in enumerate(active_indices):
+        basis = basis.at[row, col].set(1.0)
+    return basis
+
+
 def segment_tip_poses(model: PlanarPCS, q: Array) -> Array:
     s_vals = model.L_cum[1:]
 
@@ -1478,6 +1485,30 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration() -> Non
 # ======================================================================================
 # Strain-basis consistency tests (selection basis applied correctly across APIs)
 # ======================================================================================
+
+
+def test_strain_basis_creation_matches_selector_order_planar():
+    base_model, params = make_planar_pcs(num_segments=3)
+    strain_selector = jnp.array(
+        [True, False, True, False, True, False, True, True, False], dtype=bool
+    )
+    model = PlanarPCS(
+        num_segments=3,
+        params=params,
+        xi_ref=base_model.xi_ref,
+        strain_selector=strain_selector,
+    )
+
+    expected_B = expected_selection_basis(9, (0, 2, 4, 6, 7))
+
+    assert int(model.num_active_strains.item()) == 5
+    assert model.B_xi.shape == (9, 5)
+    assert_allclose(model.B_xi, expected_B, rtol=0.0, atol=0.0)
+    assert_allclose(model.B_xi.T @ model.B_xi, jnp.eye(5), rtol=0.0, atol=0.0)
+
+    q = jnp.arange(1.0, 6.0)
+    expected_xi = expected_B @ q + model.xi_ref
+    assert_allclose(model.strain(q), expected_xi, rtol=RTOL, atol=ATOL)
 
 
 def _make_full_and_reduced_planar(num_segments: int, selector_per_segment: Array):

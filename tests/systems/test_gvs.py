@@ -274,6 +274,8 @@ def build_constant_strain_gvs(
     num_segments: int = 1,
     selector_per_segment: tuple[bool, ...] | None = None,
     max_dof: int | None = None,
+    segment_length: float = 0.2,
+    scale_rotational_basis_by_length: bool = False,
 ) -> GVS:
     if selector_per_segment is None:
         selector_per_segment = (True, True, True, True, True, True)
@@ -286,7 +288,7 @@ def build_constant_strain_gvs(
                 nu=0.5,
                 rho=1000.0,
                 eta=0.0,
-                L=0.2,
+                L=segment_length,
                 r_i=0.02,
                 r_f=0.02,
             ),
@@ -307,6 +309,7 @@ def build_constant_strain_gvs(
         g=[0.0, 0.0, -9.81],
         max_dof=max_dof,
         p0=jnp.zeros(6),
+        scale_rotational_basis_by_length=scale_rotational_basis_by_length,
     )
 
 
@@ -331,6 +334,13 @@ def tip_arc_lengths(robot: GVS) -> jnp.ndarray:
 def random_q(robot: GVS, key, scale: float = 0.05) -> jnp.ndarray:
     dof = int(robot.num_dofs)
     return scale * jax.random.normal(key, (dof,), dtype=jnp.float64)
+
+
+def expected_selection_basis(num_rows: int, active_indices: tuple[int, ...]) -> Array:
+    basis = jnp.zeros((num_rows, len(active_indices)), dtype=jnp.float64)
+    for col, row in enumerate(active_indices):
+        basis = basis.at[row, col].set(1.0)
+    return basis
 
 
 def se3_inverse(g: jnp.ndarray) -> jnp.ndarray:
@@ -1386,6 +1396,109 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     )
     assert not jnp.isnan(updated.K_full).any()
     assert not jnp.isnan(updated.D_full).any()
+
+
+def test_active_dof_map_creation_matches_joint_and_link_dofs() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+
+    active_indices: list[int] = []
+    row = 0
+    for dof_joint, dof_link in onp.asarray(robot.dofs_per_segment, dtype=int):
+        active_indices.extend(range(row, row + dof_joint))
+        row += robot.max_dof
+        active_indices.extend(range(row, row + dof_link))
+        row += robot.max_dof
+
+    expected_map = expected_selection_basis(
+        int(robot.num_padded_dofs), tuple(active_indices)
+    )
+    expected_blocks = expected_map.reshape(
+        robot.num_segments, 2, robot.max_dof, robot.num_dofs
+    )
+
+    assert robot.active_dof_map.shape == (robot.num_padded_dofs, robot.num_dofs)
+    assert int(robot.num_dofs) == int(jnp.sum(robot.dofs_per_segment))
+    assert_allclose(robot.active_dof_map, expected_map, rtol=0.0, atol=0.0)
+    assert_allclose(robot.active_dof_map_blocks, expected_blocks, rtol=0.0, atol=0.0)
+    assert_allclose(
+        robot.active_dof_map.T @ robot.active_dof_map,
+        jnp.eye(robot.num_dofs),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -> None:
+    length = 0.37
+    unscaled = build_constant_strain_gvs(
+        num_segments=1,
+        max_dof=6,
+        segment_length=length,
+        scale_rotational_basis_by_length=False,
+    )
+    scaled = build_constant_strain_gvs(
+        num_segments=1,
+        max_dof=6,
+        segment_length=length,
+        scale_rotational_basis_by_length=True,
+    )
+
+    B_Z1 = jnp.arange(1.0, 37.0, dtype=jnp.float64).reshape(6, 6)
+    B_Z2 = B_Z1 + 50.0
+    B_Z1_scaled, B_Z2_scaled = scaled._scaled_link_basis_pair(length, B_Z1, B_Z2)
+    B_Z1_unscaled, B_Z2_unscaled = unscaled._scaled_link_basis_pair(
+        length, B_Z1, B_Z2
+    )
+
+    assert_allclose(B_Z1_unscaled, B_Z1, rtol=0.0, atol=0.0)
+    assert_allclose(B_Z2_unscaled, B_Z2, rtol=0.0, atol=0.0)
+    assert_allclose(B_Z1_scaled[:3], B_Z1[:3] / length, rtol=RTOL, atol=ATOL)
+    assert_allclose(B_Z2_scaled[:3], B_Z2[:3] / length, rtol=RTOL, atol=ATOL)
+    assert_allclose(B_Z1_scaled[3:], B_Z1[3:], rtol=0.0, atol=0.0)
+    assert_allclose(B_Z2_scaled[3:], B_Z2[3:], rtol=0.0, atol=0.0)
+
+    q_scaled = jnp.array([0.08, -0.04, 0.03, 0.015, -0.01, 0.02])
+    qd_scaled = jnp.array([-0.03, 0.05, 0.02, 0.04, -0.02, 0.01])
+    coordinate_map = jnp.diag(jnp.array([1 / length] * 3 + [1.0] * 3))
+    q_unscaled = coordinate_map @ q_scaled
+    qd_unscaled = coordinate_map @ qd_scaled
+
+    for s in sample_arc_lengths(scaled):
+        g_scaled = scaled.forward_kinematics(q_scaled, float(s))
+        g_unscaled = unscaled.forward_kinematics(q_unscaled, float(s))
+        assert_allclose(g_scaled, g_unscaled, rtol=RTOL, atol=ATOL)
+
+        J_scaled = scaled.jacobian_bodyframe(q_scaled, float(s))
+        J_unscaled = unscaled.jacobian_bodyframe(q_unscaled, float(s))
+        assert_allclose(
+            J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
+        )
+
+        J_scaled, Jd_scaled = scaled.jacobian_and_derivative_bodyframe(
+            q_scaled, qd_scaled, float(s)
+        )
+        J_unscaled, Jd_unscaled = unscaled.jacobian_and_derivative_bodyframe(
+            q_unscaled, qd_unscaled, float(s)
+        )
+        assert_allclose(
+            J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
+        )
+        assert_allclose(
+            Jd_scaled, Jd_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
+        )
+
+    assert_allclose(
+        scaled.stiffness_matrix(),
+        coordinate_map.T @ unscaled.stiffness_matrix() @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        scaled.damping_matrix(q_scaled),
+        coordinate_map.T @ unscaled.damping_matrix(q_unscaled) @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
 
 
 @pytest.mark.parametrize("num_segments", [1, 2])
