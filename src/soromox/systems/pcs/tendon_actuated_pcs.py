@@ -722,7 +722,7 @@ class TendonActuatedPCS(PCS):
                     # compute tendon length density contribution
                     dl_ds_k = jnp.dot(
                         Phi_a_k.T,
-                        xi_i + jnp.concat([jnp.zeros((3,)), dd_s[:3]], axis=-1),
+                        xi_i + jnp.concatenate([jnp.zeros((3,)), dd_s[:3]], axis=-1),
                     )  # ()
 
                     return dl_ds_k
