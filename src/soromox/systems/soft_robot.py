@@ -41,10 +41,24 @@ class SoftRobot(DynamicalSystem):
         num_dofs (int): Number of degrees of freedom (configuration variables).
         num_actuators (int): Number of actuators.
         global_eps (float): Global epsilon for numerical computations.
+        num_gauss_points (int | Array | None): Requested nonzero
+            Gauss-Legendre quadrature point count. May be scalar for systems
+            with a uniform grid or an array for systems with per-segment grids.
+        num_integration_points (int | Array | None): Stored integration point
+            count, including any zero-weight boundary nodes used internally.
+            May be scalar or per-segment.
+        integration_points (Array | None): Quadrature nodes used for numerical
+            integration, typically on the normalized interval [0, 1].
+        integration_weights (Array | None): Quadrature weights corresponding
+            to `integration_points`.
     """
 
     # global epsilon for numerical computations
     global_eps: float  # Global epsilon for numerical computations
+    num_gauss_points: int | Array | None
+    num_integration_points: int | Array | None
+    integration_points: Array | None
+    integration_weights: Array | None
 
     @property
     def tangent_eps(self) -> Array:
@@ -66,6 +80,10 @@ class SoftRobot(DynamicalSystem):
         # Note: We don't call super().__init__() here because Equinox modules
         # work like dataclasses - fields are set directly rather than through
         # parent __init__ calls. Child classes must set num_dofs and num_actuators.
+        self.num_gauss_points = None
+        self.num_integration_points = None
+        self.integration_points = None
+        self.integration_weights = None
         if eps is not None:
             self.global_eps = eps
         else:

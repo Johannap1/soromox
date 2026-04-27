@@ -38,7 +38,7 @@ def make_planar_model(
     ).flatten()
     params["D"] = 1e-3 * jnp.diag(diag_entries)
 
-    return PlanarPCS(num_segments=num_segments, params=params, order_gauss=3)
+    return PlanarPCS(num_segments=num_segments, params=params, num_gauss_points=3)
 
 
 def make_spatial_model(num_segments: int, total_length: float = TOTAL_LENGTH) -> PCS:
@@ -59,7 +59,7 @@ def make_spatial_model(num_segments: int, total_length: float = TOTAL_LENGTH) ->
     ).flatten()
     params["D"] = 1e-3 * jnp.diag(diag_entries)
 
-    return PCS(num_segments=num_segments, params=params, order_gauss=3)
+    return PCS(num_segments=num_segments, params=params, num_gauss_points=3)
 
 
 def planar_arc_lengths(model: PlanarPCS) -> List[float]:

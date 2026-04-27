@@ -2,7 +2,7 @@ import jax
 import pandas as pd
 import jax.numpy as jnp
 from soromox.systems import CrossSectionGeometry, TendonActuatedGVS
-from soromox.systems.gvs import LinkAttributes, JointAttributes, BasisAttributes
+from soromox.systems.gvs import LinkSpec, JointSpec, StrainBasisSpec
 from functools import partial
 import matplotlib.pyplot as plt
 import optimistix as optx
@@ -16,6 +16,7 @@ jax.config.update("jax_enable_x64", True)
 
 print("JAX default backend:", jax.default_backend())
 print("JAX devices:", jax.devices())
+
 
 ### MOCAP DATA TRANSFORMATION FUNCTIONS ###
 def _transform_points(
@@ -229,7 +230,7 @@ def markers_from_q(robot: TendonActuatedGVS, q: jnp.ndarray) -> jnp.ndarray:
     p1 = tip_at_s(0.1291, jnp.array([0.0, 0.0, 0.025]))
     p2 = tip_at_s(0.2195, jnp.array([0.0, 0.0, -0.021]))
     p3 = tip_at_s(0.2800, jnp.array([0.0, 0.0, 0.020]))
-    p4 = tip_at_s(jnp.sum(robot.V_L), jnp.array([0.008, 0.0, 0.0]))
+    p4 = tip_at_s(jnp.sum(robot.segment_lengths), jnp.array([0.008, 0.0, 0.0]))
     return jnp.concatenate([p1, p2, p3, p4], axis=0)  # (12,)
 
 
@@ -322,11 +323,12 @@ def make_loss_fn(
 
     return loss_fn
 
+
 ### BODY DEFINITION OF THE SOFT ROBOT ###
 
 # 2 link version
 # Link 1
-link1 = LinkAttributes(
+link1 = LinkSpec(
     cross_section_geometry=CrossSectionGeometry.CIRCULAR,
     E=5.05e5,
     nu=0.45,
@@ -338,7 +340,7 @@ link1 = LinkAttributes(
 )
 
 # Link 2
-link2 = LinkAttributes(
+link2 = LinkSpec(
     cross_section_geometry=CrossSectionGeometry.CIRCULAR,
     E=5.05e5,
     nu=0.45,
@@ -348,19 +350,19 @@ link2 = LinkAttributes(
     r_i=0.00642,
     r_f=0.00480,
 )
-joint1 = JointAttributes(jointtype="Fixed")
-joint2 = JointAttributes(jointtype="Fixed")
-basis1 = BasisAttributes(
-    basistype="Monomial", Bdof=[1, 1, 1, 1, 0, 0], Bodr=[0, 1, 1, 1, 0, 0]
+joint1 = JointSpec(type="fixed")
+joint2 = JointSpec(type="fixed")
+basis1 = StrainBasisSpec(
+    type="monomial", active=[1, 1, 1, 1, 0, 0], orders=[0, 1, 1, 1, 0, 0]
 )
-basis2 = BasisAttributes(
-    basistype="Monomial", Bdof=[0, 1, 1, 0, 0, 0], Bodr=[0, 0, 0, 0, 0, 0]
+basis2 = StrainBasisSpec(
+    type="monomial", active=[0, 1, 1, 0, 0, 0], orders=[0, 0, 0, 0, 0, 0]
 )
 
-n_gauss_list = [8, 8]
-gravity_vector = [0.0, 0.0, -9.81]
+num_gauss_points = [8, 8]
+g = [0.0, 0.0, -9.81]
 
-tendon_routing_params = {
+active_tendon_routing_params = {
     "ry": jnp.array(
         [0.0114 * jnp.cos(jnp.pi / 180 * 30), 0.0114 * jnp.cos(jnp.pi / 180 * 150)]
     ),
@@ -378,14 +380,18 @@ tendon_routing_params = {
 p0 = jnp.array([-jnp.pi / 2, jnp.pi / 2, jnp.pi / 2, 0.0, 0.0, 0.0])
 
 robot = TendonActuatedGVS(
-    links_list=[link1, link2],
-    joints_list=[joint1, joint2],
-    basis_list=[basis1, basis2],
-    n_gauss_list=n_gauss_list,
-    gravity_vector=gravity_vector,
-    tendon_routing_params=tendon_routing_params,
+    segments=[
+        GVSSegment(
+            link=link1, joint=joint1, basis=basis1, num_gauss_points=num_gauss_points[0]
+        ),
+        GVSSegment(
+            link=link2, joint=joint2, basis=basis2, num_gauss_points=num_gauss_points[1]
+        ),
+    ],
+    g=g,
+    active_tendon_routing_params=active_tendon_routing_params,
     p0=p0,
-    scale_rotational_strain_basis=True,
+    scale_rotational_basis_by_length=True,
 )
 
 # Initialize parameters
@@ -468,7 +474,7 @@ u_batch = jnp.concatenate([u_m1, u_m2], axis=1)  # shape (2, 8)
 print("u_batch:", u_batch)
 print("measured_markers_batch:", measured_markers_batch)
 
-dof = sum(robot.V_dof.reshape(-1))
+dof = sum(robot.dofs_per_segment.reshape(-1))
 q0 = jnp.zeros((dof,), dtype=jnp.float64)
 
 

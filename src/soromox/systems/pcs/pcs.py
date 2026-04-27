@@ -38,10 +38,12 @@ class PCS(SoftRobot):
         num_active_strains: Number of active strain components (based on strain_selector).
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
+        scale_rotational_basis_by_length: If True, rotational strain-basis rows
+            are divided by their segment length.
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
 
     Notes:
     -----
@@ -76,15 +78,18 @@ class PCS(SoftRobot):
     D: Array  # Damping coefficient of the segments
 
     num_segments: int = eqx.field(static=True)
-    num_gauss_points: int = eqx.field(static=True)  #
+    num_gauss_points: int = eqx.field(static=True)
+    num_integration_points: int = eqx.field(static=True)
     num_strains: int = eqx.field(static=True)  # Number of strains (6 * num_segments)
+    scale_rotational_basis_by_length: bool = eqx.field(static=True)
 
     xi_ref: Array  # Reference configuration strain
+    B_xi_unscaled: Array  # Unscaled strain basis matrix
     B_xi: Array  # Strain basis matrix
     num_active_strains: Array  # Number of selected strains
 
-    Xs: Array  # Gauss nodes
-    Ws: Array  # Gauss weights
+    integration_points: Array
+    integration_weights: Array
     M_segments: Array  # Cached per-segment mass matrices
     K_full: Array  # Cached full stiffness matrix
     K: Array  # Cached active-coordinate stiffness matrix
@@ -95,9 +100,10 @@ class PCS(SoftRobot):
         self,
         num_segments: int,
         params: dict[str, Array],
-        order_gauss: int = 5,
+        num_gauss_points: int = 5,
         strain_selector: Array | None = None,
         xi_ref: Array | None = None,
+        scale_rotational_basis_by_length: bool | None = False,
         **kwargs: Any,
     ):
         """
@@ -131,8 +137,8 @@ class PCS(SoftRobot):
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
-            order_gauss (int, optional):
-                Order of the Gauss-Legendre quadrature for integration over each segment.
+            num_gauss_points (int, optional):
+                Number of nonzero Gauss-Legendre points per segment.
                 Defaults to 5.
             strain_selector (Optional[Array], optional):
                 Boolean array of shape (6 * num_segments,) specifying which strain components are active.
@@ -140,9 +146,13 @@ class PCS(SoftRobot):
             xi_ref (Optional[Array], optional):
                 Reference strain of shape (6 * num_segments,).
                 Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local x-axis).
+            scale_rotational_basis_by_length (bool, optional):
+                If True, divide rotational rows of the active strain basis by
+                the corresponding segment length.
             **kwargs: Additional keyword arguments for SoftRobot.__init__.
         """
         super().__init__(**kwargs)
+        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
 
         # Number of segments
         if not isinstance(num_segments, int):
@@ -161,19 +171,22 @@ class PCS(SoftRobot):
         self._set_params(params)
 
         # ================================================================
-        # Order of Gauss-Legendre quadrature
-        if not isinstance(order_gauss, int):
+        # Integration grid
+        if not isinstance(num_gauss_points, int):
             raise TypeError(
-                f"order_gauss must be an integer, got {type(order_gauss).__name__}"
+                f"num_gauss_points must be an integer, got {type(num_gauss_points).__name__}"
             )
-        if order_gauss < 1:
-            raise ValueError(f"param_integration must be at least 1, got {order_gauss}")
-        Xs, Ws, num_gauss_points = gauss_quadrature(
-            order_gauss, a=jnp.array(0.0), b=jnp.array(1.0)
+        if num_gauss_points < 1:
+            raise ValueError(
+                f"num_gauss_points must be at least 1, got {num_gauss_points}"
+            )
+        integration_points, integration_weights, num_integration_points = (
+            gauss_quadrature(num_gauss_points, a=jnp.array(0.0), b=jnp.array(1.0))
         )
-        self.Xs = Xs
-        self.Ws = Ws
+        self.integration_points = integration_points
+        self.integration_weights = integration_weights
         self.num_gauss_points = num_gauss_points
+        self.num_integration_points = num_integration_points
 
         # ================================================================
         # Strain basis matrix
@@ -194,7 +207,8 @@ class PCS(SoftRobot):
                     f"strain_selector must have {num_strains} elements, got {strain_selector.size}"
                 )
             strain_selector = strain_selector.reshape(num_strains)
-        self.B_xi = compute_strain_basis(strain_selector)
+        self.B_xi_unscaled = compute_strain_basis(strain_selector)
+        self.B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
 
         self.num_active_strains = jnp.sum(strain_selector)
         self.num_dofs = int(self.num_active_strains.item())
@@ -237,6 +251,26 @@ class PCS(SoftRobot):
     def segment_length(self) -> Array:
         """Per-segment backbone lengths."""
         return jnp.asarray(self.L)
+
+    def _strain_basis_scaling_vector(self) -> Array:
+        """Return per-strain coordinate scaling for the constant strain basis."""
+        return jnp.stack(
+            [
+                1.0 / self.L,
+                1.0 / self.L,
+                1.0 / self.L,
+                jnp.ones_like(self.L),
+                jnp.ones_like(self.L),
+                jnp.ones_like(self.L),
+            ],
+            axis=1,
+        ).reshape(self.num_strains)
+
+    def _scaled_strain_basis(self, B_xi: Array) -> Array:
+        """Apply optional length normalization to rotational strain coordinates."""
+        if self.scale_rotational_basis_by_length:
+            return self._strain_basis_scaling_vector()[:, None] * B_xi
+        return B_xi
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
         """Circular cross-section with segment radius."""
@@ -514,6 +548,7 @@ class PCS(SoftRobot):
 
     def precompute(self) -> None:
         """Refresh state-independent matrices cached by the model."""
+        object.__setattr__(self, "B_xi", self._scaled_strain_basis(self.B_xi_unscaled))
         (
             M_segments,
             K_full,
@@ -529,10 +564,12 @@ class PCS(SoftRobot):
 
     def _with_refreshed_precomputed_matrices(self) -> "PCS":
         """Return a copy with cached state-independent matrices refreshed."""
+        B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
+        updated_self = eqx.tree_at(lambda m: m.B_xi, self, B_xi)
         return eqx.tree_at(
             lambda m: (m.M_segments, m.K_full, m.K, m.D_full, m.D_active),
-            self,
-            self._precomputed_matrices(),
+            updated_self,
+            updated_self._precomputed_matrices(),
         )
 
     @eqx.filter_jit
@@ -1572,7 +1609,10 @@ class PCS(SoftRobot):
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
         )(
-            self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:]
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the jacobian for each quadrature point
@@ -1580,7 +1620,7 @@ class PCS(SoftRobot):
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 6, num_active_strains)
         J_ps = J_ps.reshape(
-            self.num_segments, self.num_gauss_points, *J_ps.shape[1:]
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
         )  # shape (num_segments, num_gauss_points, 6, num_active_strains)
 
         def B_i(i: Array) -> Array:
@@ -1596,11 +1636,11 @@ class PCS(SoftRobot):
                 return B_ij
 
             # we can skip the first and last quadrature points since their weight is zero
-            B_blocks_i = vmap(B_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            B_blocks_i = vmap(B_ij)(jnp.arange(1, self.num_integration_points - 1))
 
             # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
             # B_blocks_i = jnp.stack(
-            #     [B_j(j) for j in range(self.num_gauss_points)], axis=0
+            #     [B_j(j) for j in range(self.num_integration_points)], axis=0
             # )
 
             return B_blocks_i
@@ -1649,7 +1689,10 @@ class PCS(SoftRobot):
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
         )(
-            self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:]
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the jacobian and its time-derivative for each quadrature point
@@ -1657,10 +1700,10 @@ class PCS(SoftRobot):
             q, qd, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 6, num_active_strains)
         J_ps = J_ps.reshape(
-            self.num_segments, self.num_gauss_points, *J_ps.shape[1:]
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
         )  # shape (num_segments, num_gauss_points, 6, num_active_strains)
         Jd_ps = Jd_ps.reshape(
-            self.num_segments, self.num_gauss_points, *Jd_ps.shape[1:]
+            self.num_segments, self.num_integration_points, *Jd_ps.shape[1:]
         )  # shape (num_segments, num_gauss_points, 6, num_active_strains)
 
         def C_i(i: Array) -> Array:
@@ -1684,7 +1727,7 @@ class PCS(SoftRobot):
                 return C_ij
 
             # we can skip the first and last quadrature points since their weight is zero
-            C_blocks_i = vmap(C_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            C_blocks_i = vmap(C_ij)(jnp.arange(1, self.num_integration_points - 1))
 
             return C_blocks_i
 
@@ -1727,7 +1770,10 @@ class PCS(SoftRobot):
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
         )(
-            self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:]
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the forward kinematics for each quadrature point
@@ -1735,7 +1781,7 @@ class PCS(SoftRobot):
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 4, 4)
         g_ps = g_ps.reshape(
-            self.num_segments, self.num_gauss_points, 4, 4
+            self.num_segments, self.num_integration_points, 4, 4
         )  # shape (num_segments, num_gauss_points, 4, 4)
 
         # compute the jacobian for each quadrature point
@@ -1743,7 +1789,7 @@ class PCS(SoftRobot):
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 6, num_active_strains)
         J_ps = J_ps.reshape(
-            self.num_segments, self.num_gauss_points, *J_ps.shape[1:]
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
         )  # shape (num_segments, num_gauss_points, 6, num_active_strains)
 
         def G_i(i: Array) -> Array:
@@ -1764,11 +1810,13 @@ class PCS(SoftRobot):
                 return G_ij
 
             # we can skip the first and last quadrature points since their weight is zero
-            G_blocks_segment_i = vmap(G_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            G_blocks_segment_i = vmap(G_ij)(
+                jnp.arange(1, self.num_integration_points - 1)
+            )
 
             # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
             # G_blocks_segment_i = jnp.stack(
-            #     [G_j(j) for j in range(self.num_gauss_points)], axis=0
+            #     [G_j(j) for j in range(self.num_integration_points)], axis=0
             # )
 
             return G_blocks_segment_i
@@ -1937,7 +1985,10 @@ class PCS(SoftRobot):
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
         )(
-            self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:]
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the forward kinematics for each quadrature point
@@ -1945,7 +1996,7 @@ class PCS(SoftRobot):
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 4, 4)
         g_ps = g_ps.reshape(
-            self.num_segments, self.num_gauss_points, 4, 4
+            self.num_segments, self.num_integration_points, 4, 4
         )  # shape (num_segments, num_gauss_points, 4, 4)
 
         def U_G_i(i: Array) -> Array:
@@ -1966,12 +2017,12 @@ class PCS(SoftRobot):
 
             # we can skip the first and last quadrature points since their weight is zero
             U_G_blocks_segment_i = vmap(U_G_ij)(
-                jnp.arange(1, self.num_gauss_points - 1)
+                jnp.arange(1, self.num_integration_points - 1)
             )
 
             # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
             # U_G_blocks_segment_i = jnp.stack(
-            #     [U_G_j(j) for j in range(self.num_gauss_points)], axis=0
+            #     [U_G_j(j) for j in range(self.num_integration_points)], axis=0
             # )
 
             return U_G_blocks_segment_i
@@ -2045,7 +2096,12 @@ class PCS(SoftRobot):
 
         Xs_inner, Ws_inner = vmap(
             scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
         s_local = Xs_inner - self.L_cum[:-1, None]
 
         def scan_fk(g_base: Array, i: Array) -> tuple[Array, Array]:
@@ -2117,7 +2173,7 @@ class PCS(SoftRobot):
         kinematics/Jacobian batch evaluation.
         """
         Ws_inner, g_ps, J_ps, Jd_ps = self._active_quadrature_kinematics(q, qd)
-        num_inner_points = self.num_gauss_points - 2
+        num_inner_points = self.num_gauss_points
 
         def dynamical_terms_i(i: Array) -> tuple[Array, Array, Array]:
             M_i = self.M_segments[i]
