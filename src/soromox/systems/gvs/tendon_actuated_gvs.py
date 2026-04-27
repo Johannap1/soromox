@@ -135,7 +135,7 @@ class TendonActuatedGVS(GVS):
             if idx >= self.num_segments:
                 raise ValueError(
                     'The indexes of the segments of attachment (active_tendon_routing_params["idx_seg_att"]) must be strictly '
-                    + "lower than the number of segments of the robot. Got {idx}; num_segments = {self.num_segments}."
+                    f"lower than the number of segments of the robot. Got {idx}; num_segments = {self.num_segments}."
                 )
         # if self._check_tendon_routing_in_body(active_tendon_routing_params):
         #     raise UserWarning(f"Tendon(s) exit the robot body.")
