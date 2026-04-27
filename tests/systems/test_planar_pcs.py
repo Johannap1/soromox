@@ -5,7 +5,7 @@ from jax import Array, jacfwd, jacrev
 from jax import numpy as jnp
 from numpy.testing import assert_allclose
 
-from soromox.systems import PlanarPCS, CrossSectionGeometry
+from soromox.systems import CrossSectionGeometry, PlanarPCS
 from soromox.utils.integration import scale_interior_gaussian_quadrature
 from soromox.utils.lie_algebra.se2 import Adjoint_g_SE2, exp_SE2
 from soromox.utils.tolerance import Tolerance
@@ -26,6 +26,9 @@ def make_planar_pcs(
     th0: float = jnp.pi / 2,
     xi_ref: Array | None = None,
     total_length: float | None = None,
+    num_gauss_points: int = 5,
+    strain_selector: Array | None = None,
+    scale_rotational_basis_by_length: bool = False,
 ):
     """
     Create a planar constant strain model.
@@ -54,6 +57,9 @@ def make_planar_pcs(
         num_segments=num_segments,
         params=params,
         xi_ref=xi_ref,
+        num_gauss_points=num_gauss_points,
+        strain_selector=strain_selector,
+        scale_rotational_basis_by_length=scale_rotational_basis_by_length,
     )
 
     return model, params
@@ -1509,6 +1515,97 @@ def test_strain_basis_creation_matches_selector_order_planar():
     q = jnp.arange(1.0, 6.0)
     expected_xi = expected_B @ q + model.xi_ref
     assert_allclose(model.strain(q), expected_xi, rtol=RTOL, atol=ATOL)
+
+
+def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates_planar():
+    num_segments = 2
+    total_length = 0.5
+    segment_length = total_length / num_segments
+    unscaled, _ = make_planar_pcs(
+        num_segments=num_segments,
+        total_length=total_length,
+        num_gauss_points=5,
+        scale_rotational_basis_by_length=False,
+    )
+    scaled, _ = make_planar_pcs(
+        num_segments=num_segments,
+        total_length=total_length,
+        num_gauss_points=5,
+        scale_rotational_basis_by_length=True,
+    )
+
+    per_segment_scale = jnp.array([1 / segment_length, 1.0, 1.0], dtype=jnp.float64)
+    coordinate_scale = jnp.tile(per_segment_scale, num_segments)
+    coordinate_map = jnp.diag(coordinate_scale)
+
+    assert scaled.scale_rotational_basis_by_length
+    assert_allclose(
+        scaled.B_xi,
+        coordinate_scale[:, None] * unscaled.B_xi,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
+    q_scaled = jnp.linspace(-0.04, 0.05, int(scaled.num_dofs), dtype=jnp.float64)
+    qd_scaled = jnp.linspace(0.02, -0.03, int(scaled.num_dofs), dtype=jnp.float64)
+    q_unscaled = coordinate_map @ q_scaled
+    qd_unscaled = coordinate_map @ qd_scaled
+
+    assert_allclose(
+        scaled.strain(q_scaled), unscaled.strain(q_unscaled), rtol=RTOL, atol=ATOL
+    )
+
+    for s in sample_arc_lengths(scaled):
+        chi_scaled = scaled.forward_kinematics(q_scaled, s)
+        chi_unscaled = unscaled.forward_kinematics(q_unscaled, s)
+        assert_allclose(chi_scaled, chi_unscaled, rtol=RTOL, atol=ATOL)
+
+        J_scaled = scaled.jacobian_bodyframe(q_scaled, s)
+        J_unscaled = unscaled.jacobian_bodyframe(q_unscaled, s)
+        assert_allclose(J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
+
+        J_scaled, Jd_scaled = scaled.jacobian_and_derivative_bodyframe(
+            q_scaled, qd_scaled, s
+        )
+        J_unscaled, Jd_unscaled = unscaled.jacobian_and_derivative_bodyframe(
+            q_unscaled, qd_unscaled, s
+        )
+        assert_allclose(J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
+        assert_allclose(Jd_scaled, Jd_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
+
+    assert_allclose(
+        scaled.inertia_matrix(q_scaled),
+        coordinate_map.T @ unscaled.inertia_matrix(q_unscaled) @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        scaled.gravitational_force(q_scaled),
+        coordinate_map.T @ unscaled.gravitational_force(q_unscaled),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        scaled.stiffness_matrix(),
+        coordinate_map.T @ unscaled.stiffness_matrix() @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        scaled.damping_matrix(q_scaled),
+        coordinate_map.T @ unscaled.damping_matrix(q_unscaled) @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
+    updated = scaled.update_params({"L": jnp.array([0.2, 0.3])})
+    updated_scale = jnp.array([5.0, 1.0, 1.0, 10 / 3, 1.0, 1.0])
+    assert_allclose(
+        updated.B_xi,
+        updated_scale[:, None] * updated.B_xi_unscaled,
+        rtol=RTOL,
+        atol=ATOL,
+    )
 
 
 def _make_full_and_reduced_planar(num_segments: int, selector_per_segment: Array):

@@ -1446,9 +1446,7 @@ def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -
     B_Z1 = jnp.arange(1.0, 37.0, dtype=jnp.float64).reshape(6, 6)
     B_Z2 = B_Z1 + 50.0
     B_Z1_scaled, B_Z2_scaled = scaled._scaled_link_basis_pair(length, B_Z1, B_Z2)
-    B_Z1_unscaled, B_Z2_unscaled = unscaled._scaled_link_basis_pair(
-        length, B_Z1, B_Z2
-    )
+    B_Z1_unscaled, B_Z2_unscaled = unscaled._scaled_link_basis_pair(length, B_Z1, B_Z2)
 
     assert_allclose(B_Z1_unscaled, B_Z1, rtol=0.0, atol=0.0)
     assert_allclose(B_Z2_unscaled, B_Z2, rtol=0.0, atol=0.0)
@@ -1470,9 +1468,7 @@ def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -
 
         J_scaled = scaled.jacobian_bodyframe(q_scaled, float(s))
         J_unscaled = unscaled.jacobian_bodyframe(q_unscaled, float(s))
-        assert_allclose(
-            J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
-        )
+        assert_allclose(J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
 
         J_scaled, Jd_scaled = scaled.jacobian_and_derivative_bodyframe(
             q_scaled, qd_scaled, float(s)
@@ -1480,12 +1476,8 @@ def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -
         J_unscaled, Jd_unscaled = unscaled.jacobian_and_derivative_bodyframe(
             q_unscaled, qd_unscaled, float(s)
         )
-        assert_allclose(
-            J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
-        )
-        assert_allclose(
-            Jd_scaled, Jd_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL
-        )
+        assert_allclose(J_scaled, J_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
+        assert_allclose(Jd_scaled, Jd_unscaled @ coordinate_map, rtol=RTOL, atol=ATOL)
 
     assert_allclose(
         scaled.stiffness_matrix(),

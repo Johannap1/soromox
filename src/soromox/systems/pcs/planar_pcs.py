@@ -37,7 +37,9 @@ class PlanarPCS(SoftRobot):
         L, r, E, G, rho, D: Physical properties of each segment (length, radius, elastic/shear modulus, etc.).
         num_active_strains: Number of active strain components (based on strain_selector).
         num_strains: Total number of strain components (6 * num_segments).
-        B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
+        B_xi: Basis matrix for projecting active strains (3 * num_segments, num_active_strains).
+        scale_rotational_basis_by_length: If True, rotational strain-basis rows
+            are divided by their segment length.
         xi_ref: Reference strain (reference configuration) of the robot.
         num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
         num_integration_points: Stored integration nodes, including zero-weight endpoints.
@@ -76,8 +78,10 @@ class PlanarPCS(SoftRobot):
     num_gauss_points: int = eqx.field(static=True)
     num_integration_points: int = eqx.field(static=True)
     num_strains: int = eqx.field(static=True)  # Number of strains (3 * num_segments)
+    scale_rotational_basis_by_length: bool = eqx.field(static=True)
 
     xi_ref: Array  # Reference configuration strain
+    B_xi_unscaled: Array  # Unscaled strain basis matrix
     B_xi: Array  # Strain basis matrix
     num_active_strains: Array  # Number of selected strains
 
@@ -96,6 +100,7 @@ class PlanarPCS(SoftRobot):
         num_gauss_points: int = 5,
         strain_selector: Array | None = None,
         xi_ref: Array | None = None,
+        scale_rotational_basis_by_length: bool | None = False,
         **kwargs: Any,
     ):
         """
@@ -132,9 +137,13 @@ class PlanarPCS(SoftRobot):
             xi_ref (Optional[Array], optional):
                 Reference strain of shape (3 * num_segments,).
                 Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local x-axis).
+            scale_rotational_basis_by_length (bool, optional):
+                If True, divide rotational rows of the active strain basis by
+                the corresponding segment length.
             **kwargs: Additional keyword arguments for SoftRobot.__init__.
         """
         super().__init__(**kwargs)
+        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
 
         # Number of segments
         if not isinstance(num_segments, int):
@@ -189,7 +198,8 @@ class PlanarPCS(SoftRobot):
                     f"strain_selector must have {self.num_strains} elements, got {strain_selector.size}"
                 )
             strain_selector = strain_selector.reshape(self.num_strains)
-        self.B_xi = compute_strain_basis(strain_selector)
+        self.B_xi_unscaled = compute_strain_basis(strain_selector)
+        self.B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
 
         self.num_active_strains = jnp.sum(strain_selector)
         self.num_dofs = int(self.num_active_strains.item())
@@ -231,6 +241,18 @@ class PlanarPCS(SoftRobot):
     def segment_length(self) -> Array:
         """Per-segment backbone lengths."""
         return jnp.asarray(self.L)
+
+    def _strain_basis_scaling_vector(self) -> Array:
+        """Return per-strain coordinate scaling for the constant strain basis."""
+        return jnp.stack(
+            [1.0 / self.L, jnp.ones_like(self.L), jnp.ones_like(self.L)], axis=1
+        ).reshape(self.num_strains)
+
+    def _scaled_strain_basis(self, B_xi: Array) -> Array:
+        """Apply optional length normalization to rotational strain coordinates."""
+        if self.scale_rotational_basis_by_length:
+            return self._strain_basis_scaling_vector()[:, None] * B_xi
+        return B_xi
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
         """Circular cross-section with segment radius."""
@@ -501,6 +523,7 @@ class PlanarPCS(SoftRobot):
 
     def precompute(self) -> None:
         """Refresh state-independent matrices cached by the model."""
+        object.__setattr__(self, "B_xi", self._scaled_strain_basis(self.B_xi_unscaled))
         (
             M_segments,
             K_full,
@@ -516,10 +539,12 @@ class PlanarPCS(SoftRobot):
 
     def _with_refreshed_precomputed_matrices(self) -> "PlanarPCS":
         """Return a copy with cached state-independent matrices refreshed."""
+        B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
+        updated_self = eqx.tree_at(lambda m: m.B_xi, self, B_xi)
         return eqx.tree_at(
             lambda m: (m.M_segments, m.K_full, m.K, m.D_full, m.D_active),
-            self,
-            self._precomputed_matrices(),
+            updated_self,
+            updated_self._precomputed_matrices(),
         )
 
     @eqx.filter_jit
