@@ -3,7 +3,7 @@ from soromox.systems.soft_robot import (
     CrossSectionGeometry,
     SoftRobot,
 )
-from soromox.systems.system_state import SystemState
+from soromox.systems.system_state import EnvironmentState, SystemState
 
 from .articulated import ArticulatedSoftRobot
 from .gvs import GVS, TendonActuatedGVS
@@ -21,6 +21,7 @@ from .pendulum import Pendulum, TendonActuatedPendulum
 __all__ = [
     # base classes
     "DynamicalSystem",
+    "EnvironmentState",
     "SoftRobot",
     "CrossSectionGeometry",
     "SystemState",
