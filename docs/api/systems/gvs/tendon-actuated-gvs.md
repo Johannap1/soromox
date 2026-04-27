@@ -4,61 +4,53 @@
 
 ## Overview
 
-`TendonActuatedGVS` extends the base `GVS` class to add cable-driven actuation. It combines:
-
-- **Flexible strain basis functions**: All GVS basis types available
-- **Tendon routing**: Configurable tendon paths along the backbone
-- **Force mapping**: Tendon tensions mapped to generalized forces
+`TendonActuatedGVS` extends `GVS` with cable-driven actuation. Construction uses the same `segments`, `g`, and `p0` arguments as `GVS`, plus active tendon routing parameters.
 
 ## Quick Start
 
 ```python
 import jax.numpy as jnp
-from soromox.systems import TendonActuatedGVS
-
-# Create a tendon-actuated GVS robot
-robot = TendonActuatedGVS(
-    num_segments=2,
-    max_dof=6,
-    V_L=jnp.array([0.1, 0.1]),
-    V_basistype_idx=jnp.array([3, 3]),  # Legendre basis
-    tendon_routing_params=...,           # Tendon configuration
+from soromox.systems import (
+    GVSSegment,
+    JointSpec,
+    LinkSpec,
+    StrainBasisSpec,
+    TendonActuatedGVS,
 )
 
-# Configuration and actuation
-q = jnp.zeros(robot.dof_tot_system)
-u = jnp.array([1.0, -1.0])  # Tendon tensions
+segment = GVSSegment(
+    link=LinkSpec.circular(E=3e5, nu=0.45, rho=1300.0, eta=1e4, L=0.2, r=0.015),
+    joint=JointSpec.fixed(),
+    basis=StrainBasisSpec(type="monomial", active=[1, 1, 1, 1, 0, 0], orders=1),
+    num_gauss_points=8,
+)
 
-# Forward kinematics
-chi = robot.forward_kinematics(q, s=robot.length)
+active_tendon_routing_params = {
+    "ry": jnp.array([0.005]),
+    "my": jnp.array([0.0]),
+    "rz": jnp.array([0.0]),
+    "mz": jnp.array([0.0]),
+    "idx_seg_att": jnp.array([0]),
+}
+
+robot = TendonActuatedGVS(
+    segments=[segment],
+    g=[0.0, 0.0, -9.81],
+    active_tendon_routing_params=active_tendon_routing_params,
+)
+
+q = jnp.zeros(robot.num_dofs)
+u = jnp.array([1.0])
+A = robot.actuation_matrix(q)
 ```
 
-## Key Features
+## Tendon Routing
 
-### Tendon Routing
+The default routing is linear and uses the same key convention as `TendonActuatedPCS`: `ry`, `my`, `rz`, `mz`, and `idx_seg_att`. Custom routing can be supplied with `active_tendon_routing_basis`, whose `d_s` and `dd_s_ds` callables receive one tendon parameter dictionary and an arc-length value.
 
-Similar to `TendonActuatedPCS`, tendons are defined by offset functions:
+## Combined With GVS Features
 
-- `d_s(s)`: Tendon offset vector at arc length `s`
-- `dd_s_ds(s)`: Derivative of tendon offset
-
-### Combined with GVS Features
-
-All GVS basis function types and joint configurations are available:
-
-- Multiple basis functions (Legendre, Chebyshev, Fourier, etc.)
-- Arbitrary joint types at segment boundaries
-- Flexible strain parametrization
-
-## When to Use
-
-Use `TendonActuatedGVS` when you need:
-
-- Cable-driven actuation with complex kinematics
-- Flexible strain basis for accurate deformation modeling
-- Custom joint configurations between segments
-
-For simpler applications, consider `TendonActuatedPCS` which uses piecewise constant strain.
+All GVS segment features remain available: per-segment link geometry, joint type, strain basis family, active strain components, and quadrature resolution.
 
 ## API Reference
 

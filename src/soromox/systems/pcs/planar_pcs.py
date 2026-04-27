@@ -39,9 +39,9 @@ class PlanarPCS(SoftRobot):
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
 
     Notes:
     -----
@@ -73,15 +73,16 @@ class PlanarPCS(SoftRobot):
     D: Array  # Damping coefficient of the segments
 
     num_segments: int = eqx.field(static=True)
-    num_gauss_points: int = eqx.field(static=True)  #
+    num_gauss_points: int = eqx.field(static=True)
+    num_integration_points: int = eqx.field(static=True)
     num_strains: int = eqx.field(static=True)  # Number of strains (3 * num_segments)
 
     xi_ref: Array  # Reference configuration strain
     B_xi: Array  # Strain basis matrix
     num_active_strains: Array  # Number of selected strains
 
-    Xs: Array  # Gauss nodes
-    Ws: Array  # Gauss weights
+    integration_points: Array
+    integration_weights: Array
     M_segments: Array  # Cached per-segment mass matrices
     K_full: Array  # Cached full stiffness matrix
     K: Array  # Cached active-coordinate stiffness matrix
@@ -92,7 +93,7 @@ class PlanarPCS(SoftRobot):
         self,
         num_segments: int,
         params: dict[str, Array],
-        order_gauss: int = 5,
+        num_gauss_points: int = 5,
         strain_selector: Array | None = None,
         xi_ref: Array | None = None,
         **kwargs: Any,
@@ -122,8 +123,8 @@ class PlanarPCS(SoftRobot):
                     Shear modulus of each segment [Pa]
                 - "D": List/Array of (num_segments x num_segments) floats
                     Damping matrix of each segment [Pa*s]
-            order_gauss (int, optional):
-                Order of the Gauss-Legendre quadrature for integration over each segment.
+            num_gauss_points (int, optional):
+                Number of nonzero Gauss-Legendre points per segment.
                 Defaults to 5.
             strain_selector (Optional[Array], optional):
                 Boolean array of shape (3 * num_segments,) specifying which strain components are active.
@@ -152,19 +153,22 @@ class PlanarPCS(SoftRobot):
         self._set_params(params)
 
         # ================================================================
-        # Order of Gauss-Legendre quadrature
-        if not isinstance(order_gauss, int):
+        # Integration grid
+        if not isinstance(num_gauss_points, int):
             raise TypeError(
-                f"order_gauss must be an integer, got {type(order_gauss).__name__}"
+                f"num_gauss_points must be an integer, got {type(num_gauss_points).__name__}"
             )
-        if order_gauss < 1:
-            raise ValueError(f"param_integration must be at least 1, got {order_gauss}")
-        Xs, Ws, num_gauss_points = gauss_quadrature(
-            order_gauss, a=jnp.array(0.0), b=jnp.array(1.0)
+        if num_gauss_points < 1:
+            raise ValueError(
+                f"num_gauss_points must be at least 1, got {num_gauss_points}"
+            )
+        integration_points, integration_weights, num_integration_points = (
+            gauss_quadrature(num_gauss_points, a=jnp.array(0.0), b=jnp.array(1.0))
         )
-        self.Xs = Xs
-        self.Ws = Ws
+        self.integration_points = integration_points
+        self.integration_weights = integration_weights
         self.num_gauss_points = num_gauss_points
+        self.num_integration_points = num_integration_points
 
         # ================================================================
         # Strain basis matrix
@@ -1602,10 +1606,17 @@ class PlanarPCS(SoftRobot):
         """
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
 
         J_ps = self._J_local_batched(q, Xs_scaled.flatten())
-        J_ps = J_ps.reshape(self.num_segments, self.num_gauss_points, *J_ps.shape[1:])
+        J_ps = J_ps.reshape(
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
+        )
 
         def B_i(i: Array) -> Array:
             M_i = self._local_mass_matrix(i)
@@ -1616,7 +1627,7 @@ class PlanarPCS(SoftRobot):
 
                 return Ws_ij * J_ij.T @ M_i @ J_ij
 
-            B_blocks_i = vmap(B_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            B_blocks_i = vmap(B_ij)(jnp.arange(1, self.num_integration_points - 1))
 
             return B_blocks_i
 
@@ -1659,12 +1670,19 @@ class PlanarPCS(SoftRobot):
         """
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
 
         J_ps, Jd_ps = self._J_Jd_local_batched(q, qd, Xs_scaled.flatten())
-        J_ps = J_ps.reshape(self.num_segments, self.num_gauss_points, *J_ps.shape[1:])
+        J_ps = J_ps.reshape(
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
+        )
         Jd_ps = Jd_ps.reshape(
-            self.num_segments, self.num_gauss_points, *Jd_ps.shape[1:]
+            self.num_segments, self.num_integration_points, *Jd_ps.shape[1:]
         )
 
         def C_i(i: Array) -> Array:
@@ -1683,7 +1701,7 @@ class PlanarPCS(SoftRobot):
                     )
                 )
 
-            C_blocks_i = vmap(C_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            C_blocks_i = vmap(C_ij)(jnp.arange(1, self.num_integration_points - 1))
 
             return C_blocks_i
 
@@ -1724,14 +1742,21 @@ class PlanarPCS(SoftRobot):
         """
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
 
         chi_ps = self.forward_kinematics_batched(q, Xs_scaled.flatten())
         g_ps = vmap(lie.exp_SE2)(chi_ps.reshape(-1, 3))
-        g_ps = g_ps.reshape(self.num_segments, self.num_gauss_points, 3, 3)
+        g_ps = g_ps.reshape(self.num_segments, self.num_integration_points, 3, 3)
 
         J_ps = self._J_local_batched(q, Xs_scaled.flatten())
-        J_ps = J_ps.reshape(self.num_segments, self.num_gauss_points, *J_ps.shape[1:])
+        J_ps = J_ps.reshape(
+            self.num_segments, self.num_integration_points, *J_ps.shape[1:]
+        )
 
         def G_i(i: Array) -> Array:
             M_i = self._local_mass_matrix(i)
@@ -1745,7 +1770,9 @@ class PlanarPCS(SoftRobot):
 
                 return -Ws_ij * J_ij.T @ M_i @ Ad_g_inv_ij @ self.g
 
-            G_blocks_segment_i = vmap(G_ij)(jnp.arange(1, self.num_gauss_points - 1))
+            G_blocks_segment_i = vmap(G_ij)(
+                jnp.arange(1, self.num_integration_points - 1)
+            )
 
             return G_blocks_segment_i
 
@@ -1902,10 +1929,15 @@ class PlanarPCS(SoftRobot):
         """
         Xs_scaled, Ws_scaled = vmap(
             scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
 
         chi_ps = self.forward_kinematics_batched(q, Xs_scaled.flatten())
-        chi_ps = chi_ps.reshape(self.num_segments, self.num_gauss_points, 3)
+        chi_ps = chi_ps.reshape(self.num_segments, self.num_integration_points, 3)
 
         def U_G_i(i: Array) -> Array:
             rho_i = self.rho[i]
@@ -1919,7 +1951,7 @@ class PlanarPCS(SoftRobot):
                 return -Ws_ij * rho_i * A_i * jnp.dot(p_j, self.g)
 
             U_G_blocks_segment_i = vmap(U_G_ij)(
-                jnp.arange(1, self.num_gauss_points - 1)
+                jnp.arange(1, self.num_integration_points - 1)
             )
 
             return U_G_blocks_segment_i
@@ -1988,7 +2020,12 @@ class PlanarPCS(SoftRobot):
 
         Xs_scaled, Ws_scaled = vmap(
             scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
-        )(self.Xs, self.Ws, self.L_cum[:-1], self.L_cum[1:])
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
         s_local = Xs_scaled - self.L_cum[:-1, None]
 
         th0 = jnp.asarray(self.th0, dtype=xi.dtype)
@@ -2074,7 +2111,7 @@ class PlanarPCS(SoftRobot):
             G (Array): Gravitational force of shape (num_active_strains,).
         """
         Ws_scaled, g_ps, J_ps, Jd_ps = self._active_quadrature_kinematics(q, qd)
-        num_quad = self.num_gauss_points - 2
+        num_quad = self.num_gauss_points
 
         def dynamical_terms_i(i: Array) -> tuple[Array, Array, Array]:
             M_i = self.M_segments[i]

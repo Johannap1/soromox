@@ -1236,9 +1236,14 @@ def test_active_quadrature_kinematics_matches_existing_batched_path_planar(
     weights, g_quads, J_quads, Jd_quads = model._active_quadrature_kinematics(q, qd)
     Xs_scaled, weights_expected = jax.vmap(
         scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
-    )(model.Xs, model.Ws, model.L_cum[:-1], model.L_cum[1:])
+    )(
+        model.integration_points,
+        model.integration_weights,
+        model.L_cum[:-1],
+        model.L_cum[1:],
+    )
     s_points = Xs_scaled.reshape(-1)
-    num_inner = model.num_gauss_points - 2
+    num_inner = model.num_gauss_points
 
     chi_expected = model.forward_kinematics_batched(q, s_points)
     g_expected = jax.vmap(exp_SE2)(chi_expected).reshape(num_segments, num_inner, 3, 3)

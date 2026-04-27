@@ -18,7 +18,7 @@ from soromox.systems import (
     Pendulum,
     PlanarPCS,
 )
-from soromox.systems.gvs import BasisAttributes, JointAttributes, LinkAttributes
+from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 
 Array = jax.Array
 
@@ -155,7 +155,7 @@ def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
     return PlanarPCS(
         num_segments=num_segments,
         params=params,
-        order_gauss=gauss_points,
+        num_gauss_points=gauss_points,
     )
 
 
@@ -205,7 +205,7 @@ def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
     return PCS(
         num_segments=num_segments,
         params=params,
-        order_gauss=gauss_points,
+        num_gauss_points=gauss_points,
     )
 
 
@@ -234,45 +234,39 @@ def _pcs_context(system: PCS) -> MutableMapping[str, Array]:
 
 
 def _gvs_factory(num_segments: int, gauss_points: int = 5) -> GVS:
-    links: list[LinkAttributes] = []
-    joints: list[JointAttributes] = []
-    bases: list[BasisAttributes] = []
-    n_gauss: list[int] = []
+    segments: list[GVSSegment] = []
     for _ in range(num_segments):
-        links.append(
-            LinkAttributes(
-                cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-                E=1.0e6,
-                nu=0.45,
-                rho=980.0,
-                eta=2.5e3,
-                L=0.25,
-                r_i=0.02,
-                r_f=0.02,
+        segments.append(
+            GVSSegment(
+                link=LinkSpec(
+                    cross_section_geometry=CrossSectionGeometry.CIRCULAR,
+                    E=1.0e6,
+                    nu=0.45,
+                    rho=980.0,
+                    eta=2.5e3,
+                    L=0.25,
+                    r_i=0.02,
+                    r_f=0.02,
+                ),
+                joint=JointSpec(type="fixed"),
+                basis=StrainBasisSpec(
+                    type="monomial",
+                    active=[1, 1, 1, 1, 1, 1],
+                    orders=[1, 1, 1, 1, 1, 1],
+                    xi_ref=[0, 0, 0, 1, 0, 0],
+                ),
+                num_gauss_points=gauss_points,
             )
         )
-        joints.append(JointAttributes(jointtype="Fixed"))
-        bases.append(
-            BasisAttributes(
-                basistype="Monomial",
-                Bdof=[1, 1, 1, 1, 1, 1],
-                Bodr=[1, 1, 1, 1, 1, 1],
-                xi_ref=[0, 0, 0, 1, 0, 0],
-            )
-        )
-        n_gauss.append(gauss_points)
 
     return GVS(
-        links_list=links,
-        joints_list=joints,
-        basis_list=bases,
-        n_gauss_list=n_gauss,
-        gravity_vector=[0.0, 0.0, 9.81],
+        segments=segments,
+        g=[0.0, 0.0, 9.81],
     )
 
 
 def _gvs_context(system: GVS) -> MutableMapping[str, Array]:
-    dof = system.dof_tot_system
+    dof = system.num_dofs
     q = jnp.linspace(-0.12, 0.12, dof)
     qd = jnp.linspace(0.16, -0.16, dof)
     ctx: MutableMapping[str, Array] = {
@@ -282,7 +276,7 @@ def _gvs_context(system: GVS) -> MutableMapping[str, Array]:
         "tau_ext": jnp.zeros((dof,)),
         "y": jnp.concatenate([q, qd]),
         "t": jnp.array(0.0),
-        "s_tip": jnp.sum(system.V_L),
+        "s_tip": jnp.sum(system.segment_lengths),
     }
     return ctx
 
@@ -417,13 +411,12 @@ def system_gauss_point_metadata(system: Any) -> tuple[int | None, int | None]:
     boundary nodes where the implementation stores them.
     """
 
-    if hasattr(system, "max_nGauss"):
-        gauss_points = int(system.max_nGauss)
-        integration_points = int(getattr(system, "max_nip", gauss_points + 2))
-        return gauss_points, integration_points
-    if hasattr(system, "num_gauss_points"):
-        integration_points = int(system.num_gauss_points)
-        return integration_points - 2, integration_points
+    if hasattr(system, "max_num_gauss_points"):
+        return int(system.max_num_gauss_points), int(system.max_num_integration_points)
+    if hasattr(system, "num_gauss_points") and hasattr(
+        system, "num_integration_points"
+    ):
+        return int(system.num_gauss_points), int(system.num_integration_points)
     return None, None
 
 

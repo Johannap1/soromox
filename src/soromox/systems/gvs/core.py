@@ -1,6 +1,6 @@
 __all__ = ["GVS"]
 import math
-from typing import Any, cast
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -8,12 +8,8 @@ import jax.numpy as jnp
 from jax import Array, lax, vmap
 
 import soromox.utils.lie_algebra as lie
-from soromox.systems.gvs.attributes import (
-    BasisAttributes,
-    JointAttributes,
-    LinkAttributes,
-)
-from soromox.systems.gvs.data_classes import SegmentData
+from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
+from soromox.systems.gvs._runtime import SegmentRuntimeData
 from soromox.systems.gvs.joint_bases import (
     B_Cylindrical,
     B_Fixed,
@@ -26,6 +22,7 @@ from soromox.systems.gvs.joint_bases import (
 )
 from soromox.systems.gvs.operands import GeometricOperand, JointOperand
 from soromox.systems.gvs.primitives import Basis, Joint, Link
+from soromox.systems.gvs.specs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 from soromox.systems.gvs.strain_bases import (
     B_IMQ,
     B_Chebychev,
@@ -35,7 +32,6 @@ from soromox.systems.gvs.strain_bases import (
     B_Monomial,
 )
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
-from soromox.utils.basic import compute_strain_basis
 from soromox.utils.integration import gauss_quadrature
 
 
@@ -52,26 +48,26 @@ class GVS(SoftRobot):
     Attributes:
         num_segments: Number of segments (links) in the robot.
         max_dof: Maximum number of degrees of freedom (DOFs) per link or joint.
-        max_nGauss: Maximum number of Gauss points per link used for integration.
-        max_nip: Maximum number of integration points per link (= max_nGauss + 2).
-        dof_tot_system: Total number of DOFs for the robot (sum of joint + link DOFs).
-        dof_tot_max: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
-        B_select: Strain basis selection matrix mapping active DOFs to the full strain space.
-        scale_rotational_strain_basis: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
-        V_L, V_L_cum: Length of each link, and cumulative link lengths.
-        V_nip: Number of integration/evaluation points for each link.
-        V_dof: Number of DOFs for each link/joint pair (shape: num_segments x 2).
-        V_Xs, V_Ws: Gauss quadrature nodes and weights for each link.
-        V_Ms, V_Es, V_Gs: Mass, stiffness, and damping matrices at integration points.
-        V_B_joint, V_B_Xs, V_B_Z1, V_B_Z2: Basis matrices for joints and links at quadrature points and intermediate points.
-        V_xi_ref_joint, V_xi_ref_Xs, V_xi_ref_Z1, V_xi_ref_Z2: Reference strain vectors for joints and links.
-        V_K_joint: Joint stiffness matrices.
+        max_num_gauss_points: Maximum number of Gauss points per link used for integration.
+        max_num_integration_points: Maximum number of integration points per link (= max_num_gauss_points + 2).
+        num_dofs: Total number of DOFs for the robot (sum of joint + link DOFs).
+        num_padded_dofs: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
+        active_dof_map: Strain basis selection matrix mapping active DOFs to the full strain space.
+        scale_rotational_basis_by_length: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
+        segment_lengths, segment_end_positions: Length of each link, and cumulative link lengths.
+        num_integration_points: Number of integration/evaluation points for each link.
+        dofs_per_segment: Number of DOFs for each link/joint pair (shape: num_segments x 2).
+        integration_points, integration_weights: Gauss quadrature nodes and weights for each link.
+        mass_matrices, stiffness_matrices, damping_matrices: Mass, stiffness, and damping matrices at integration points.
+        B_joint, B_Xs, B_Z1, B_Z2: Basis matrices for joints and links at quadrature points and intermediate points.
+        xi_ref_joint, xi_ref_Xs, xi_ref_Z1, xi_ref_Z2: Reference strain vectors for joints and links.
+        joint_stiffness: Joint stiffness matrices.
         K_full: Precomputed full stiffness matrix for the robot.
         D_full: Precomputed full damping matrix for the robot.
         g0: Initial pose of the robot base as an SE(3) transformation matrix.
         g: Gravitational acceleration vector in 6D wrench form.
-        V_basistype_idx: Index of the strain basis type used for each segment.
-        V_Bdof_params, V_Bodr_params: Parameters controlling the strain basis DOFs and orders.
+        basis_type_index: Index of the strain basis type used for each segment.
+        basis_active_params, basis_order_params: Parameters controlling the strain basis DOFs and orders.
 
     Notes
     -----
@@ -106,60 +102,63 @@ class GVS(SoftRobot):
     max_dof: int = eqx.field(
         static=True
     )  # Maximum number of DOFs for one link of the robot
-    max_nGauss: int = eqx.field(
+    max_num_gauss_points: int = eqx.field(
         static=True
     )  # Maximum number of Gauss points for one link of the robot
-    max_nip: int = eqx.field(
+    max_num_integration_points: int = eqx.field(
         static=True
     )  # Maximum number of integration points for one link of the robot
+    num_gauss_points: Array
 
-    dof_tot_system: int = eqx.field(
+    num_dofs: int = eqx.field(
         static=True
-    )  # Total number of DOFs for the robot = sum(V_dof)
-    dof_tot_max: int = eqx.field(
+    )  # Total number of DOFs for the robot = sum(dofs_per_segment)
+    num_padded_dofs: int = eqx.field(
         static=True
     )  # Total number of DOFs for the robot, considering the maximum DOFs per link: num_segments * 2 * max_dof
 
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
 
-    B_select: Array  # Strain basis functions for the robot (6, max_dof)
+    active_dof_map: Array  # Strain basis functions for the robot (6, max_dof)
     # Active selectors by segment/block.
-    B_select_blocks: Array
-    scale_rotational_strain_basis: (
+    active_dof_map_blocks: Array
+    scale_rotational_basis_by_length: (
         bool  # If True, apply length scaling to angular strain contributions
     )
 
     # Dynamic attributes
-    V_L: Array  # List of lengths for each link (num_segments, )
-    V_L_cum: Array  # Cumulative lengths of the links (num_segments + 1, )
-    V_nip: Array  # List of number of evaluation points for each link (num_segments, )
-    V_dof: Array  # List of number of DOFs for each link (num_segments, )
-    V_Xs: Array  # List of integration points for each link (num_segments, max_nip)
-    V_Ws: Array  # List of weights for each link (num_segments, max_nip)
+    segment_lengths: Array  # List of lengths for each link (num_segments, )
+    segment_end_positions: Array  # Cumulative lengths of the links (num_segments + 1, )
+    num_integration_points: (
+        Array  # List of number of evaluation points for each link (num_segments, )
+    )
+    dofs_per_segment: Array  # List of number of DOFs for each link (num_segments, )
+    integration_points: Array  # List of integration points for each link (num_segments, max_num_integration_points)
+    integration_weights: Array  # List of weights for each link (num_segments, max_num_integration_points)
     # Length-scaled non-endpoint quadrature weights.
-    V_Ws_inner: Array
-    V_Ms: Array
-    V_Ms_inner: Array
-    V_Es: Array
-    V_Gs: Array
+    inner_integration_weights: Array
+    mass_matrices: Array
+    inner_mass_matrices: Array
+    stiffness_matrices: Array
+    damping_matrices: Array
 
-    V_B_joint: Array
-    V_B_Xs: Array
-    V_B_Z1: Array
-    V_B_Z2: Array
+    B_joint: Array
+    B_Xs: Array
+    B_Z1: Array
+    B_Z2: Array
 
-    V_xi_ref_joint: Array
-    V_xi_ref_Xs: Array
-    V_xi_ref_Z1: Array
-    V_xi_ref_Z2: Array
+    xi_ref_joint: Array
+    xi_ref_Xs: Array
+    xi_ref_Z1: Array
+    xi_ref_Z2: Array
 
-    V_K_joint: Array  # Joint stiffness matrix (num_segments, max_dof, max_dof)
+    joint_stiffness: Array  # Joint stiffness matrix (num_segments, max_dof, max_dof)
     # Precomputed full stiffness and damping matrices
-    K_full: Array  # Full stiffness matrix (dof_tot_max, dof_tot_max)
-    K: Array  # Active-coordinate stiffness matrix (dof_tot_system, dof_tot_system)
-    D_full: Array  # Full damping matrix (dof_tot_max, dof_tot_max)
-    D_active: Array  # Active-coordinate damping matrix (dof_tot_system, dof_tot_system)
+    K_full: Array  # Full stiffness matrix (num_padded_dofs, num_padded_dofs)
+    K: Array  # Active-coordinate stiffness matrix (num_dofs, num_dofs)
+    D_full: Array  # Full damping matrix (num_padded_dofs, num_padded_dofs)
+    D_active: Array  # Active-coordinate damping matrix (num_dofs, num_dofs)
     gather_indices: Array  # Indices for active-to-padded coordinate gather
     gather_mask: Array  # Valid-entry mask for active-to-padded coordinate gather
 
@@ -167,334 +166,39 @@ class GVS(SoftRobot):
     g: Array  # Gravity vector (6,)
 
     # Addition to compute forward kinematics at s
-    V_basistype_idx: Array  # Index of the basis type for each segment (num_segments,)
-    V_Bdof_params: Array  # Parameters for the basis DOFs (num_segments, max_dof)
-    V_Bodr_params: Array  # Parameters for the basis orientation (num_segments, max_dof)
-    V_cross_section_geometry: Array  # CrossSectionGeometry index for each segment
-    V_r_params: Array  # Circular params (num_segments, 2)
-    V_h_params: Array  # Rectangular height params (num_segments, 2)
-    V_w_params: Array  # Rectangular width params (num_segments, 2)
-    V_a_params: Array  # Elliptical semi-major params (num_segments, 2)
-    V_b_params: Array  # Elliptical semi-minor params (num_segments, 2)
+    basis_type_index: Array  # Index of the basis type for each segment (num_segments,)
+    basis_active_params: Array  # Parameters for the basis DOFs (num_segments, max_dof)
+    basis_order_params: (
+        Array  # Parameters for the basis orientation (num_segments, max_dof)
+    )
+    cross_section_geometry_index: Array  # CrossSectionGeometry index for each segment
+    radius_params: Array  # Circular params (num_segments, 2)
+    height_params: Array  # Rectangular height params (num_segments, 2)
+    width_params: Array  # Rectangular width params (num_segments, 2)
+    semi_major_params: Array  # Elliptical semi-major params (num_segments, 2)
+    semi_minor_params: Array  # Elliptical semi-minor params (num_segments, 2)
 
     def __init__(
         self,
-        links_list: list[LinkAttributes,],
-        joints_list: list[JointAttributes,],
-        basis_list: list[BasisAttributes,],
-        n_gauss_list: list[int],
-        gravity_vector: list[float],
+        segments: list[GVSSegment] | tuple[GVSSegment, ...],
+        g: list[float] | Array,
         max_dof: int | None = None,
-        max_nGauss: int | None = None,
+        max_num_gauss_points: int | None = None,
         p0: Array | None = None,
-        scale_rotational_strain_basis: bool | None = False,
+        scale_rotational_basis_by_length: bool | None = False,
         **kwargs: Any,
     ) -> None:
-        """
-        Initialize the GVS class.
-
-        Args:
-            links_list (List[LinkAttributes]):
-                List of link property objects (one per segment) containing geometric and
-                material attributes:
-                - cross_section_geometry: CrossSectionGeometry value.
-                - E: Young's modulus [N/m²].
-                - nu: Poisson's ratio [-1, 0.5].
-                - rho: Density [kg/m³].
-                - eta: Material damping [N·s/m].
-                - L: Length of the link [m].
-                - One of the following geometric parameters must be provided based on the section type:
-                    - r_i, r_f: Initial and final radius for circular sections.
-                    - h_i, h_f: Initial and final height for rectangular sections.
-                    - w_i, w_f: Initial and final width for rectangular sections.
-                    - a_i, a_f: Initial and final semi-major axis for elliptical sections.
-                    - b_i, b_f: Initial and final semi-minor axis for elliptical sections.
-            joints_list (List[JointAttributes]):
-                List of joint property objects (one per segment) describing the connection
-                between segments :
-                - jointtype: Type of joint ('Revolute', 'Prismatic', 'Helical', 'Cylindrical',
-                    'Planar', 'Spherical', 'Free', 'Fixed').
-                - axis: Axis of motion ('x', 'y', 'z') for revolute/prismatic joints.
-                - plane: Plane of motion ('xy', 'yz', 'xz') for cylindrical/planar joints.
-                - pitch: Pitch for helical joints.
-                - K_joint: Joint stiffness matrix (optional, defaults to zeros). If provided,
-                must have shape (dof_joint, dof_joint); otherwise it is ignored and a
-                zero matrix is used. Units match the active DOFs: rotational terms
-                [N·m/rad], translational terms [N/m]; off-diagonal couplings accordingly.
-            basis_list (List[BasisAttributes]):
-                List of strain basis attributes (one per segment) defining the parametrization
-                of the variable strain field along the link:
-                - basistype: Type of basis function ('Monomial', 'Legendre', 'Chebychev', 'Fourier', 'Gaussian', 'IMQ').
-                - Bdof: Array indicating which types of deformation are selected (1) or not (0).
-                    e.g., [1, 0, 1, 0, 0, 0] means kappa_x and sigma_y are selected.
-                - Bodr: Array indicating the orders of the basis functions for each type of deformation.
-                - xi_ref: Reference strain values for each type of deformation.
-            n_gauss_list (List[int]):
-                Number of Gauss-Legendre quadrature points for integration in each segment.
-            gravity_vector (List[float]):
-                3-element gravity vector [gx, gy, gz] in m/s².
-            max_dof (int, optional):
-                Maximum number of DOFs for a link or joint. If None, computed as minimal from the inputs.
-            max_nGauss (int, optional):
-                Maximum number of Gauss points across all segments. If None, computed as minimal from `n_gauss_list`.
-            p0 (List/Array of shape (6,), optional):
-                    Initial orientation angle and position in the inertial frame [rad, m]
-                    [ψ, θ, φ, x0, y0, z0]
-            scale_rotational_strain_basis (bool, optional):
-                If True, apply length scaling to the angular component of the strain basis matrix for improved numerical stability.
-            **kwargs: Additional keyword arguments for SoftRobot.__init__.
-
-        Raises
-        ------
-        ValueError
-            If the input lists differ in length or if `max_dof` / `max_nGauss`
-            are smaller than required.
-        TypeError
-            If input types do not match the expected formats.
-
-        Notes
-        -----
-        - This constructor precomputes and stores link/joint basis matrices,
-        Gauss quadrature data, geometric properties, and reference strains
-        for each segment.
-        - Internal arrays are padded to `max_dof` and `max_nip` to allow vectorized
-        batched computations across all segments.
-        """
+        """Initialize a GVS robot from explicit per-segment specifications."""
         super().__init__(**kwargs)
-
-        self.scale_rotational_strain_basis = bool(scale_rotational_strain_basis)
-
-        if (
-            len(links_list) != len(joints_list)
-            or len(links_list) != len(basis_list)
-            or len(links_list) != len(n_gauss_list)
-        ):
-            raise ValueError(
-                "The lists of links, joints, basis attributes and n_gauss must have the same length."
-            )
-        self.num_segments = len(links_list)
-
-        if max_nGauss is None:
-            max_nGauss = max(n_gauss_list)
-        elif max_nGauss < max(n_gauss_list):
-            raise ValueError(
-                f"max_nGauss must be greater than or equal to the maximum n_gauss in n_gauss_list ({max(n_gauss_list)}), but got {max_nGauss}."
-            )
-
-        if max_nGauss < 5:
-            raise ValueError(
-                f"max_nGauss must be greater than 5, but got {max_nGauss}."
-            )
-        self.max_nGauss = max_nGauss
-        self.max_nip = max_nGauss + 2  # +2 for the boundary points
-
-        dofs_joint = [Joint.DICT_JOINT_TYPE_DOF[j.jointtype] for j in joints_list]
-        dofs_link = [
-            int(
-                Basis.DOF_BRANCHES[Basis.BASISTYPE_MAP[b.basistype]](
-                    (jnp.asarray(b.Bdof), jnp.asarray(b.Bodr))
-                )
-            )
-            for b in basis_list
-        ]
-        real_max_dof = max(dofs_joint + dofs_link)
-
-        if max_dof is None:
-            max_dof = real_max_dof
-        elif max_dof < real_max_dof:
-            raise ValueError(
-                f"max_dof must be greater than or equal to the maximum DOF in links and joints ({real_max_dof}), but got {max_dof}."
-            )
-        self.max_dof = max_dof
-
-        V_L = jnp.empty((self.num_segments,), dtype=float)
-        V_nip = jnp.empty((self.num_segments,), dtype=int)
-        V_dof = jnp.empty((self.num_segments, 2), dtype=int)
-        V_Xs = jnp.empty(
-            (
-                self.num_segments,
-                self.max_nip,
-            ),
-            dtype=float,
+        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
+        assign_gvs_runtime_arrays(
+            self,
+            segments=segments,
+            max_dof=max_dof,
+            max_num_gauss_points=max_num_gauss_points,
+            g=g,
+            p0=p0,
         )
-        V_Ws = jnp.empty(
-            (
-                self.num_segments,
-                self.max_nip,
-            ),
-            dtype=float,
-        )
-
-        V_Ms = jnp.empty((self.num_segments, self.max_nip, 6, 6), dtype=float)
-        V_Es = jnp.empty((self.num_segments, self.max_nip, 6, 6), dtype=float)
-        V_Gs = jnp.empty((self.num_segments, self.max_nip, 6, 6), dtype=float)
-
-        V_B_joint = jnp.empty((self.num_segments, 6, self.max_dof), dtype=float)
-        V_B_Xs = jnp.empty(
-            (self.num_segments, self.max_nip, 6, self.max_dof), dtype=float
-        )
-        V_B_Z1 = jnp.empty(
-            (self.num_segments, self.max_nip - 1, 6, self.max_dof), dtype=float
-        )
-        V_B_Z2 = jnp.empty(
-            (self.num_segments, self.max_nip - 1, 6, self.max_dof), dtype=float
-        )
-
-        V_xi_ref_joint = jnp.empty(
-            (
-                self.num_segments,
-                6,
-            ),
-            dtype=float,
-        )
-        V_xi_ref_Xs = jnp.empty((self.num_segments, self.max_nip, 6), dtype=float)
-        V_xi_ref_Z1 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
-        V_xi_ref_Z2 = jnp.empty((self.num_segments, self.max_nip - 1, 6), dtype=float)
-
-        V_K_joint = jnp.empty(
-            (self.num_segments, self.max_dof, self.max_dof), dtype=float
-        )
-
-        V_strain_selector = jnp.zeros(
-            (self.num_segments, 2 * self.max_dof), dtype=jnp.bool_
-        )
-
-        # Addition to compute forward kinematics at s
-        V_basistype_idx = jnp.empty((self.num_segments,), dtype=int)
-        V_Bdof_params = jnp.empty((self.num_segments, 6))
-        V_Bodr_params = jnp.empty((self.num_segments, 6))
-        V_cross_section_geometry = jnp.empty((self.num_segments,), dtype=int)
-        V_r_params = jnp.empty((self.num_segments, 2))
-        V_h_params = jnp.empty((self.num_segments, 2))
-        V_w_params = jnp.empty((self.num_segments, 2))
-        V_a_params = jnp.empty((self.num_segments, 2))
-        V_b_params = jnp.empty((self.num_segments, 2))
-
-        for i_segment in range(self.num_segments):
-            # Use the provided attributes from the links_list
-            joint_attrs = cast(JointAttributes, joints_list[i_segment])
-            link_attrs = cast(LinkAttributes, links_list[i_segment])
-            basis_attrs = cast(BasisAttributes, basis_list[i_segment])
-            n_gauss_i = n_gauss_list[i_segment]
-
-            segment_attributes = self._build_segment_i(
-                max_dof=self.max_dof,
-                max_nip=self.max_nip,
-                link_attrs=link_attrs,
-                joint_attrs=joint_attrs,
-                basis_attrs=basis_attrs,
-                n_gauss=n_gauss_i,
-            )
-
-            # Update the total vectors ==========================================================================
-            V_L = V_L.at[i_segment].set(segment_attributes.L)
-            V_nip = V_nip.at[i_segment].set(segment_attributes.nip)
-            V_dof = V_dof.at[i_segment].set(segment_attributes.dofs_joint_link)
-
-            V_Xs = V_Xs.at[i_segment].set(segment_attributes.Xs)
-            V_Ws = V_Ws.at[i_segment].set(segment_attributes.Ws)
-
-            V_Ms = V_Ms.at[i_segment].set(segment_attributes.Ms)
-            V_Es = V_Es.at[i_segment].set(segment_attributes.Es)
-            V_Gs = V_Gs.at[i_segment].set(segment_attributes.Gs)
-
-            V_B_joint = V_B_joint.at[i_segment].set(segment_attributes.B_joint)
-            V_B_Xs = V_B_Xs.at[i_segment].set(segment_attributes.B_Xs)
-            V_B_Z1 = V_B_Z1.at[i_segment].set(segment_attributes.B_Z1)
-            V_B_Z2 = V_B_Z2.at[i_segment].set(segment_attributes.B_Z2)
-
-            V_xi_ref_joint = V_xi_ref_joint.at[i_segment].set(
-                segment_attributes.xi_ref_joint
-            )
-            V_xi_ref_Xs = V_xi_ref_Xs.at[i_segment].set(segment_attributes.xi_ref_Xs)
-            V_xi_ref_Z1 = V_xi_ref_Z1.at[i_segment].set(segment_attributes.xi_ref_Z1)
-            V_xi_ref_Z2 = V_xi_ref_Z2.at[i_segment].set(segment_attributes.xi_ref_Z2)
-
-            V_K_joint = V_K_joint.at[i_segment].set(segment_attributes.K_joint)
-
-            V_strain_selector = V_strain_selector.at[i_segment].set(
-                segment_attributes.strain_selector
-            )
-
-            # Addition to compute forward kinematics at s
-            V_basistype_idx = V_basistype_idx.at[i_segment].set(
-                Basis.BASISTYPE_MAP[basis_attrs.basistype]
-            )
-            V_Bdof_params = V_Bdof_params.at[i_segment].set(basis_attrs.Bdof)
-            V_Bodr_params = V_Bodr_params.at[i_segment].set(basis_attrs.Bodr)
-            V_cross_section_geometry = V_cross_section_geometry.at[i_segment].set(
-                int(link_attrs.cross_section_geometry)
-            )
-            V_r_params = V_r_params.at[i_segment].set([link_attrs.r_i, link_attrs.r_f])
-            V_h_params = V_h_params.at[i_segment].set([link_attrs.h_i, link_attrs.h_f])
-            V_w_params = V_w_params.at[i_segment].set([link_attrs.w_i, link_attrs.w_f])
-            V_a_params = V_a_params.at[i_segment].set([link_attrs.a_i, link_attrs.a_f])
-            V_b_params = V_b_params.at[i_segment].set([link_attrs.b_i, link_attrs.b_f])
-
-        self.V_L = V_L
-        self.V_nip = V_nip
-        self.V_dof = V_dof
-        self.V_Xs = V_Xs
-        self.V_Ws = V_Ws
-        self.V_Ms = V_Ms
-        self.V_Es = V_Es
-        self.V_Gs = V_Gs
-        self.V_B_joint = V_B_joint
-        self.V_B_Xs = V_B_Xs
-        self.V_B_Z1 = V_B_Z1
-        self.V_B_Z2 = V_B_Z2
-        self.V_xi_ref_joint = V_xi_ref_joint
-        self.V_xi_ref_Xs = V_xi_ref_Xs
-        self.V_xi_ref_Z1 = V_xi_ref_Z1
-        self.V_xi_ref_Z2 = V_xi_ref_Z2
-        self.V_K_joint = V_K_joint
-
-        # Addition to compute forward kinematics at s
-        self.V_basistype_idx = V_basistype_idx
-        self.V_Bdof_params = V_Bdof_params
-        self.V_Bodr_params = V_Bodr_params
-        self.V_cross_section_geometry = V_cross_section_geometry
-        self.V_r_params = V_r_params
-        self.V_h_params = V_h_params
-        self.V_w_params = V_w_params
-        self.V_a_params = V_a_params
-        self.V_b_params = V_b_params
-
-        # Strain selector ========================================================
-        strain_selector_full = jnp.concatenate(V_strain_selector, axis=0)
-        self.B_select = compute_strain_basis(strain_selector_full)
-
-        # Degrees of freedom =========================================================
-        self.dof_tot_system = int(
-            jnp.sum(V_dof, axis=(0, 1), dtype=int)
-        )  # Total DOFs for the robot
-        self.num_dofs = self.dof_tot_system
-        self.dof_tot_max = int(
-            jnp.array(self.num_segments * 2 * self.max_dof, dtype=int)
-        )
-
-        # Gravity vector ======================================
-        self.g = jnp.concatenate([jnp.zeros(3), jnp.array(gravity_vector)])
-
-        # Cumulative lengths =========================================================
-        self.V_L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), V_L]))
-
-        # Number of actuators
-        self.num_actuators = self.dof_tot_system
-
-        # Base pose g0: derive from p0 if provided, otherwise keep previous default base rotation
-        if p0 is None:
-            p0_arr = jnp.array(
-                [jnp.pi / 2, jnp.pi / 2, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float64
-            )
-        else:
-            p0_arr = jnp.asarray(p0, dtype=jnp.float64)
-
-        if p0_arr.size != 6:
-            raise ValueError("p0 must have shape (6,) when provided")
-        self.g0 = lie.exp_SE3(p0_arr)
-
-        # precompute the stiffness and damping matrices
         self.precompute()
 
     @property
@@ -505,34 +209,34 @@ class GVS(SoftRobot):
     @property
     def length(self) -> Array:
         """Total backbone length."""
-        return jnp.sum(self.V_L)
+        return jnp.sum(self.segment_lengths)
 
     @property
     def segment_length(self) -> Array:
         """Per-segment backbone lengths."""
-        return jnp.asarray(self.V_L)
+        return jnp.asarray(self.segment_lengths)
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
         """Cross-section geometry evaluated from stored link parameters."""
         segment_idx, s_local = self.classify_segment(s)
-        length_i = self.V_L[segment_idx]
+        length_i = self.segment_lengths[segment_idx]
         x = jnp.where(length_i > self.global_eps, s_local / length_i, 0.0)
-        cross_section_geometry_idx = self.V_cross_section_geometry[segment_idx]
+        cross_section_geometry_idx = self.cross_section_geometry_index[segment_idx]
         cross_section_geometry_int = int(cross_section_geometry_idx)
         if cross_section_geometry_int == CrossSectionGeometry.CIRCULAR:
-            params = self.V_r_params[segment_idx]
+            params = self.radius_params[segment_idx]
             radius = Link.interpolate_param(x, params[0], params[1])
             tag = jnp.asarray(CrossSectionGeometry.CIRCULAR, dtype=jnp.int32)
             return tag, jnp.array([radius])
         if cross_section_geometry_int == CrossSectionGeometry.RECTANGULAR:
-            h_params = self.V_h_params[segment_idx]
-            w_params = self.V_w_params[segment_idx]
+            h_params = self.height_params[segment_idx]
+            w_params = self.width_params[segment_idx]
             height = Link.interpolate_param(x, h_params[0], h_params[1])
             width = Link.interpolate_param(x, w_params[0], w_params[1])
             tag = jnp.asarray(CrossSectionGeometry.RECTANGULAR, dtype=jnp.int32)
             return tag, jnp.array([width, height])
-        a_params = self.V_a_params[segment_idx]
-        b_params = self.V_b_params[segment_idx]
+        a_params = self.semi_major_params[segment_idx]
+        b_params = self.semi_minor_params[segment_idx]
         a_val = Link.interpolate_param(x, a_params[0], a_params[1])
         b_val = Link.interpolate_param(x, b_params[0], b_params[1])
         tag = jnp.asarray(CrossSectionGeometry.ELLIPTICAL, dtype=jnp.int32)
@@ -540,40 +244,40 @@ class GVS(SoftRobot):
 
     def _build_segment_i(
         self,
-        link_attrs: LinkAttributes,
-        joint_attrs: JointAttributes,
-        basis_attrs: BasisAttributes,
-        n_gauss: int,
+        link_spec: LinkSpec,
+        joint_spec: JointSpec,
+        basis_spec: StrainBasisSpec,
+        num_gauss_points: int,
         max_dof: int,
-        max_nip: int,
-    ) -> SegmentData:
+        max_num_integration_points: int,
+    ) -> SegmentRuntimeData:
         """
         Construct the discretized model data for a single segment.
 
         Args
         ----
-        link_attrs : LinkAttributes
+        link_spec : LinkSpec
             Geometric and material properties for the link.
-        joint_attrs : JointAttributes
+        joint_spec : JointSpec
             Joint type and kinematic properties between this link and the previous.
-        basis_attrs : BasisAttributes
+        basis_spec : StrainBasisSpec
             Strain basis definition for variable strain representation in the link.
-        n_gauss : int
+        num_gauss_points : int
             Number of Gauss-Legendre quadrature points for integration.
         max_dof : int
             Maximum number of DOFs to pad/truncate joint/link basis matrices.
-        max_nip : int
+        max_num_integration_points : int
             Maximum number of integration points for padding.
 
         Returns
         -------
-        SegmentData
+        SegmentRuntimeData
             Structured object containing:
             - Length, number of integration points, DOFs
             - Strain selection mask
             - Padded Gauss points/weights
             - Mass, stiffness, and damping matrices
-            - Joint and link basis matrices at key points (Xs, Z1, Z2)
+            - Joint and link basis matrices at integration points and Z1/Z2 midpoints
             - Reference strains
             - Joint stiffness matrix
 
@@ -587,20 +291,20 @@ class GVS(SoftRobot):
         full-robot arrays.
         """
         # === Joint attributes
-        jointtype = joint_attrs.jointtype
+        jointtype = joint_spec.type
         jointtype_idx = Joint.JOINTTYPE_MAP[jointtype]
 
         dof_joint = Joint.DICT_JOINT_TYPE_DOF[jointtype]
         K_joint = (
-            jnp.asarray(joint_attrs.K_joint)
-            if jnp.asarray(joint_attrs.K_joint).shape == (dof_joint, dof_joint)
+            jnp.asarray(joint_spec.stiffness)
+            if jnp.asarray(joint_spec.stiffness).shape == (dof_joint, dof_joint)
             else jnp.zeros((dof_joint, dof_joint))
         )
 
         joint_operand = JointOperand(
-            axis_idx=Joint.AXIS_MAP[joint_attrs.axis],
-            plane_idx=Joint.PLANE_MAP[joint_attrs.plane],
-            pitch=joint_attrs.pitch,
+            axis_idx=Joint.AXIS_MAP[joint_spec.axis],
+            plane_idx=Joint.PLANE_MAP[joint_spec.plane],
+            pitch=joint_spec.pitch,
         )
 
         B_joint_full = lax.switch(
@@ -633,25 +337,25 @@ class GVS(SoftRobot):
         )  # shape (6, max_dof)
 
         # === Link attributes
-        cross_section_geometry = link_attrs.cross_section_geometry
+        cross_section_geometry = link_spec.cross_section_geometry
         cross_section_geometry_idx = int(cross_section_geometry)
 
-        E = jnp.asarray(link_attrs.E)
-        nu = jnp.asarray(link_attrs.nu)
-        rho = jnp.asarray(link_attrs.rho)
-        eta = jnp.asarray(link_attrs.eta)
-        L = jnp.asarray(link_attrs.L)
+        E = jnp.asarray(link_spec.E)
+        nu = jnp.asarray(link_spec.nu)
+        rho = jnp.asarray(link_spec.rho)
+        eta = jnp.asarray(link_spec.eta)
+        L = jnp.asarray(link_spec.L)
 
-        r_i = jnp.asarray(link_attrs.r_i)
-        r_f = jnp.asarray(link_attrs.r_f)
-        h_i = jnp.asarray(link_attrs.h_i)
-        h_f = jnp.asarray(link_attrs.h_f)
-        w_i = jnp.asarray(link_attrs.w_i)
-        w_f = jnp.asarray(link_attrs.w_f)
-        a_i = jnp.asarray(link_attrs.a_i)
-        a_f = jnp.asarray(link_attrs.a_f)
-        b_i = jnp.asarray(link_attrs.b_i)
-        b_f = jnp.asarray(link_attrs.b_f)
+        r_i = jnp.asarray(link_spec.r_i)
+        r_f = jnp.asarray(link_spec.r_f)
+        h_i = jnp.asarray(link_spec.h_i)
+        h_f = jnp.asarray(link_spec.h_f)
+        w_i = jnp.asarray(link_spec.w_i)
+        w_f = jnp.asarray(link_spec.w_f)
+        a_i = jnp.asarray(link_spec.a_i)
+        a_f = jnp.asarray(link_spec.a_f)
+        b_i = jnp.asarray(link_spec.b_i)
+        b_f = jnp.asarray(link_spec.b_f)
 
         G = E / (2 * (1 + nu))  # Shear modulus
 
@@ -662,11 +366,11 @@ class GVS(SoftRobot):
         b_params = (b_i, b_f)
 
         # === Basis attributes
-        basetype = basis_attrs.basistype
+        basetype = basis_spec.type
         basistype_idx = Basis.BASISTYPE_MAP[basetype]
-        Bdof = jnp.asarray(basis_attrs.Bdof).flatten()
-        Bodr = jnp.asarray(basis_attrs.Bodr).flatten()
-        xi_ref = jnp.asarray(basis_attrs.xi_ref).reshape(6, 1)
+        Bdof = jnp.asarray(basis_spec.active).flatten()
+        Bodr = jnp.asarray(basis_spec.orders).flatten()
+        xi_ref = jnp.asarray(basis_spec.xi_ref).reshape(6, 1)
 
         dof_link = lax.switch(
             index=basistype_idx, branches=Basis.DOF_BRANCHES, operand=(Bdof, Bodr)
@@ -679,9 +383,13 @@ class GVS(SoftRobot):
         )
 
         # Gauss points and weights
-        Xs, Ws, nip = gauss_quadrature(N_GQ=n_gauss)
+        integration_points, integration_weights, num_integration_points_i = (
+            gauss_quadrature(N_GQ=num_gauss_points)
+        )
 
-        deltas = Xs[1:] - Xs[:-1]  # Array of shape (nip - 1, )
+        deltas = (
+            integration_points[1:] - integration_points[:-1]
+        )  # Array of shape (num_integration_points - 1, )
 
         B_branches = [
             lambda operand: vmap(
@@ -705,28 +413,30 @@ class GVS(SoftRobot):
         ]
 
         B_Xs = lax.switch(
-            index=basistype_idx, branches=B_branches, operand=(Xs, Bdof, Bodr)
+            index=basistype_idx,
+            branches=B_branches,
+            operand=(integration_points, Bdof, Bodr),
         )
         B_Z1 = lax.switch(
             index=basistype_idx,
             branches=B_branches,
-            operand=(Xs[:-1] + self.Z1 * deltas, Bdof, Bodr),
+            operand=(integration_points[:-1] + self.Z1 * deltas, Bdof, Bodr),
         )
         B_Z2 = lax.switch(
             index=basistype_idx,
             branches=B_branches,
-            operand=(Xs[:-1] + self.Z2 * deltas, Bdof, Bodr),
+            operand=(integration_points[:-1] + self.Z2 * deltas, Bdof, Bodr),
         )
 
         # Compute the initial strain vectors at the integration points
         xi_reffn = lambda x: xi_ref  # TODO: allow to have an expression for xi_ref
-        xi_ref_Xs = vmap(xi_reffn)(Xs).squeeze()
-        xi_ref_Z1 = vmap(xi_reffn)(Xs[:-1] + self.Z1 * deltas).squeeze()
-        xi_ref_Z2 = vmap(xi_reffn)(Xs[:-1] + self.Z2 * deltas).squeeze()
+        xi_ref_Xs = vmap(xi_reffn)(integration_points).squeeze()
+        xi_ref_Z1 = vmap(xi_reffn)(integration_points[:-1] + self.Z1 * deltas).squeeze()
+        xi_ref_Z2 = vmap(xi_reffn)(integration_points[:-1] + self.Z2 * deltas).squeeze()
 
         # Compute the mass, stiffness, and damping matrices at the integration points
         geometric_operand = GeometricOperand(
-            Xs=Xs,
+            integration_points=integration_points,
             r_params=r_params,
             h_params=h_params,
             w_params=w_params,
@@ -751,25 +461,87 @@ class GVS(SoftRobot):
         Gs = eta * vmap(jnp.diag)(Gs_diag)
 
         # Pad the arrays to the maximum number of integration points and DOFs
-        Xs_full = jnp.pad(Xs, (0, max_nip - nip), mode="constant")
-        Ws_full = jnp.pad(Ws, (0, max_nip - nip), mode="constant")
+        integration_points_full = jnp.pad(
+            integration_points,
+            (0, max_num_integration_points - num_integration_points_i),
+            mode="constant",
+        )
+        integration_weights_full = jnp.pad(
+            integration_weights,
+            (0, max_num_integration_points - num_integration_points_i),
+            mode="constant",
+        )
 
-        Ms_full = jnp.pad(Ms, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
-        Es_full = jnp.pad(Es, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
-        Gs_full = jnp.pad(Gs, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
+        Ms_full = jnp.pad(
+            Ms,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
+        Es_full = jnp.pad(
+            Es,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
+        Gs_full = jnp.pad(
+            Gs,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
 
-        B_Xs_full = jnp.pad(B_Xs, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
-        B_Z1_full = jnp.pad(B_Z1, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
-        B_Z2_full = jnp.pad(B_Z2, ((0, max_nip - nip), (0, 0), (0, 0)), mode="constant")
+        B_Xs_full = jnp.pad(
+            B_Xs,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
+        B_Z1_full = jnp.pad(
+            B_Z1,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
+        B_Z2_full = jnp.pad(
+            B_Z2,
+            (
+                (0, max_num_integration_points - num_integration_points_i),
+                (0, 0),
+                (0, 0),
+            ),
+            mode="constant",
+        )
 
         xi_ref_Xs_full = jnp.pad(
-            xi_ref_Xs, ((0, max_nip - nip), (0, 0)), mode="constant"
+            xi_ref_Xs,
+            ((0, max_num_integration_points - num_integration_points_i), (0, 0)),
+            mode="constant",
         )
         xi_ref_Z1_full = jnp.pad(
-            xi_ref_Z1, ((0, max_nip - nip), (0, 0)), mode="constant"
+            xi_ref_Z1,
+            ((0, max_num_integration_points - num_integration_points_i), (0, 0)),
+            mode="constant",
         )
         xi_ref_Z2_full = jnp.pad(
-            xi_ref_Z2, ((0, max_nip - nip), (0, 0)), mode="constant"
+            xi_ref_Z2,
+            ((0, max_num_integration_points - num_integration_points_i), (0, 0)),
+            mode="constant",
         )
 
         dofs_joint_link = jnp.stack([dof_joint, dof_link])
@@ -778,16 +550,16 @@ class GVS(SoftRobot):
             [strain_selector_joint, strain_selector_link], axis=0
         )
 
-        return SegmentData(
+        return SegmentRuntimeData(
             L=L,
-            nip=jnp.array(nip),
+            num_integration_points=jnp.array(num_integration_points_i),
             dofs_joint_link=dofs_joint_link,
             strain_selector=strain_selector_segment,
-            Xs=Xs_full,
-            Ws=Ws_full,
-            Ms=Ms_full,
-            Es=Es_full,
-            Gs=Gs_full,
+            integration_points=integration_points_full,
+            integration_weights=integration_weights_full,
+            mass_matrices=Ms_full,
+            stiffness_matrices=Es_full,
+            damping_matrices=Gs_full,
             B_joint=B_joint_full,
             B_Xs=B_Xs_full,
             B_Z1=B_Z1_full,
@@ -796,7 +568,7 @@ class GVS(SoftRobot):
             xi_ref_Xs=xi_ref_Xs_full,
             xi_ref_Z1=xi_ref_Z1_full,
             xi_ref_Z2=xi_ref_Z2_full,
-            K_joint=K_joint_full,
+            joint_stiffness=K_joint_full,
         )
 
     def precompute(self) -> None:
@@ -805,36 +577,45 @@ class GVS(SoftRobot):
 
         This method can be expanded to include additional precomputations as needed.
         """
-        V_dof_flat = self.V_dof.reshape(-1)
-        start_indices_flat = jnp.cumsum(jnp.pad(V_dof_flat, (1, 0)))[:-1]
+        dofs_flat = self.dofs_per_segment.reshape(-1)
+        start_indices_flat = jnp.cumsum(jnp.pad(dofs_flat, (1, 0)))[:-1]
         start_indices = start_indices_flat.reshape(self.num_segments, 2)
         gather_indices = start_indices[..., None] + jnp.arange(self.max_dof)
-        gather_mask = jnp.arange(self.max_dof) < self.V_dof[..., None]
+        gather_mask = jnp.arange(self.max_dof) < self.dofs_per_segment[..., None]
 
         K_full = self._stiffness_full_matrix()
         D_full = self._damping_full_matrix()
         object.__setattr__(
             self,
-            "B_select_blocks",
-            self.B_select.reshape(
-                self.num_segments, 2, self.max_dof, self.dof_tot_system
+            "active_dof_map_blocks",
+            self.active_dof_map.reshape(
+                self.num_segments, 2, self.max_dof, self.num_dofs
             ),
         )
         object.__setattr__(
-            self, "V_Ws_inner", self.V_Ws[:, 1 : self.max_nip - 1] * self.V_L[:, None]
+            self,
+            "inner_integration_weights",
+            self.integration_weights[:, 1 : self.max_num_integration_points - 1]
+            * self.segment_lengths[:, None],
         )
-        object.__setattr__(self, "V_Ms_inner", self.V_Ms[:, 1 : self.max_nip - 1])
+        object.__setattr__(
+            self,
+            "inner_mass_matrices",
+            self.mass_matrices[:, 1 : self.max_num_integration_points - 1],
+        )
         object.__setattr__(self, "gather_indices", gather_indices)
         object.__setattr__(self, "gather_mask", gather_mask)
         object.__setattr__(self, "K_full", K_full)
-        object.__setattr__(self, "K", self.B_select.T @ K_full @ self.B_select)
+        object.__setattr__(
+            self, "K", self.active_dof_map.T @ K_full @ self.active_dof_map
+        )
         object.__setattr__(self, "D_full", D_full)
         object.__setattr__(
-            self, "D_active", self.B_select.T @ D_full @ self.B_select
+            self, "D_active", self.active_dof_map.T @ D_full @ self.active_dof_map
         )
 
     def _link_parameter_arrays(
-        self, links_list: list[LinkAttributes] | tuple[LinkAttributes, ...]
+        self, links: list[LinkSpec] | tuple[LinkSpec, ...]
     ) -> tuple[
         Array,
         Array,
@@ -859,8 +640,8 @@ class GVS(SoftRobot):
         the GVS discretization and generalized coordinates fixed.
 
         Args:
-            links_list: Updated link attributes, one per segment. Length must be
-                ``self.num_segments``. Each ``LinkAttributes`` entry provides the
+            links: Updated link specs, one per segment. Length must be
+                ``self.num_segments``. Each ``LinkSpec`` entry provides the
                 segment length, material constants, damping coefficient, density,
                 cross-section family, and the relevant linearly interpolated
                 cross-section parameters.
@@ -868,81 +649,81 @@ class GVS(SoftRobot):
         Returns:
             A tuple containing:
 
-            - ``V_L``: segment lengths, shape ``(self.num_segments,)``.
-            - ``V_L_cum``: cumulative segment endpoints including zero, shape
+            - ``segment_lengths``: segment lengths, shape ``(self.num_segments,)``.
+            - ``segment_end_positions``: cumulative segment endpoints including zero, shape
               ``(self.num_segments + 1,)``.
-            - ``V_Ms``: local mass matrices at stored quadrature nodes, shape
-              ``(self.num_segments, self.max_nip, 6, 6)``.
-            - ``V_Es``: local stiffness matrices at stored quadrature nodes,
-              shape ``(self.num_segments, self.max_nip, 6, 6)``.
-            - ``V_Gs``: local damping matrices at stored quadrature nodes, shape
-              ``(self.num_segments, self.max_nip, 6, 6)``.
-            - ``V_cross_section_geometry``: cross-section enum indices, shape
+            - ``mass_matrices``: local mass matrices at stored quadrature nodes, shape
+              ``(self.num_segments, self.max_num_integration_points, 6, 6)``.
+            - ``stiffness_matrices``: local stiffness matrices at stored quadrature nodes,
+              shape ``(self.num_segments, self.max_num_integration_points, 6, 6)``.
+            - ``damping_matrices``: local damping matrices at stored quadrature nodes, shape
+              ``(self.num_segments, self.max_num_integration_points, 6, 6)``.
+            - ``cross_section_geometry_index``: cross-section enum indices, shape
               ``(self.num_segments,)``.
-            - ``V_r_params``: circular radius interpolation parameters, shape
+            - ``radius_params``: circular radius interpolation parameters, shape
               ``(self.num_segments, 2)``.
-            - ``V_h_params``: rectangular height interpolation parameters, shape
+            - ``height_params``: rectangular height interpolation parameters, shape
               ``(self.num_segments, 2)``.
-            - ``V_w_params``: rectangular width interpolation parameters, shape
+            - ``width_params``: rectangular width interpolation parameters, shape
               ``(self.num_segments, 2)``.
-            - ``V_a_params``: elliptical semi-major-axis interpolation
+            - ``semi_major_params``: elliptical semi-major-axis interpolation
               parameters, shape ``(self.num_segments, 2)``.
-            - ``V_b_params``: elliptical semi-minor-axis interpolation
+            - ``semi_minor_params``: elliptical semi-minor-axis interpolation
               parameters, shape ``(self.num_segments, 2)``.
 
         Raises:
-            ValueError: If ``links_list`` does not contain exactly one entry per
+            ValueError: If ``links`` does not contain exactly one entry per
                 segment.
         """
-        if len(links_list) != self.num_segments:
+        if len(links) != self.num_segments:
             raise ValueError(
-                "links_list must contain one LinkAttributes entry per segment, "
-                f"got {len(links_list)} for {self.num_segments} segments."
+                "links must contain one LinkSpec entry per segment, "
+                f"got {len(links)} for {self.num_segments} segments."
             )
 
-        V_L_items = []
-        V_Ms_items = []
-        V_Es_items = []
-        V_Gs_items = []
-        V_cross_section_geometry_items = []
-        V_r_params_items = []
-        V_h_params_items = []
-        V_w_params_items = []
-        V_a_params_items = []
-        V_b_params_items = []
+        segment_length_items = []
+        mass_matrix_items = []
+        stiffness_matrix_items = []
+        damping_matrix_items = []
+        cross_section_geometry_items = []
+        radius_param_items = []
+        height_param_items = []
+        width_param_items = []
+        semi_major_param_items = []
+        semi_minor_param_items = []
 
-        for i_segment, link_attrs in enumerate(links_list):
-            cross_section_geometry_idx = int(link_attrs.cross_section_geometry)
+        for i_segment, link_spec in enumerate(links):
+            cross_section_geometry_idx = int(link_spec.cross_section_geometry)
 
-            E = jnp.asarray(link_attrs.E, dtype=jnp.float64)
-            nu = jnp.asarray(link_attrs.nu, dtype=jnp.float64)
-            rho = jnp.asarray(link_attrs.rho, dtype=jnp.float64)
-            eta = jnp.asarray(link_attrs.eta, dtype=jnp.float64)
-            L = jnp.asarray(link_attrs.L, dtype=jnp.float64)
+            E = jnp.asarray(link_spec.E, dtype=jnp.float64)
+            nu = jnp.asarray(link_spec.nu, dtype=jnp.float64)
+            rho = jnp.asarray(link_spec.rho, dtype=jnp.float64)
+            eta = jnp.asarray(link_spec.eta, dtype=jnp.float64)
+            L = jnp.asarray(link_spec.L, dtype=jnp.float64)
 
             r_params = (
-                jnp.asarray(link_attrs.r_i, dtype=jnp.float64),
-                jnp.asarray(link_attrs.r_f, dtype=jnp.float64),
+                jnp.asarray(link_spec.r_i, dtype=jnp.float64),
+                jnp.asarray(link_spec.r_f, dtype=jnp.float64),
             )
             h_params = (
-                jnp.asarray(link_attrs.h_i, dtype=jnp.float64),
-                jnp.asarray(link_attrs.h_f, dtype=jnp.float64),
+                jnp.asarray(link_spec.h_i, dtype=jnp.float64),
+                jnp.asarray(link_spec.h_f, dtype=jnp.float64),
             )
             w_params = (
-                jnp.asarray(link_attrs.w_i, dtype=jnp.float64),
-                jnp.asarray(link_attrs.w_f, dtype=jnp.float64),
+                jnp.asarray(link_spec.w_i, dtype=jnp.float64),
+                jnp.asarray(link_spec.w_f, dtype=jnp.float64),
             )
             a_params = (
-                jnp.asarray(link_attrs.a_i, dtype=jnp.float64),
-                jnp.asarray(link_attrs.a_f, dtype=jnp.float64),
+                jnp.asarray(link_spec.a_i, dtype=jnp.float64),
+                jnp.asarray(link_spec.a_f, dtype=jnp.float64),
             )
             b_params = (
-                jnp.asarray(link_attrs.b_i, dtype=jnp.float64),
-                jnp.asarray(link_attrs.b_f, dtype=jnp.float64),
+                jnp.asarray(link_spec.b_i, dtype=jnp.float64),
+                jnp.asarray(link_spec.b_f, dtype=jnp.float64),
             )
 
             geometric_operand = GeometricOperand(
-                Xs=self.V_Xs[i_segment],
+                integration_points=self.integration_points[i_segment],
                 r_params=r_params,
                 h_params=h_params,
                 w_params=w_params,
@@ -961,36 +742,38 @@ class GVS(SoftRobot):
                 [G * Ix_p, E * Iy_p, E * Iz_p, E * A_p, G * A_p, G * A_p],
                 axis=1,
             )
-            Gs_diag = jnp.stack(
-                [Ix_p, 3 * Iy_p, 3 * Iz_p, 3 * A_p, A_p, A_p], axis=1
+            Gs_diag = jnp.stack([Ix_p, 3 * Iy_p, 3 * Iz_p, 3 * A_p, A_p, A_p], axis=1)
+
+            segment_length_items.append(L)
+            mass_matrix_items.append(rho * vmap(jnp.diag)(Ms_diag))
+            stiffness_matrix_items.append(vmap(jnp.diag)(Es_diag))
+            damping_matrix_items.append(eta * vmap(jnp.diag)(Gs_diag))
+            cross_section_geometry_items.append(cross_section_geometry_idx)
+            radius_param_items.append(jnp.stack(r_params))
+            height_param_items.append(jnp.stack(h_params))
+            width_param_items.append(jnp.stack(w_params))
+            semi_major_param_items.append(jnp.stack(a_params))
+            semi_minor_param_items.append(jnp.stack(b_params))
+
+        segment_lengths = jnp.stack(segment_length_items)
+        segment_end_positions = jnp.cumsum(
+            jnp.concatenate(
+                [jnp.zeros(1, dtype=segment_lengths.dtype), segment_lengths]
             )
-
-            V_L_items.append(L)
-            V_Ms_items.append(rho * vmap(jnp.diag)(Ms_diag))
-            V_Es_items.append(vmap(jnp.diag)(Es_diag))
-            V_Gs_items.append(eta * vmap(jnp.diag)(Gs_diag))
-            V_cross_section_geometry_items.append(cross_section_geometry_idx)
-            V_r_params_items.append(jnp.stack(r_params))
-            V_h_params_items.append(jnp.stack(h_params))
-            V_w_params_items.append(jnp.stack(w_params))
-            V_a_params_items.append(jnp.stack(a_params))
-            V_b_params_items.append(jnp.stack(b_params))
-
-        V_L = jnp.stack(V_L_items)
-        V_L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1, dtype=V_L.dtype), V_L]))
+        )
 
         return (
-            V_L,
-            V_L_cum,
-            jnp.stack(V_Ms_items),
-            jnp.stack(V_Es_items),
-            jnp.stack(V_Gs_items),
-            jnp.asarray(V_cross_section_geometry_items, dtype=jnp.int32),
-            jnp.stack(V_r_params_items),
-            jnp.stack(V_h_params_items),
-            jnp.stack(V_w_params_items),
-            jnp.stack(V_a_params_items),
-            jnp.stack(V_b_params_items),
+            segment_lengths,
+            segment_end_positions,
+            jnp.stack(mass_matrix_items),
+            jnp.stack(stiffness_matrix_items),
+            jnp.stack(damping_matrix_items),
+            jnp.asarray(cross_section_geometry_items, dtype=jnp.int32),
+            jnp.stack(radius_param_items),
+            jnp.stack(height_param_items),
+            jnp.stack(width_param_items),
+            jnp.stack(semi_major_param_items),
+            jnp.stack(semi_minor_param_items),
         )
 
     def update_params(self, params: dict[str, Any]) -> "GVS":
@@ -1000,10 +783,10 @@ class GVS(SoftRobot):
         The supported updates are intentionally limited to parameters that do
         not change the generalized-coordinate layout:
 
-        - ``"links_list"`` refreshes segment lengths, cross-section geometry,
+        - ``"links"`` refreshes segment lengths, cross-section geometry,
           local mass/stiffness/damping arrays, and cached full stiffness and
           damping matrices.
-        - ``"gravity_vector"`` or ``"g"`` refreshes the inertial gravity vector.
+        - ``"g"`` refreshes the inertial gravity vector.
         - ``"p0"`` refreshes the base pose from a 6D SE(3) exponential
           coordinate.
 
@@ -1013,9 +796,9 @@ class GVS(SoftRobot):
 
         Args:
             params: Dictionary of parameter updates. Supported keys are
-                ``"links_list"``, ``"gravity_vector"``, ``"g"``, and ``"p0"``.
-                ``"links_list"`` must have length ``self.num_segments``.
-                ``"gravity_vector"``/``"g"`` must have shape ``(3,)``.
+                ``"links"``, ``"g"``, and ``"p0"``.
+                ``"links"`` must have length ``self.num_segments``.
+                ``"g"`` must have shape ``(3,)``.
                 ``"p0"`` must have shape ``(6,)``.
 
         Returns:
@@ -1026,7 +809,7 @@ class GVS(SoftRobot):
             KeyError: If an unsupported update key is provided.
             ValueError: If an update has an incompatible shape.
         """
-        supported_keys = {"links_list", "gravity_vector", "g", "p0"}
+        supported_keys = {"links", "g", "p0"}
         unknown_keys = set(params) - supported_keys
         if unknown_keys:
             unknown = ", ".join(sorted(unknown_keys))
@@ -1034,21 +817,21 @@ class GVS(SoftRobot):
 
         updated_self = self
 
-        if "links_list" in params:
-            link_arrays = self._link_parameter_arrays(params["links_list"])
+        if "links" in params:
+            link_arrays = self._link_parameter_arrays(params["links"])
             updated_self = eqx.tree_at(
                 lambda model: (
-                    model.V_L,
-                    model.V_L_cum,
-                    model.V_Ms,
-                    model.V_Es,
-                    model.V_Gs,
-                    model.V_cross_section_geometry,
-                    model.V_r_params,
-                    model.V_h_params,
-                    model.V_w_params,
-                    model.V_a_params,
-                    model.V_b_params,
+                    model.segment_lengths,
+                    model.segment_end_positions,
+                    model.mass_matrices,
+                    model.stiffness_matrices,
+                    model.damping_matrices,
+                    model.cross_section_geometry_index,
+                    model.radius_params,
+                    model.height_params,
+                    model.width_params,
+                    model.semi_major_params,
+                    model.semi_minor_params,
                 ),
                 updated_self,
                 link_arrays,
@@ -1057,8 +840,8 @@ class GVS(SoftRobot):
             D_full = updated_self._damping_full_matrix()
             updated_self = eqx.tree_at(
                 lambda model: (
-                    model.V_Ws_inner,
-                    model.V_Ms_inner,
+                    model.inner_integration_weights,
+                    model.inner_mass_matrices,
                     model.K_full,
                     model.K,
                     model.D_full,
@@ -1066,27 +849,32 @@ class GVS(SoftRobot):
                 ),
                 updated_self,
                 (
-                    updated_self.V_Ws[:, 1 : updated_self.max_nip - 1]
-                    * updated_self.V_L[:, None],
-                    updated_self.V_Ms[:, 1 : updated_self.max_nip - 1],
+                    updated_self.integration_weights[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ]
+                    * updated_self.segment_lengths[:, None],
+                    updated_self.mass_matrices[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ],
                     K_full,
-                    updated_self.B_select.T @ K_full @ updated_self.B_select,
+                    updated_self.active_dof_map.T
+                    @ K_full
+                    @ updated_self.active_dof_map,
                     D_full,
-                    updated_self.B_select.T @ D_full @ updated_self.B_select,
+                    updated_self.active_dof_map.T
+                    @ D_full
+                    @ updated_self.active_dof_map,
                 ),
             )
 
-        if "gravity_vector" in params or "g" in params:
-            gravity_vector = params.get("gravity_vector", params.get("g"))
-            gravity_vector = jnp.asarray(gravity_vector, dtype=jnp.float64)
-            if gravity_vector.shape != (3,):
-                raise ValueError(
-                    f"gravity_vector must have shape (3,), got {gravity_vector.shape}"
-                )
+        if "g" in params:
+            g_vec = jnp.asarray(params["g"], dtype=jnp.float64)
+            if g_vec.shape != (3,):
+                raise ValueError(f"g must have shape (3,), got {g_vec.shape}")
             updated_self = eqx.tree_at(
                 lambda model: model.g,
                 updated_self,
-                jnp.concatenate([jnp.zeros(3, dtype=gravity_vector.dtype), gravity_vector]),
+                jnp.concatenate([jnp.zeros(3, dtype=g_vec.dtype), g_vec]),
             )
 
         if "p0" in params:
@@ -1106,7 +894,7 @@ class GVS(SoftRobot):
         Function to split the joint coordinates into segments and pad them to the maximum DOF.
 
         Args:
-            vec_min_size_flat (Array): shape (dof_tot, 1) or (dof_tot,) JAX array
+            vec_min_size_flat (Array): shape (num_dofs, 1) or (num_dofs,) JAX array
                 Joint coordinates or joint velocities.
 
         Returns:
@@ -1148,9 +936,9 @@ class GVS(SoftRobot):
             Array: shape (len(X), 6, max_dof) JAX array containing the evaluated basis functions
                 for the specified segment at the given points.
         """
-        basistype_idx = self.V_basistype_idx[i_segment]
-        Bdof = self.V_Bdof_params[i_segment]
-        Bodr = self.V_Bodr_params[i_segment]
+        basistype_idx = self.basis_type_index[i_segment]
+        Bdof = self.basis_active_params[i_segment]
+        Bodr = self.basis_order_params[i_segment]
         B_branches = [
             lambda operand: vmap(
                 lambda xx: B_Monomial(xx, operand[1], operand[2], self.max_dof)
@@ -1189,7 +977,7 @@ class GVS(SoftRobot):
 
         ``xi_Zk = B_Zk @ q_i + xi_ref_Zk`` for ``k in {1, 2}``.
 
-        If ``scale_rotational_strain_basis`` is enabled, the first three rows of
+        If ``scale_rotational_basis_by_length`` is enabled, the first three rows of
         each basis matrix, corresponding to rotational strain coordinates, are
         divided by the physical link length. The translational rows are left
         unchanged. This helper centralizes that scaling so every Jacobian path
@@ -1208,7 +996,7 @@ class GVS(SoftRobot):
             the input basis matrices unchanged. If it is enabled, rows ``0:3`` are
             divided by ``length``.
         """
-        if self.scale_rotational_strain_basis:
+        if self.scale_rotational_basis_by_length:
             B_Z1 = B_Z1.at[:3, :].divide(length)
             B_Z2 = B_Z2.at[:3, :].divide(length)
         return B_Z1, B_Z2
@@ -1250,7 +1038,7 @@ class GVS(SoftRobot):
         Args:
             length: Physical length of the current link. Shape ``()``.
             H: Normalized cell width. This is either a full-cell width
-                ``Xs[j + 1] - Xs[j]`` or a partial-cell width ``Hp``. Shape
+                ``integration_points[j + 1] - integration_points[j]`` or a partial-cell width ``Hp``. Shape
                 ``()``.
             xi_Z1: Strain vector at the first Magnus quadrature point, shape
                 ``(6,)``.
@@ -1272,9 +1060,7 @@ class GVS(SoftRobot):
         ad_xi_Z2 = lie.adjoint_se3(xi_Z2)
         comm_coeff = jnp.sqrt(3) * (length**2) * H**2 / 12
 
-        Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + (
-            comm_coeff * (ad_xi_Z1 @ xi_Z2)
-        )
+        Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + (comm_coeff * (ad_xi_Z1 @ xi_Z2))
         B_Magnus = length * (H / 2) * (B_Z1 + B_Z2) + (
             comm_coeff * (ad_xi_Z1 @ B_Z2 - ad_xi_Z2 @ B_Z1)
         )
@@ -1336,9 +1122,7 @@ class GVS(SoftRobot):
             length, H, xi_Z1, xi_Z2, B_Z1, B_Z2
         )
         g_step = lie.exp_gn_SE3(Magnus, self.global_eps)
-        T_step = lie.Tangent_gi_se3(
-            Magnus, jnp.array(1.0), eps=self.tangent_eps
-        )
+        T_step = lie.Tangent_gi_se3(Magnus, jnp.array(1.0), eps=self.tangent_eps)
         Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
         return g_step, T_step, Ad_step_inv, B_Magnus
 
@@ -1416,9 +1200,7 @@ class GVS(SoftRobot):
         Magnusd = B_Magnus @ qd_i
 
         g_step = lie.exp_gn_SE3(Magnus, self.global_eps)
-        T_step = lie.Tangent_gi_se3(
-            Magnus, jnp.array(1.0), eps=self.tangent_eps
-        )
+        T_step = lie.Tangent_gi_se3(Magnus, jnp.array(1.0), eps=self.tangent_eps)
         Td_step = lie.Tangent_derivative_gi_se3(
             Magnus, Magnusd, jnp.array(1.0), eps=self.tangent_eps
         )
@@ -1452,9 +1234,7 @@ class GVS(SoftRobot):
         """
         xi_joint = B_joint @ q_joint + xi_ref_joint
         g_joint = lie.exp_gn_SE3(xi_joint, self.global_eps)
-        T_joint = lie.Tangent_gi_se3(
-            xi_joint, jnp.array(1.0), eps=self.tangent_eps
-        )
+        T_joint = lie.Tangent_gi_se3(xi_joint, jnp.array(1.0), eps=self.tangent_eps)
         return g_joint, lie.Adjoint_g_inv_SE3(g_joint), T_joint @ B_joint
 
     def _joint_jacobian_derivative_step_terms(
@@ -1491,9 +1271,7 @@ class GVS(SoftRobot):
         xi_joint = B_joint @ q_joint + xi_ref_joint
         xid_joint = B_joint @ qd_joint
         g_joint = lie.exp_gn_SE3(xi_joint, self.global_eps)
-        T_joint = lie.Tangent_gi_se3(
-            xi_joint, jnp.array(1.0), eps=self.tangent_eps
-        )
+        T_joint = lie.Tangent_gi_se3(xi_joint, jnp.array(1.0), eps=self.tangent_eps)
         Td_joint = lie.Tangent_derivative_gi_se3(
             xi_joint, xid_joint, jnp.array(1.0), eps=self.tangent_eps
         )
@@ -1574,11 +1352,11 @@ class GVS(SoftRobot):
         Args:
             g: Homogeneous SE(3) pose at the Jacobian evaluation point, shape
                 ``(4, 4)``.
-            J_body: Body-frame Jacobian, shape ``(6, self.dof_tot_system)``.
+            J_body: Body-frame Jacobian, shape ``(6, self.num_dofs)``.
 
         Returns:
             J_inertial: Inertial-frame Jacobian, shape
-            ``(6, self.dof_tot_system)``.
+            ``(6, self.num_dofs)``.
         """
         return self._rotation_adjoint_from_pose(g) @ J_body
 
@@ -1594,21 +1372,19 @@ class GVS(SoftRobot):
         Args:
             g: Homogeneous SE(3) pose at the Jacobian evaluation point, shape
                 ``(4, 4)``.
-            J_body: Body-frame Jacobian, shape ``(6, self.dof_tot_system)``.
+            J_body: Body-frame Jacobian, shape ``(6, self.num_dofs)``.
             Jd_body: Body-frame Jacobian derivative, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             qd: Active generalized velocities, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             Tuple ``(J_inertial, Jd_inertial)`` where both arrays have shape
-            ``(6, self.dof_tot_system)``.
+            ``(6, self.num_dofs)``.
         """
         Ad_g = self._rotation_adjoint_from_pose(g)
         eta_body = J_body @ qd
-        eta_rot = jnp.concatenate(
-            [eta_body[:3], jnp.zeros(3, dtype=eta_body.dtype)]
-        )
+        eta_rot = jnp.concatenate([eta_body[:3], jnp.zeros(3, dtype=eta_body.dtype)])
         Ad_g_dot = Ad_g @ lie.adjoint_se3(eta_rot)
         return Ad_g @ J_body, Ad_g @ Jd_body + Ad_g_dot @ J_body
 
@@ -1619,13 +1395,13 @@ class GVS(SoftRobot):
         Args:
             weight: Length-scaled quadrature weight, shape ``()``.
             J: Body-frame Jacobian at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             M: Local spatial mass matrix at the quadrature node, shape
                 ``(6, 6)``.
 
         Returns:
             B_ij: Inertia contribution ``weight * J.T @ M @ J``, shape
-            ``(self.dof_tot_system, self.dof_tot_system)``.
+            ``(self.num_dofs, self.num_dofs)``.
         """
         return weight * (J.T @ M @ J)
 
@@ -1638,17 +1414,17 @@ class GVS(SoftRobot):
         Args:
             weight: Length-scaled quadrature weight, shape ``()``.
             J: Body-frame Jacobian at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             Jd: Body-frame Jacobian derivative at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             M: Local spatial mass matrix at the quadrature node, shape
                 ``(6, 6)``.
             qd: Active generalized velocities, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             C_ij: Coriolis matrix contribution, shape
-            ``(self.dof_tot_system, self.dof_tot_system)``.
+            ``(self.num_dofs, self.num_dofs)``.
         """
         eta = J @ qd
         return weight * (J.T @ (M @ Jd + lie.coadjoint_se3(eta) @ M @ J))
@@ -1666,22 +1442,20 @@ class GVS(SoftRobot):
         Args:
             weight: Length-scaled quadrature weight, shape ``()``.
             J: Body-frame Jacobian at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             Jd: Body-frame Jacobian derivative at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             M: Local spatial mass matrix at the quadrature node, shape
                 ``(6, 6)``.
             qd: Active generalized velocities, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             Cqd_ij: Convective force contribution, shape
-            ``(self.dof_tot_system,)``.
+            ``(self.num_dofs,)``.
         """
         eta = J @ qd
-        return weight * (
-            J.T @ (M @ (Jd @ qd) + lie.coadjoint_se3(eta) @ M @ eta)
-        )
+        return weight * (J.T @ (M @ (Jd @ qd) + lie.coadjoint_se3(eta) @ M @ eta))
 
     def _gravity_integrand(self, weight: Array, g: Array, J: Array, M: Array) -> Array:
         """
@@ -1691,13 +1465,13 @@ class GVS(SoftRobot):
             weight: Length-scaled quadrature weight, shape ``()``.
             g: Homogeneous SE(3) pose at the quadrature node, shape ``(4, 4)``.
             J: Body-frame Jacobian at the quadrature node, shape
-                ``(6, self.dof_tot_system)``.
+                ``(6, self.num_dofs)``.
             M: Local spatial mass matrix at the quadrature node, shape
                 ``(6, 6)``.
 
         Returns:
             G_ij: Generalized gravity contribution, shape
-            ``(self.dof_tot_system,)``.
+            ``(self.num_dofs,)``.
         """
         return -weight * J.T @ M @ lie.Adjoint_g_inv_SE3(g) @ self.g
 
@@ -1712,7 +1486,7 @@ class GVS(SoftRobot):
                 Joint coordinates.
 
         Returns:
-            g_list (Array): shape (num_segments, max_nip, 4, 4) JAX array
+            g_list (Array): shape (num_segments, max_num_integration_points, 4, 4) JAX array
                 Forward kinematics transformation matrices at all significant points
         """
 
@@ -1725,13 +1499,13 @@ class GVS(SoftRobot):
 
             Returns:
                 g_tip_link (Array): Updated tip transform after this segment, shape (4, 4).
-                g_link (Array): Per-point transforms for this segment, shape (max_nip, 4, 4).
+                g_link (Array): Per-point transforms for this segment, shape (max_num_integration_points, 4, 4).
             """
             g_tip = carry
 
             # Joint =======================
-            B_joint_i = self.V_B_joint[i_segment]  # shape (6, max_dof)
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # shape (6,)
+            B_joint_i = self.B_joint[i_segment]  # shape (6, max_dof)
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]  # shape (6,)
             q_joint_i = q_gathered[i_segment, 0]  # shape (max_dof,)
 
             xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i  # shape (6,)
@@ -1741,12 +1515,22 @@ class GVS(SoftRobot):
             g_j = g_tip @ g_joint_i  # Start with the last transformation matrix
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # shape (max_nip - 1, 6)
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # shape (max_nip - 1, 6)
-            length_i = self.V_L[i_segment]  # shape (1,)
-            B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
-            B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
+            Xs_i = self.integration_points[
+                i_segment
+            ]  # shape (max_num_integration_points,)
+            xi_ref_Z1_i = self.xi_ref_Z1[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6)
+            xi_ref_Z2_i = self.xi_ref_Z2[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6)
+            length_i = self.segment_lengths[i_segment]  # shape (1,)
+            B_Z1_i = self.B_Z1[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6, max_dof)
+            B_Z2_i = self.B_Z2[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6, max_dof)
 
             q_i = q_gathered[i_segment, 1]
 
@@ -1771,7 +1555,7 @@ class GVS(SoftRobot):
                 B_Z1_j = B_Z1_i[j_eval]
                 B_Z2_j = B_Z2_i[j_eval]
 
-                if self.scale_rotational_strain_basis:
+                if self.scale_rotational_basis_by_length:
                     B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
                     B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
 
@@ -1790,7 +1574,7 @@ class GVS(SoftRobot):
 
                 return g_j, g_j
 
-            indices_eval_points = jnp.arange(self.max_nip - 1)
+            indices_eval_points = jnp.arange(self.max_num_integration_points - 1)
 
             g_tip_link, g_link = lax.scan(
                 f=body_eval_points,
@@ -1843,10 +1627,12 @@ class GVS(SoftRobot):
             s_segment (Array): point coordinate along the segment in the interval [0, l_segment]
         """
         # Classify the point along the robot to the corresponding segment
-        segment_idx = jnp.clip(jnp.sum(s > self.V_L_cum) - 1, 0, self.num_segments - 1)
+        segment_idx = jnp.clip(
+            jnp.sum(s > self.segment_end_positions) - 1, 0, self.num_segments - 1
+        )
 
         # Compute the point coordinate along the segment in the interval [0, l_segment]
-        s_local = s - self.V_L_cum[segment_idx]
+        s_local = s - self.segment_end_positions[segment_idx]
 
         return segment_idx, s_local
 
@@ -1883,8 +1669,8 @@ class GVS(SoftRobot):
             g_tip = carry
 
             # Joint =======================
-            B_joint = self.V_B_joint[i_segment]
-            xi_ref_joint = self.V_xi_ref_joint[i_segment]
+            B_joint = self.B_joint[i_segment]
+            xi_ref_joint = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
 
             g_joint_i = lie.exp_gn_SE3(
@@ -1894,12 +1680,12 @@ class GVS(SoftRobot):
             g_j = g_tip @ g_joint_i
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]
-            B_Z2_i = self.V_B_Z2[i_segment]
+            Xs_i = self.integration_points[i_segment]
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]
+            B_Z2_i = self.B_Z2[i_segment]
 
             q_i = q_gathered[i_segment, 1]
 
@@ -1921,7 +1707,7 @@ class GVS(SoftRobot):
 
                 B_Z1_j = B_Z1_i[j]
                 B_Z2_j = B_Z2_i[j]
-                if self.scale_rotational_strain_basis:
+                if self.scale_rotational_basis_by_length:
                     B_Z1_j = B_Z1_j.at[:3, :].divide(length_i)
                     B_Z2_j = B_Z2_j.at[:3, :].divide(length_i)
 
@@ -1944,7 +1730,9 @@ class GVS(SoftRobot):
                 Returns:
                     g_tip_link (Array): Tip transform after this link, shape (4, 4).
                 """
-                g_tip_link, _ = lax.scan(full_cell, g_j, jnp.arange(self.max_nip - 1))
+                g_tip_link, _ = lax.scan(
+                    full_cell, g_j, jnp.arange(self.max_num_integration_points - 1)
+                )
                 return g_tip_link
 
             # if segment is the one where s is located, we need to do a partial link
@@ -1957,8 +1745,12 @@ class GVS(SoftRobot):
                     g_out (Array): Tip transform at `s` within this segment, shape (4, 4).
                 """
                 x = s_local / length_i
-                # idx of cell j such that Xs[j] <= x <= Xs[j+1]
-                j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
+                # idx of cell j such that integration_points[j] <= x <= integration_points[j+1]
+                j = jnp.clip(
+                    jnp.searchsorted(Xs_i, x) - 1,
+                    0,
+                    self.max_num_integration_points - 2,
+                )
 
                 # compose complete cells up to j-1 without dynamic-length arange
                 def full_cell_masked(carry: Array, idx: Array) -> tuple[Array, None]:
@@ -1975,7 +1767,11 @@ class GVS(SoftRobot):
                     g_next, _ = full_cell(g_prev, idx)
                     return lax.select(idx < j, g_next, g_prev), None
 
-                g_in, _ = lax.scan(full_cell_masked, g_j, jnp.arange(self.max_nip - 1))
+                g_in, _ = lax.scan(
+                    full_cell_masked,
+                    g_j,
+                    jnp.arange(self.max_num_integration_points - 1),
+                )
 
                 # enter the (partial) cell j
                 H = Xs_i[j + 1] - Xs_i[j]
@@ -1990,12 +1786,12 @@ class GVS(SoftRobot):
                 Bp_Z1 = Bp[0]
                 Bp_Z2 = Bp[1]
 
-                if self.scale_rotational_strain_basis:
+                if self.scale_rotational_basis_by_length:
                     Bp_Z1 = Bp_Z1.at[:3, :].divide(length_i)
                     Bp_Z2 = Bp_Z2.at[:3, :].divide(length_i)
 
-                xi_Z1_j = (Bp_Z1 @ q_i) + self.V_xi_ref_Z1[i_segment][j]
-                xi_Z2_j = (Bp_Z2 @ q_i) + self.V_xi_ref_Z2[i_segment][j]
+                xi_Z1_j = (Bp_Z1 @ q_i) + self.xi_ref_Z1[i_segment][j]
+                xi_Z2_j = (Bp_Z2 @ q_i) + self.xi_ref_Z2[i_segment][j]
 
                 # Magnus expansion
                 ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
@@ -2072,7 +1868,7 @@ class GVS(SoftRobot):
         def fk_single(s_val: Array) -> Array:
             i, s_local = self.classify_segment(s_val)
 
-            length_i = self.V_L[i]
+            length_i = self.segment_lengths[i]
             length_safe = jnp.where(jnp.abs(length_i) < self.global_eps, 1.0, length_i)
             x_norm = jnp.where(
                 jnp.abs(length_i) < self.global_eps,
@@ -2080,16 +1876,16 @@ class GVS(SoftRobot):
                 jnp.clip(s_local / length_safe, 0.0, 1.0),
             )
 
-            Xs_i = self.V_Xs[i]
+            Xs_i = self.integration_points[i]
             g_nodes = g_gauss[i]
             q_link = q_gathered[i, 1]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i]
+            xi_ref_Z1_i = self.xi_ref_Z1[i]
+            xi_ref_Z2_i = self.xi_ref_Z2[i]
 
             cell_idx = jnp.clip(
                 jnp.searchsorted(Xs_i, x_norm, side="right") - 1,
                 0,
-                self.max_nip - 2,
+                self.max_num_integration_points - 2,
             )
 
             distances = jnp.abs(Xs_i - x_norm)
@@ -2141,7 +1937,7 @@ class GVS(SoftRobot):
                 Joint coordinates.
 
         Returns:
-            J_list (Array): shape (num_segments, max_nip, num_segments, 2, 6, max_dof) JAX array
+            J_list (Array): shape (num_segments, max_num_integration_points, num_segments, 2, 6, max_dof) JAX array
                 Jacobian matrices at all significant points
                 J_list[i_segment, j_nip, k_link, type_contrib, s, d]
                     i_segment : link for which we calculate the Jacobian
@@ -2169,19 +1965,17 @@ class GVS(SoftRobot):
                     - (g_tip_link, J_tip_link): tip state with
                       shapes (4, 4) and (num_segments, 2, 6, max_dof).
                     - J_link: per-point Jacobians for this segment, shape
-                      (max_nip, num_segments, 2, 6, max_dof).
+                      (max_num_integration_points, num_segments, 2, 6, max_dof).
             """
             g_tip, J_tip = carry
 
             # Joint ============================
-            B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
+            B_joint_i = self.B_joint[i_segment]  # (6, max_dof)
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]
 
-            g_joint_i, Ad_g_joint_inv, T_joint_B_i = (
-                self._joint_jacobian_step_terms(
-                    B_joint_i, xi_ref_joint_i, q_joint_i
-                )
+            g_joint_i, Ad_g_joint_inv, T_joint_B_i = self._joint_jacobian_step_terms(
+                B_joint_i, xi_ref_joint_i, q_joint_i
             )
 
             T_g_joint_i_B_joint_i = (
@@ -2196,12 +1990,22 @@ class GVS(SoftRobot):
             )  # shape (num_segments, 6, max_dof)
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]  # shape (max_nip,)
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # shape (max_nip - 1, 6)
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # shape (max_nip - 1, 6)
-            length_i = self.V_L[i_segment]  # shape (1,)
-            B_Z1_i = self.V_B_Z1[i_segment]  # shape (max_nip - 1, 6, max_dof)
-            B_Z2_i = self.V_B_Z2[i_segment]  # shape (max_nip - 1, 6, max_dof)
+            Xs_i = self.integration_points[
+                i_segment
+            ]  # shape (max_num_integration_points,)
+            xi_ref_Z1_i = self.xi_ref_Z1[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6)
+            xi_ref_Z2_i = self.xi_ref_Z2[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6)
+            length_i = self.segment_lengths[i_segment]  # shape (1,)
+            B_Z1_i = self.B_Z1[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6, max_dof)
+            B_Z2_i = self.B_Z2[
+                i_segment
+            ]  # shape (max_num_integration_points - 1, 6, max_dof)
 
             q_i = q_gathered[i_segment, 1]
 
@@ -2249,7 +2053,7 @@ class GVS(SoftRobot):
 
                 return (g_next, J_next), J_next
 
-            indices_eval_points = jnp.arange(self.max_nip - 1)
+            indices_eval_points = jnp.arange(self.max_num_integration_points - 1)
 
             (g_tip_link, J_tip_link), J_link = lax.scan(
                 f=body_eval_points, init=(g_j, J_j), xs=indices_eval_points
@@ -2263,7 +2067,7 @@ class GVS(SoftRobot):
             #     carry = (g_j, J_j)
             #     J_link.append(J_j_here)
             # (g_tip_link, J_tip_link) = carry
-            # J_link = jnp.array(J_link)  # shape (max_nip - 1, num_segments, 6, max_dof)
+            # J_link = jnp.array(J_link)  # shape (max_num_integration_points - 1, num_segments, 6, max_dof)
 
             J_link = jnp.concatenate((jnp.expand_dims(J_j, axis=0), J_link), axis=0)
             return (g_tip_link, J_tip_link), J_link
@@ -2285,10 +2089,13 @@ class GVS(SoftRobot):
         #     J_list.append(J_j)
         # J_list = jnp.array(J_list)
 
-        # (num_segments, max_nip, num_segments, 2, 6, max_dof) => (num_segments, max_nip, 6, num_segments*2*max_dof)
+        # (num_segments, max_num_integration_points, num_segments, 2, 6, max_dof) => (num_segments, max_num_integration_points, 6, num_segments*2*max_dof)
         J_reordered = jnp.transpose(J_list, (0, 1, 4, 2, 3, 5))
         J = J_reordered.reshape(
-            self.num_segments, self.max_nip, 6, self.num_segments * 2 * self.max_dof
+            self.num_segments,
+            self.max_num_integration_points,
+            6,
+            self.num_segments * 2 * self.max_dof,
         )
 
         return J
@@ -2299,7 +2106,7 @@ class GVS(SoftRobot):
         Compute the Jacobian of the forward kinematics at a point s along the robot in the body frame.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
             s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
@@ -2328,14 +2135,12 @@ class GVS(SoftRobot):
             g_tip, J_tip = carry
 
             # Joint ============================
-            B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
+            B_joint_i = self.B_joint[i_segment]  # (6, max_dof)
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]
 
-            g_joint_i, Ad_g_joint_inv, T_joint_B_i = (
-                self._joint_jacobian_step_terms(
-                    B_joint_i, xi_ref_joint_i, q_joint_i
-                )
+            g_joint_i, Ad_g_joint_inv, T_joint_B_i = self._joint_jacobian_step_terms(
+                B_joint_i, xi_ref_joint_i, q_joint_i
             )
 
             # contribution of this joint to its own block
@@ -2352,12 +2157,12 @@ class GVS(SoftRobot):
             )
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]  # (max_nip,)
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # (max_nip-1, 6)
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # (max_nip-1, 6)
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1, 6, max_dof)
-            B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1, 6, max_dof)
+            Xs_i = self.integration_points[i_segment]  # (max_num_integration_points,)
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]  # (max_num_integration_points-1, 6)
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]  # (max_num_integration_points-1, 6)
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]  # (max_num_integration_points-1, 6, max_dof)
+            B_Z2_i = self.B_Z2[i_segment]  # (max_num_integration_points-1, 6, max_dof)
 
             q_i = q_gathered[i_segment, 1]
 
@@ -2410,7 +2215,9 @@ class GVS(SoftRobot):
                     (num_segments, 2, 6, max_dof).
                 """
                 (g_end, J_end), _ = lax.scan(
-                    full_cell, (g_j, J_j), jnp.arange(self.max_nip - 1)
+                    full_cell,
+                    (g_j, J_j),
+                    jnp.arange(self.max_num_integration_points - 1),
                 )
                 return g_end, J_end
 
@@ -2422,7 +2229,11 @@ class GVS(SoftRobot):
                     Tuple[Array, Array]: (g_out, J_out) at location `s`.
                 """
                 x = s_local / length_i
-                j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
+                j = jnp.clip(
+                    jnp.searchsorted(Xs_i, x) - 1,
+                    0,
+                    self.max_num_integration_points - 2,
+                )
 
                 # masked full cells up to j-1
                 def full_cell_masked(
@@ -2445,7 +2256,9 @@ class GVS(SoftRobot):
                     return (g_out, J_out), None
 
                 (g_in, J_in), _ = lax.scan(
-                    full_cell_masked, (g_j, J_j), jnp.arange(self.max_nip - 1)
+                    full_cell_masked,
+                    (g_j, J_j),
+                    jnp.arange(self.max_num_integration_points - 1),
                 )
 
                 # partial cell j with Hp
@@ -2508,7 +2321,7 @@ class GVS(SoftRobot):
 
         # J_full is (num_segments,2,6,max_dof) at location s in body frame.
         # Flatten to (6, num_segments*2*max_dof), then project to active strains.
-        J_local = self._jacobian_blocks_to_flat(J_full) @ self.B_select
+        J_local = self._jacobian_blocks_to_flat(J_full) @ self.active_dof_map
 
         return J_local
 
@@ -2532,7 +2345,7 @@ class GVS(SoftRobot):
         def body_single(s_val: Array) -> Array:
             i, s_local = self.classify_segment(s_val)
 
-            length_i = self.V_L[i]
+            length_i = self.segment_lengths[i]
             length_safe = jnp.where(jnp.abs(length_i) < self.global_eps, 1.0, length_i)
             x_norm = jnp.where(
                 jnp.abs(length_i) < self.global_eps,
@@ -2540,16 +2353,16 @@ class GVS(SoftRobot):
                 jnp.clip(s_local / length_safe, 0.0, 1.0),
             )
 
-            Xs_i = self.V_Xs[i]
+            Xs_i = self.integration_points[i]
             J_nodes = J_gauss_full[i]
             q_link = q_gathered[i, 1]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i]
+            xi_ref_Z1_i = self.xi_ref_Z1[i]
+            xi_ref_Z2_i = self.xi_ref_Z2[i]
 
             cell_idx = jnp.clip(
                 jnp.searchsorted(Xs_i, x_norm, side="right") - 1,
                 0,
-                self.max_nip - 2,
+                self.max_num_integration_points - 2,
             )
 
             distances = jnp.abs(Xs_i - x_norm)
@@ -2596,7 +2409,7 @@ class GVS(SoftRobot):
             )
 
             J_flat = self._jacobian_blocks_to_flat(J_blocks)
-            return J_flat @ self.B_select
+            return J_flat @ self.active_dof_map
 
         return vmap(body_single)(s_flat)
 
@@ -2626,7 +2439,7 @@ class GVS(SoftRobot):
         def body_single(s_val: Array) -> tuple[Array, Array]:
             i, s_local = self.classify_segment(s_val)
 
-            length_i = self.V_L[i]
+            length_i = self.segment_lengths[i]
             length_safe = jnp.where(jnp.abs(length_i) < self.global_eps, 1.0, length_i)
             x_norm = jnp.where(
                 jnp.abs(length_i) < self.global_eps,
@@ -2634,18 +2447,18 @@ class GVS(SoftRobot):
                 jnp.clip(s_local / length_safe, 0.0, 1.0),
             )
 
-            Xs_i = self.V_Xs[i]
+            Xs_i = self.integration_points[i]
             J_nodes = J_gauss_full[i]
             Jd_nodes = Jd_gauss_full[i]
             q_link = q_gathered[i, 1]
             qd_link = qd_gathered[i, 1]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i]
+            xi_ref_Z1_i = self.xi_ref_Z1[i]
+            xi_ref_Z2_i = self.xi_ref_Z2[i]
 
             cell_idx = jnp.clip(
                 jnp.searchsorted(Xs_i, x_norm, side="right") - 1,
                 0,
-                self.max_nip - 2,
+                self.max_num_integration_points - 2,
             )
 
             distances = jnp.abs(Xs_i - x_norm)
@@ -2683,11 +2496,11 @@ class GVS(SoftRobot):
                     xi_ref_Z2_i[cell_idx],
                 )
 
-                T_block = jnp.zeros_like(J_blocks_base).at[i, 1].set(
-                    T_step @ B_Magnus
-                )
-                Td_block = jnp.zeros_like(Jd_blocks_base).at[i, 1].set(
-                    Td_step @ B_Magnus + T_step @ B_Magnus_dot
+                T_block = jnp.zeros_like(J_blocks_base).at[i, 1].set(T_step @ B_Magnus)
+                Td_block = (
+                    jnp.zeros_like(Jd_blocks_base)
+                    .at[i, 1]
+                    .set(Td_step @ B_Magnus + T_step @ B_Magnus_dot)
                 )
 
                 eta_step = Ad_step_inv @ (T_step @ B_Magnus @ qd_link)
@@ -2715,7 +2528,7 @@ class GVS(SoftRobot):
 
             J_flat = self._jacobian_blocks_to_flat(J_blocks)
             Jd_flat = self._jacobian_blocks_to_flat(Jd_blocks)
-            return J_flat @ self.B_select, Jd_flat @ self.B_select
+            return J_flat @ self.active_dof_map, Jd_flat @ self.active_dof_map
 
         return vmap(body_single)(s_flat)
 
@@ -2759,7 +2572,7 @@ class GVS(SoftRobot):
                 (num_segments, 6, num_dofs).
         """
         q_gathered = self._min_size_gathered(q)
-        J_local_tips = self._jacobian_gauss(q_gathered)[:, -1] @ self.B_select
+        J_local_tips = self._jacobian_gauss(q_gathered)[:, -1] @ self.active_dof_map
         g_tips = self.forward_kinematics_tips(q)
 
         return vmap(self._body_jacobian_to_inertial)(g_tips, J_local_tips)
@@ -2816,9 +2629,10 @@ class GVS(SoftRobot):
                 Joint velocities.
 
         Returns:
-            Jd_list (Array): shape (num_segments, max_nip, 6, num_segments*2*max_dof) JAX array
+            Jd_list (Array): shape (num_segments, max_num_integration_points, 6, num_segments*2*max_dof) JAX array
                 Jacobian derivative matrices at all significant points
         """
+
         def body_segment_i(
             carry: tuple[Array, Array, Array, Array], i_segment: Array
         ) -> tuple[tuple[Array, Array, Array, Array], Array]:
@@ -2826,8 +2640,8 @@ class GVS(SoftRobot):
             g_tip, J_tip, Jd_tip, eta_tip = carry
 
             # Joint ============================
-            B_joint_i = self.V_B_joint[i_segment]
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]
+            B_joint_i = self.B_joint[i_segment]
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
             qd_joint_i = qd_gathered[i_segment, 0]
 
@@ -2868,12 +2682,12 @@ class GVS(SoftRobot):
             )
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]
-            B_Z2_i = self.V_B_Z2[i_segment]
+            Xs_i = self.integration_points[i_segment]
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]
+            B_Z2_i = self.B_Z2[i_segment]
 
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
@@ -2919,21 +2733,17 @@ class GVS(SoftRobot):
                 Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
 
                 g_next = g_prev @ g_step
-                J_next = jnp.einsum(
-                    "ij,nmjk->nmik", Ad_step_inv, J_prev + T_block
-                )
+                J_next = jnp.einsum("ij,nmjk->nmik", Ad_step_inv, J_prev + T_block)
                 Jd_next = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, Jd_prev + Td_block
-                ) + jnp.einsum(
-                    "ij,nmjk->nmik", Ad_step_inv_dot, J_prev + T_block
-                )
+                ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv_dot, J_prev + T_block)
 
                 return (g_next, J_next, Jd_next, eta_next), Jd_next
 
             (g_tip_link, J_tip_link, Jd_tip_link, eta_tip_link), Jd_link = lax.scan(
                 f=body_eval_points,
                 init=(g_j, J_j, Jd_j, eta_j),
-                xs=jnp.arange(self.max_nip - 1),
+                xs=jnp.arange(self.max_num_integration_points - 1),
             )
 
             Jd_link = jnp.concatenate((jnp.expand_dims(Jd_j, axis=0), Jd_link), axis=0)
@@ -2951,7 +2761,10 @@ class GVS(SoftRobot):
 
         Jd_reordered = jnp.transpose(Jd_list, (0, 1, 4, 2, 3, 5))
         return Jd_reordered.reshape(
-            self.num_segments, self.max_nip, 6, self.num_segments * 2 * self.max_dof
+            self.num_segments,
+            self.max_num_integration_points,
+            6,
+            self.num_segments * 2 * self.max_dof,
         )
 
     @eqx.filter_jit
@@ -2961,8 +2774,8 @@ class GVS(SoftRobot):
         """
         Compute the Jacobian derivative of the forward kinematics at a point s along the robot in the body frame.
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
-            qd (Array): generalized velocities of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
+            qd (Array): generalized velocities of shape (num_dofs,).
             s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
@@ -2994,8 +2807,8 @@ class GVS(SoftRobot):
             g_tip, J_tip, Jd_tip, eta_tip = carry
 
             # Joint ============================
-            B_joint_i = self.V_B_joint[i_segment]  # (6, max_dof)
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]  # (6,)
+            B_joint_i = self.B_joint[i_segment]  # (6, max_dof)
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]  # (6,)
             q_joint_i = q_gathered[i_segment, 0]  # (max_dof,)
             qd_joint_i = qd_gathered[i_segment, 0]  # (max_dof,)
 
@@ -3042,12 +2855,12 @@ class GVS(SoftRobot):
             )
 
             # Link ========================
-            Xs_i = self.V_Xs[i_segment]  # (max_nip,)
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]  # (max_nip-1,6)
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]  # (max_nip-1,6)
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]  # (max_nip-1,6,max_dof)
-            B_Z2_i = self.V_B_Z2[i_segment]  # (max_nip-1,6,max_dof)
+            Xs_i = self.integration_points[i_segment]  # (max_num_integration_points,)
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]  # (max_num_integration_points-1,6)
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]  # (max_num_integration_points-1,6)
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]  # (max_num_integration_points-1,6,max_dof)
+            B_Z2_i = self.B_Z2[i_segment]  # (max_num_integration_points-1,6,max_dof)
 
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
@@ -3106,9 +2919,7 @@ class GVS(SoftRobot):
                 Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
                 Jd_next = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, (Jd_prev + Td_block)
-                ) + jnp.einsum(
-                    "ij,nmjk->nmik", Ad_step_inv_dot, J_prev + T_block
-                )
+                ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv_dot, J_prev + T_block)
 
                 return (g_next, J_next, Jd_next, eta_next), None
 
@@ -3120,7 +2931,9 @@ class GVS(SoftRobot):
                     Tuple[Array, Array, Array, Array]: (g_end, J_end, Jd_end, eta_end).
                 """
                 (g_end, J_end, Jd_end, eta_end), _ = lax.scan(
-                    full_cell, (g_j, J_j, Jd_j, eta_j), jnp.arange(self.max_nip - 1)
+                    full_cell,
+                    (g_j, J_j, Jd_j, eta_j),
+                    jnp.arange(self.max_num_integration_points - 1),
                 )
                 return g_end, J_end, Jd_end, eta_end
 
@@ -3132,7 +2945,11 @@ class GVS(SoftRobot):
                     Tuple[Array, Array, Array, Array]: (g_out, J_out, Jd_out, eta_out) at `s`.
                 """
                 x = s_local / length_i
-                j = jnp.clip(jnp.searchsorted(Xs_i, x) - 1, 0, self.max_nip - 2)
+                j = jnp.clip(
+                    jnp.searchsorted(Xs_i, x) - 1,
+                    0,
+                    self.max_num_integration_points - 2,
+                )
 
                 # consume up to j-1 (masked)
                 def full_cell_masked(
@@ -3159,7 +2976,7 @@ class GVS(SoftRobot):
                 (g_in, J_in, Jd_in, eta_in), _ = lax.scan(
                     full_cell_masked,
                     (g_j, J_j, Jd_j, eta_j),
-                    jnp.arange(self.max_nip - 1),
+                    jnp.arange(self.max_num_integration_points - 1),
                 )
 
                 # partial cell j of size Hp
@@ -3208,9 +3025,7 @@ class GVS(SoftRobot):
                 Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
                 Jd_out = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, (Jd_in + Td_block)
-                ) + jnp.einsum(
-                    "ij,nmjk->nmik", Ad_step_inv_dot, J_in + T_block
-                )
+                ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv_dot, J_in + T_block)
 
                 return g_out, J_out, Jd_out, eta_out
 
@@ -3252,8 +3067,8 @@ class GVS(SoftRobot):
             step, (g0, J0, Jd0, eta0), jnp.arange(self.num_segments)
         )
 
-        J_local = self._jacobian_blocks_to_flat(J_full) @ self.B_select
-        Jd_local = self._jacobian_blocks_to_flat(Jd_full) @ self.B_select
+        J_local = self._jacobian_blocks_to_flat(J_full) @ self.active_dof_map
+        Jd_local = self._jacobian_blocks_to_flat(Jd_full) @ self.active_dof_map
 
         return J_local, Jd_local
 
@@ -3308,8 +3123,8 @@ class GVS(SoftRobot):
         Compute the Jacobian and its time derivative at a point s along the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
-            qd (Array): generalized velocities of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
+            qd (Array): generalized velocities of shape (num_dofs,).
             s (Array): point coordinate along the robot in the interval [0, L].
 
         Returns:
@@ -3346,16 +3161,16 @@ class GVS(SoftRobot):
         """
         Return active-coordinate selectors grouped by segment and local block.
 
-        ``self.B_select`` maps active GVS coordinates to the padded full
+        ``self.active_dof_map`` maps active GVS coordinates to the padded full
         coordinate layout. For local active-coordinate assembly, it is useful to
         view that matrix as per-segment joint/link selector blocks.
 
         Returns:
             selector_blocks: Active selectors with shape
-            ``(self.num_segments, 2, self.max_dof, self.dof_tot_system)``.
+            ``(self.num_segments, 2, self.max_dof, self.num_dofs)``.
             Axis 1 is ``0`` for joint coordinates and ``1`` for link coordinates.
         """
-        return self.B_select_blocks
+        return self.active_dof_map_blocks
 
     def _inner_quadrature_weights(self) -> Array:
         """
@@ -3367,9 +3182,9 @@ class GVS(SoftRobot):
 
         Returns:
             weights: Interior quadrature weights, shape
-            ``(self.num_segments, self.max_nip - 2)``.
+            ``(self.num_segments, self.max_num_integration_points - 2)``.
         """
-        return self.V_Ws_inner
+        return self.inner_integration_weights
 
     def _inner_mass_matrices(self) -> Array:
         """
@@ -3377,14 +3192,12 @@ class GVS(SoftRobot):
 
         Returns:
             Ms_inner: Local spatial mass matrices at interior quadrature nodes,
-            shape ``(self.num_segments, self.max_nip - 2, 6, 6)``.
+            shape ``(self.num_segments, self.max_num_integration_points - 2, 6, 6)``.
         """
-        return self.V_Ms_inner
+        return self.inner_mass_matrices
 
     @eqx.filter_jit
-    def _active_quadrature_pose_jacobians(
-        self, q: Array
-    ) -> tuple[Array, Array, Array]:
+    def _active_quadrature_pose_jacobians(self, q: Array) -> tuple[Array, Array, Array]:
         """
         Return active pose/Jacobian data at interior quadrature nodes.
 
@@ -3396,16 +3209,16 @@ class GVS(SoftRobot):
 
         Args:
             q: Active generalized coordinates, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             Tuple ``(weights, g_quads, J_quads)``. ``weights`` contains
             length-scaled interior quadrature weights with shape
-            ``(self.num_segments, self.max_nip - 2)``. ``g_quads`` contains
+            ``(self.num_segments, self.max_num_integration_points - 2)``. ``g_quads`` contains
             poses at those nodes with shape
-            ``(self.num_segments, self.max_nip - 2, 4, 4)``. ``J_quads``
+            ``(self.num_segments, self.max_num_integration_points - 2, 4, 4)``. ``J_quads``
             contains active-coordinate body-frame Jacobians with shape
-            ``(self.num_segments, self.max_nip - 2, 6, self.dof_tot_system)``.
+            ``(self.num_segments, self.max_num_integration_points - 2, 6, self.num_dofs)``.
         """
         q_gathered = self._min_size_gathered(q)
         selector_blocks = self._active_selector_blocks()
@@ -3416,27 +3229,25 @@ class GVS(SoftRobot):
         ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
             g_tip, J_tip = carry
 
-            B_joint_i = self.V_B_joint[i_segment]
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]
+            B_joint_i = self.B_joint[i_segment]
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
             selector_joint_i = selector_blocks[i_segment, 0]
 
-            g_joint_i, Ad_g_joint_inv, T_joint_B_i = (
-                self._joint_jacobian_step_terms(
-                    B_joint_i, xi_ref_joint_i, q_joint_i
-                )
+            g_joint_i, Ad_g_joint_inv, T_joint_B_i = self._joint_jacobian_step_terms(
+                B_joint_i, xi_ref_joint_i, q_joint_i
             )
 
             T_joint_active = T_joint_B_i @ selector_joint_i
             g_j = g_tip @ g_joint_i
             J_j = Ad_g_joint_inv @ (J_tip + T_joint_active)
 
-            Xs_i = self.V_Xs[i_segment]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]
-            B_Z2_i = self.V_B_Z2[i_segment]
+            Xs_i = self.integration_points[i_segment]
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]
+            B_Z2_i = self.B_Z2[i_segment]
             q_i = q_gathered[i_segment, 1]
             selector_link_i = selector_blocks[i_segment, 1]
 
@@ -3464,15 +3275,17 @@ class GVS(SoftRobot):
                 return (g_next, J_next), (g_next, J_next)
 
             (g_tip_link, J_tip_link), (g_link_nodes, J_link_nodes) = lax.scan(
-                body_eval_point, (g_j, J_j), jnp.arange(self.max_nip - 1)
+                body_eval_point,
+                (g_j, J_j),
+                jnp.arange(self.max_num_integration_points - 1),
             )
 
             return (g_tip_link, J_tip_link), (
-                g_link_nodes[: self.max_nip - 2],
-                J_link_nodes[: self.max_nip - 2],
+                g_link_nodes[: self.max_num_integration_points - 2],
+                J_link_nodes[: self.max_num_integration_points - 2],
             )
 
-        J_init = jnp.zeros((6, self.dof_tot_system), dtype=self.B_select.dtype)
+        J_init = jnp.zeros((6, self.num_dofs), dtype=self.active_dof_map.dtype)
         (_, _), (g_quads, J_quads) = lax.scan(
             body_segment_i, (self.g0, J_init), jnp.arange(self.num_segments)
         )
@@ -3493,16 +3306,16 @@ class GVS(SoftRobot):
 
         Args:
             q: Active generalized coordinates, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
             qd: Active generalized velocities, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             Tuple ``(weights, g_quads, J_quads, Jd_quads)``. ``weights`` has
-            shape ``(self.num_segments, self.max_nip - 2)``; ``g_quads`` has
-            shape ``(self.num_segments, self.max_nip - 2, 4, 4)``;
+            shape ``(self.num_segments, self.max_num_integration_points - 2)``; ``g_quads`` has
+            shape ``(self.num_segments, self.max_num_integration_points - 2, 4, 4)``;
             ``J_quads`` and ``Jd_quads`` both have shape
-            ``(self.num_segments, self.max_nip - 2, 6, self.dof_tot_system)``.
+            ``(self.num_segments, self.max_num_integration_points - 2, 6, self.num_dofs)``.
         """
         q_gathered = self._min_size_gathered(q)
         qd_gathered = self._min_size_gathered(qd)
@@ -3514,8 +3327,8 @@ class GVS(SoftRobot):
         ) -> tuple[tuple[Array, Array, Array, Array], tuple[Array, Array, Array]]:
             g_tip, J_tip, Jd_tip, eta_tip = carry
 
-            B_joint_i = self.V_B_joint[i_segment]
-            xi_ref_joint_i = self.V_xi_ref_joint[i_segment]
+            B_joint_i = self.B_joint[i_segment]
+            xi_ref_joint_i = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
             qd_joint_i = qd_gathered[i_segment, 0]
             selector_joint_i = selector_blocks[i_segment, 0]
@@ -3537,16 +3350,16 @@ class GVS(SoftRobot):
 
             g_j = g_tip @ g_joint_i
             J_j = Ad_g_joint_inv @ (J_tip + T_joint_active)
-            Jd_j = Ad_g_joint_inv @ (
-                Jd_tip + Td_joint_active
-            ) + Ad_g_joint_inv_dot @ (J_tip + T_joint_active)
+            Jd_j = Ad_g_joint_inv @ (Jd_tip + Td_joint_active) + Ad_g_joint_inv_dot @ (
+                J_tip + T_joint_active
+            )
 
-            Xs_i = self.V_Xs[i_segment]
-            xi_ref_Z1_i = self.V_xi_ref_Z1[i_segment]
-            xi_ref_Z2_i = self.V_xi_ref_Z2[i_segment]
-            length_i = self.V_L[i_segment]
-            B_Z1_i = self.V_B_Z1[i_segment]
-            B_Z2_i = self.V_B_Z2[i_segment]
+            Xs_i = self.integration_points[i_segment]
+            xi_ref_Z1_i = self.xi_ref_Z1[i_segment]
+            xi_ref_Z2_i = self.xi_ref_Z2[i_segment]
+            length_i = self.segment_lengths[i_segment]
+            B_Z1_i = self.B_Z1[i_segment]
+            B_Z2_i = self.B_Z2[i_segment]
             q_i = q_gathered[i_segment, 1]
             qd_i = qd_gathered[i_segment, 1]
             selector_link_i = selector_blocks[i_segment, 1]
@@ -3587,9 +3400,9 @@ class GVS(SoftRobot):
 
                 g_next = g_prev @ g_step
                 J_next = Ad_step_inv @ (J_prev + T_active)
-                Jd_next = Ad_step_inv @ (
-                    Jd_prev + Td_active
-                ) + Ad_step_inv_dot @ (J_prev + T_active)
+                Jd_next = Ad_step_inv @ (Jd_prev + Td_active) + Ad_step_inv_dot @ (
+                    J_prev + T_active
+                )
 
                 return (g_next, J_next, Jd_next, eta_next), (
                     g_next,
@@ -3598,25 +3411,28 @@ class GVS(SoftRobot):
                 )
 
             (
-                g_tip_link,
-                J_tip_link,
-                Jd_tip_link,
-                eta_tip_link,
-            ), (g_link_nodes, J_link_nodes, Jd_link_nodes) = lax.scan(
+                (
+                    g_tip_link,
+                    J_tip_link,
+                    Jd_tip_link,
+                    eta_tip_link,
+                ),
+                (g_link_nodes, J_link_nodes, Jd_link_nodes),
+            ) = lax.scan(
                 body_eval_point,
                 (g_j, J_j, Jd_j, eta_j),
-                jnp.arange(self.max_nip - 1),
+                jnp.arange(self.max_num_integration_points - 1),
             )
 
             return (g_tip_link, J_tip_link, Jd_tip_link, eta_tip_link), (
-                g_link_nodes[: self.max_nip - 2],
-                J_link_nodes[: self.max_nip - 2],
-                Jd_link_nodes[: self.max_nip - 2],
+                g_link_nodes[: self.max_num_integration_points - 2],
+                J_link_nodes[: self.max_num_integration_points - 2],
+                Jd_link_nodes[: self.max_num_integration_points - 2],
             )
 
-        J_init = jnp.zeros((6, self.dof_tot_system), dtype=self.B_select.dtype)
-        Jd_init = jnp.zeros((6, self.dof_tot_system), dtype=self.B_select.dtype)
-        eta_init = jnp.zeros((6,), dtype=self.B_select.dtype)
+        J_init = jnp.zeros((6, self.num_dofs), dtype=self.active_dof_map.dtype)
+        Jd_init = jnp.zeros((6, self.num_dofs), dtype=self.active_dof_map.dtype)
+        eta_init = jnp.zeros((6,), dtype=self.active_dof_map.dtype)
         (_, _, _, _), (g_quads, J_quads, Jd_quads) = lax.scan(
             body_segment_i,
             (self.g0, J_init, Jd_init, eta_init),
@@ -3639,16 +3455,16 @@ class GVS(SoftRobot):
 
         Args:
             q: Active generalized coordinates, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
             qd: Active generalized velocities, shape
-                ``(self.dof_tot_system,)``.
+                ``(self.num_dofs,)``.
 
         Returns:
             Tuple ``(B, Cqd, G)``. ``B`` is the active inertia matrix with shape
-            ``(self.dof_tot_system, self.dof_tot_system)``. ``Cqd`` is the
-            active convective force vector with shape ``(self.dof_tot_system,)``.
+            ``(self.num_dofs, self.num_dofs)``. ``Cqd`` is the
+            active convective force vector with shape ``(self.num_dofs,)``.
             ``G`` is the active generalized gravity vector with shape
-            ``(self.dof_tot_system,)``.
+            ``(self.num_dofs,)``.
         """
         weights, g_quads, J_quads, Jd_quads = self._active_quadrature_kinematics(q, qd)
         Ms_inner = self._inner_mass_matrices()
@@ -3674,7 +3490,7 @@ class GVS(SoftRobot):
                 G_ij = self._gravity_integrand(weight_ij, g_ij, J_ij, M_ij)
                 return B_ij, Cqd_ij, G_ij
 
-            return vmap(point_terms)(jnp.arange(self.max_nip - 2))
+            return vmap(point_terms)(jnp.arange(self.max_num_integration_points - 2))
 
         B_blocks, Cqd_blocks, G_blocks = vmap(segment_terms)(
             jnp.arange(self.num_segments)
@@ -3703,7 +3519,7 @@ class GVS(SoftRobot):
 
         V_J = self._jacobian_gauss(
             q_gathered
-        )  # (num_segments, max_nip, 6, num_segments * 2 * max_dof)
+        )  # (num_segments, max_num_integration_points, 6, num_segments * 2 * max_dof)
 
         # Define function for each quadrature point
         def B_i(i: Array) -> Array:
@@ -3714,12 +3530,12 @@ class GVS(SoftRobot):
 
             Returns:
                 B_blocks_i (Array): Blocks over quadrature points, shape
-                    (max_nip, num_segments*2*max_dof, num_segments*2*max_dof).
+                    (max_num_integration_points, num_segments*2*max_dof, num_segments*2*max_dof).
             """
-            length_i = self.V_L[i]
-            Ws_i = self.V_Ws[i]  # (max_nip, 1, )
-            J_i = V_J[i]  # (max_nip, 6, num_segments * 2 * max_dof)
-            Ms_i = self.V_Ms[i]  # (max_nip, 6, 6)
+            length_i = self.segment_lengths[i]
+            Ws_i = self.integration_weights[i]  # (max_num_integration_points, 1, )
+            J_i = V_J[i]  # (max_num_integration_points, 6, num_segments * 2 * max_dof)
+            Ms_i = self.mass_matrices[i]  # (max_num_integration_points, 6, 6)
 
             def B_ij(j: Array) -> Array:
                 """Inertia block at a single quadrature point.
@@ -3741,11 +3557,12 @@ class GVS(SoftRobot):
 
             # we can skip the first and last quadrature points since their weight is zero
             B_blocks_i = (
-                vmap(B_ij)(jnp.arange(1, self.max_nip - 1)) * length_i
-            )  # (max_nip - 2, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
+                vmap(B_ij)(jnp.arange(1, self.max_num_integration_points - 1))
+                * length_i
+            )  # (max_num_integration_points - 2, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
 
             # # For debugging purposes, we can use a list comprehension
-            # B_blocks_segment_i = jnp.stack([B_eval_points(i_eval) for i_eval in range(self.max_nip)])  # (max_nip, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
+            # B_blocks_segment_i = jnp.stack([B_eval_points(i_eval) for i_eval in range(self.max_num_integration_points)])  # (max_num_integration_points, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
 
             return B_blocks_i
 
@@ -3753,10 +3570,10 @@ class GVS(SoftRobot):
             B_i
         )(
             jnp.arange(self.num_segments)
-        )  # (num_segments, max_nip, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
+        )  # (num_segments, max_num_integration_points, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
 
         # # For debugging purposes, we can use a list comprehension
-        # B_blocks_tot = jnp.stack([B_segment_i(i_segment) for i_segment in range(self.num_segments)])  # (num_segments, max_nip, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
+        # B_blocks_tot = jnp.stack([B_segment_i(i_segment) for i_segment in range(self.num_segments)])  # (num_segments, max_num_integration_points, num_segments * 2 * max_dof, num_segments * 2 * max_dof)
 
         # Sum over all segments and quadrature points
         B_full = jnp.sum(B_blocks_tot, axis=(0, 1))
@@ -3769,10 +3586,10 @@ class GVS(SoftRobot):
         Compute the inertia matrix of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
 
         Returns:
-            B (Array): Inertia matrix, shape (dof_tot, dof_tot)
+            B (Array): Inertia matrix, shape (num_dofs, num_dofs)
         """
         weights, _, J_quads = self._active_quadrature_pose_jacobians(q)
         Ms_inner = self._inner_mass_matrices()
@@ -3782,7 +3599,7 @@ class GVS(SoftRobot):
                 J_ij = J_quads[i, j]
                 return self._inertia_integrand(weights[i, j], J_ij, Ms_inner[i, j])
 
-            return vmap(point_term)(jnp.arange(self.max_nip - 2))
+            return vmap(point_term)(jnp.arange(self.max_num_integration_points - 2))
 
         return jnp.sum(vmap(segment_terms)(jnp.arange(self.num_segments)), axis=(0, 1))
 
@@ -3792,11 +3609,11 @@ class GVS(SoftRobot):
         Compute the Coriolis matrix of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
-            qd (Array): generalized velocities of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
+            qd (Array): generalized velocities of shape (num_dofs,).
 
         Returns:
-            C (Array): Coriolis matrix, shape (dof_tot, dof_tot)
+            C (Array): Coriolis matrix, shape (num_dofs, num_dofs)
         """
         weights, _, J_quads, Jd_quads = self._active_quadrature_kinematics(q, qd)
         Ms_inner = self._inner_mass_matrices()
@@ -3810,7 +3627,7 @@ class GVS(SoftRobot):
                     weights[i, j], J_ij, Jd_ij, M_ij, qd
                 )
 
-            return vmap(point_term)(jnp.arange(self.max_nip - 2))
+            return vmap(point_term)(jnp.arange(self.max_num_integration_points - 2))
 
         return jnp.sum(vmap(segment_terms)(jnp.arange(self.num_segments)), axis=(0, 1))
 
@@ -3830,12 +3647,12 @@ class GVS(SoftRobot):
         # Get forward kinematics at all quadrature points
         V_g = self._forward_kinematics_gauss(
             q_gathered
-        )  # (num_segments, max_nip, 4, 4)
+        )  # (num_segments, max_num_integration_points, 4, 4)
 
         # Get Jacobian at all quadrature points
         V_J = self._jacobian_gauss(
             q_gathered
-        )  # (num_segments, max_nip, 6, num_segments * 2 * max_dof)
+        )  # (num_segments, max_num_integration_points, 6, num_segments * 2 * max_dof)
 
         def G_i(i: Array) -> Array:
             """Assemble gravitational force contributions for one segment.
@@ -3844,13 +3661,13 @@ class GVS(SoftRobot):
                 i (Array): Segment index (int).
 
             Returns:
-                G_blocks_i (Array): Blocks over quadrature points, shape (max_nip, num_segments*2*max_dof, 1).
+                G_blocks_i (Array): Blocks over quadrature points, shape (max_num_integration_points, num_segments*2*max_dof, 1).
             """
-            length_i = self.V_L[i]
-            Ws_i = self.V_Ws[i]  # (max_nip, 1, )
-            g_i = V_g[i]  # (max_nip, 4, 4)
-            J_i = V_J[i]  # (max_nip, 6, num_segments * 2 * max_dof)
-            Ms_i = self.V_Ms[i]  # (max_nip, 6, 6)
+            length_i = self.segment_lengths[i]
+            Ws_i = self.integration_weights[i]  # (max_num_integration_points, 1, )
+            g_i = V_g[i]  # (max_num_integration_points, 4, 4)
+            J_i = V_J[i]  # (max_num_integration_points, 6, num_segments * 2 * max_dof)
+            Ms_i = self.mass_matrices[i]  # (max_num_integration_points, 6, 6)
 
             def G_ij(j: Array) -> Array:
                 """Gravitational block at a single quadrature point.
@@ -3874,20 +3691,21 @@ class GVS(SoftRobot):
 
             # we can skip the first and last quadrature points since their weight is zero
             G_blocks_i = (
-                vmap(G_ij)(jnp.arange(1, self.max_nip - 1)) * length_i
-            )  # (max_nip - 2, num_segments * 2 * max_dof, 1)
+                vmap(G_ij)(jnp.arange(1, self.max_num_integration_points - 1))
+                * length_i
+            )  # (max_num_integration_points - 2, num_segments * 2 * max_dof, 1)
 
             # For debugging purposes, we can use a list comprehension
-            # G_blocks_segment_i = jnp.stack([G_eval_points(i_eval) for i_eval in range(self.max_nip)])
+            # G_blocks_segment_i = jnp.stack([G_eval_points(i_eval) for i_eval in range(self.max_num_integration_points)])
 
             return G_blocks_i
 
         G_blocks_tot = vmap(G_i)(
             jnp.arange(self.num_segments)
-        )  # (num_segments, max_nip, num_segments * 2 * max_dof, 1)
+        )  # (num_segments, max_num_integration_points, num_segments * 2 * max_dof, 1)
 
         # For debugging purposes, we can use a list comprehension
-        # G_blocks_tot = jnp.stack([G_segment_i(i_segment) for i_segment in range(self.num_segments)])  # (num_segments, max_nip, num_segments * 2 * max_dof, 1)
+        # G_blocks_tot = jnp.stack([G_segment_i(i_segment) for i_segment in range(self.num_segments)])  # (num_segments, max_num_integration_points, num_segments * 2 * max_dof, 1)
 
         G_full = jnp.sum(
             G_blocks_tot, axis=(0, 1)
@@ -3901,10 +3719,10 @@ class GVS(SoftRobot):
         Compute the gravitational force vector of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
 
         Returns:
-            G (Array): Gravitational force vector, shape (dof_tot, 1)
+            G (Array): Gravitational force vector, shape (num_dofs, 1)
         """
         weights, g_quads, J_quads = self._active_quadrature_pose_jacobians(q)
         Ms_inner = self._inner_mass_matrices()
@@ -3915,7 +3733,7 @@ class GVS(SoftRobot):
                     weights[i, j], g_quads[i, j], J_quads[i, j], Ms_inner[i, j]
                 )
 
-            return vmap(point_term)(jnp.arange(self.max_nip - 2))
+            return vmap(point_term)(jnp.arange(self.max_num_integration_points - 2))
 
         return jnp.sum(vmap(segment_terms)(jnp.arange(self.num_segments)), axis=(0, 1))
 
@@ -3940,13 +3758,13 @@ class GVS(SoftRobot):
             # Joint ==============================
             K_joint_i = jnp.zeros(
                 (self.max_dof, self.max_dof)
-            )  # self.V_K_joint[i_segment]  # (max_dof, max_dof) TODO
+            )  # self.joint_stiffness[i_segment]  # (max_dof, max_dof) TODO
 
             # Link ===============================
-            length_i = self.V_L[i]
-            Ws_i = self.V_Ws[i]  # (max_nip, 1, )
-            Es_i = self.V_Es[i]  # (max_nip, 6, 6)
-            B_Xs_i = self.V_B_Xs[i]  # (max_nip, 6, max_dof)
+            length_i = self.segment_lengths[i]
+            Ws_i = self.integration_weights[i]  # (max_num_integration_points, 1, )
+            Es_i = self.stiffness_matrices[i]  # (max_num_integration_points, 6, 6)
+            B_Xs_i = self.B_Xs[i]  # (max_num_integration_points, 6, max_dof)
 
             def K_ij(j: Array) -> Array:
                 """
@@ -3962,15 +3780,19 @@ class GVS(SoftRobot):
                 Es_ij = Es_i[j]  # (6, 6)
                 B_Xs_ij = B_Xs_i[j]  # (6, max_dof)
 
-                if self.scale_rotational_strain_basis:
+                if self.scale_rotational_basis_by_length:
                     B_Xs_ij = B_Xs_ij.at[:3, :].divide(length_i)
 
                 return Ws_ij * (B_Xs_ij.T @ Es_ij @ B_Xs_ij)
 
             # we can skip the first and last quadrature points since their weight is zero
             K_link_i = (
-                jnp.sum(vmap(K_ij)(jnp.arange(1, self.max_nip - 1)), axis=0) * length_i
-            )  # (max_nip - 2, max_dof, max_dof)
+                jnp.sum(
+                    vmap(K_ij)(jnp.arange(1, self.max_num_integration_points - 1)),
+                    axis=0,
+                )
+                * length_i
+            )  # (max_num_integration_points - 2, max_dof, max_dof)
 
             # Create a (2, max_dof, max_dof) array with K_joint_i and K_segment_i
             K_blocks_i = jnp.stack([K_joint_i, K_link_i], axis=0)
@@ -3999,7 +3821,7 @@ class GVS(SoftRobot):
         Compute the stiffness matrix of the robot.
 
         Returns:
-            K (Array): Stiffness matrix, shape (dof_tot, dof_tot)
+            K (Array): Stiffness matrix, shape (num_dofs, num_dofs)
         """
         return self.K
 
@@ -4009,10 +3831,10 @@ class GVS(SoftRobot):
         Compute the elastic forces of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
 
         Returns:
-            tau_el (Array): Elastic force of shape (dof_tot,).
+            tau_el (Array): Elastic force of shape (num_dofs,).
         """
         return self.K @ q
 
@@ -4040,10 +3862,10 @@ class GVS(SoftRobot):
             )  # Initialize joint stiffness matrix
 
             # Link ===============================
-            length_i = self.V_L[i]
-            Ws_i = self.V_Ws[i]  # (max_nip, 1, )
-            Gs_i = self.V_Gs[i]  # (max_nip, 6, 6)
-            B_Xs_i = self.V_B_Xs[i]  # (max_nip, 6, max_dof)
+            length_i = self.segment_lengths[i]
+            Ws_i = self.integration_weights[i]  # (max_num_integration_points, 1, )
+            Gs_i = self.damping_matrices[i]  # (max_num_integration_points, 6, 6)
+            B_Xs_i = self.B_Xs[i]  # (max_num_integration_points, 6, max_dof)
 
             def D_ij(j: Array) -> Array:
                 """Damping block at a single quadrature point.
@@ -4058,15 +3880,19 @@ class GVS(SoftRobot):
                 Gs_j = Gs_i[j]  # (6, 6)
                 B_Xs_j = B_Xs_i[j]  # (6, max_dof)
 
-                if self.scale_rotational_strain_basis:
+                if self.scale_rotational_basis_by_length:
                     B_Xs_j = B_Xs_j.at[:3, :].divide(length_i)
 
                 return Ws_j * (B_Xs_j.T @ Gs_j @ B_Xs_j)
 
             # we can skip the first and last quadrature points since their weight is zero
             D_link_i = (
-                jnp.sum(vmap(D_ij)(jnp.arange(1, self.max_nip - 1)), axis=0) * length_i
-            )  # (max_nip - 2, max_dof, max_dof)
+                jnp.sum(
+                    vmap(D_ij)(jnp.arange(1, self.max_num_integration_points - 1)),
+                    axis=0,
+                )
+                * length_i
+            )  # (max_num_integration_points - 2, max_dof, max_dof)
 
             # Create a (2, max_dof, max_dof) array with D_joint_i and D_segment_i
             D_blocks_i = jnp.stack([D_joint_i, D_link_i], axis=0)
@@ -4095,10 +3921,10 @@ class GVS(SoftRobot):
         Compute the damping matrix of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
 
         Returns:
-            D (Array): Damping matrix, shape (dof_tot, dof_tot)
+            D (Array): Damping matrix, shape (num_dofs, num_dofs)
         """
         return self.D_active
 
@@ -4111,12 +3937,12 @@ class GVS(SoftRobot):
         ``U_g = -sum_i integral rho_i(s) A_i(s) g_linear.dot(p_i(s)) ds``
         over the link centerlines. The mass density per arclength is recovered
         from the translational block of the local mass matrix stored in
-        ``V_Ms``. The implementation uses the same cached Gauss nodes and
+        ``mass_matrices``. The implementation uses the same cached Gauss nodes and
         forward-kinematics integration path as the gravitational force, and does
         not use runtime autodiff.
 
         Args:
-            q (Array): generalized coordinates of shape ``(dof_tot_system,)``.
+            q (Array): generalized coordinates of shape ``(num_dofs,)``.
 
         Returns:
             U_g (Array): Gravitational potential energy as a scalar array.
@@ -4127,17 +3953,21 @@ class GVS(SoftRobot):
 
         def U_G_i(i: Array) -> Array:
             """Compute the gravitational energy contribution of one segment."""
-            length_i = self.V_L[i]
-            weights = self.V_Ws[i, 1 : self.max_nip - 1]
+            length_i = self.segment_lengths[i]
+            weights = self.integration_weights[
+                i, 1 : self.max_num_integration_points - 1
+            ]
             mass_density = (
                 jnp.trace(
-                    self.V_Ms[i, 1 : self.max_nip - 1, 3:, 3:],
+                    self.mass_matrices[
+                        i, 1 : self.max_num_integration_points - 1, 3:, 3:
+                    ],
                     axis1=-2,
                     axis2=-1,
                 )
                 / 3.0
             )
-            positions = g_list[i, 1 : self.max_nip - 1, :3, 3]
+            positions = g_list[i, 1 : self.max_num_integration_points - 1, :3, 3]
             height_along_gravity = positions @ gravity_linear
             return -length_i * jnp.sum(weights * mass_density * height_along_gravity)
 
@@ -4149,12 +3979,12 @@ class GVS(SoftRobot):
         Compute the actuation matrix of the robot.
 
         Args:
-            q (Array): generalized coordinates of shape (dof_tot,).
+            q (Array): generalized coordinates of shape (num_dofs,).
 
         Returns:
-            A (Array): Actuation matrix of shape (dof_tot, dof_tot)
+            A (Array): Actuation matrix of shape (num_dofs, num_dofs)
         """
-        A = jnp.identity(self.dof_tot_system)
+        A = jnp.identity(self.num_dofs)
         return A
 
     @eqx.filter_jit

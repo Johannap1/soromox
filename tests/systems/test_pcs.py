@@ -26,7 +26,7 @@ def make_pcs(
     num_segments: int = 2,
     xi_ref: Array | None = None,
     total_length: float = PCS_TOTAL_LENGTH,
-    order_gauss: int = 3,
+    num_gauss_points: int = 3,
     strain_selector: Array | None = None,
 ):
     segment_length = total_length / num_segments
@@ -51,7 +51,7 @@ def make_pcs(
     model = PCS(
         num_segments=num_segments,
         params=params,
-        order_gauss=order_gauss,
+        num_gauss_points=num_gauss_points,
         xi_ref=xi_ref,
         strain_selector=strain_selector,
     )
@@ -142,7 +142,7 @@ def test_constant_strain_call():
     robot = PCS(
         num_segments=num_segments,
         params=params,
-        order_gauss=5,
+        num_gauss_points=5,
         strain_selector=strain_selector,
         xi_ref=xi_ref,
     )
@@ -1014,9 +1014,14 @@ def test_active_quadrature_kinematics_matches_existing_batched_path(
     weights, g_quads, J_quads, Jd_quads = model._active_quadrature_kinematics(q, qd)
     Xs_scaled, weights_expected = jax.vmap(
         scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
-    )(model.Xs, model.Ws, model.L_cum[:-1], model.L_cum[1:])
+    )(
+        model.integration_points,
+        model.integration_weights,
+        model.L_cum[:-1],
+        model.L_cum[1:],
+    )
     s_points = Xs_scaled.reshape(-1)
-    num_inner = model.num_gauss_points - 2
+    num_inner = model.num_gauss_points
 
     g_expected = model.forward_kinematics_batched(q, s_points).reshape(
         num_segments, num_inner, 4, 4

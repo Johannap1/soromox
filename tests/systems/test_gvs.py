@@ -7,7 +7,7 @@ from numpy.testing import assert_allclose
 
 import soromox.utils.lie_algebra as lie
 from soromox.systems import GVS, PCS, CrossSectionGeometry
-from soromox.systems.gvs import BasisAttributes, JointAttributes, LinkAttributes
+from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 from soromox.utils.tolerance import Tolerance
 
 jax.config.update("jax_enable_x64", True)
@@ -40,41 +40,37 @@ def build_matched_gvs_pcs(num_segments: int = 1, n_gauss: int = 5) -> tuple[GVS,
     Gpcs = (E / (2 * (1.0 + nu))).reshape(num_segments)
 
     # GVS definition: constant strain along each link, all 6 strain components enabled
-    links = [
-        LinkAttributes(
-            cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-            E=float(E[i]),
-            nu=float(nu[i]),
-            rho=float(rhos[i]),
-            eta=0.0,  # no damping in this cross-model comparison
-            L=float(Ls[i]),
-            r_i=float(rs[i]),
-            r_f=float(rs[i]),
+    segments = [
+        GVSSegment(
+            link=LinkSpec(
+                cross_section_geometry=CrossSectionGeometry.CIRCULAR,
+                E=float(E[i]),
+                nu=float(nu[i]),
+                rho=float(rhos[i]),
+                eta=0.0,  # no damping in this cross-model comparison
+                L=float(Ls[i]),
+                r_i=float(rs[i]),
+                r_f=float(rs[i]),
+            ),
+            joint=JointSpec(type="fixed"),
+            basis=StrainBasisSpec(
+                type="monomial",
+                active=[1, 1, 1, 1, 1, 1],
+                orders=[0, 0, 0, 0, 0, 0],
+                xi_ref=[0, 0, 0, 1, 0, 0],
+            ),
+            num_gauss_points=n_gauss,
         )
         for i in range(num_segments)
     ]
-    joints = [JointAttributes(jointtype="Fixed") for _ in range(num_segments)]
-    bases = [
-        BasisAttributes(
-            basistype="Monomial",
-            Bdof=[1, 1, 1, 1, 1, 1],
-            Bodr=[0, 0, 0, 0, 0, 0],  # order 0 -> spatially constant strain
-            xi_ref=[0, 0, 0, 1, 0, 0],
-        )
-        for _ in range(num_segments)
-    ]
-    n_gauss_list = [n_gauss for _ in range(num_segments)]
 
     # Gravity: pick physically consistent vectors as per note
     g = jnp.array([0.0, 0.0, -9.81])
 
     # initialize the GVS model
     robot_gvs = GVS(
-        links_list=links,
-        joints_list=joints,
-        basis_list=bases,
-        n_gauss_list=n_gauss_list,
-        gravity_vector=g,
+        segments=segments,
+        g=g,
         p0=jnp.zeros(6),
     )
 
@@ -93,7 +89,7 @@ def build_matched_gvs_pcs(num_segments: int = 1, n_gauss: int = 5) -> tuple[GVS,
     robot_pcs = PCS(
         num_segments=num_segments,
         params=params,
-        order_gauss=5,
+        num_gauss_points=5,
         strain_selector=jnp.ones((6 * num_segments,), dtype=bool),
         xi_ref=jnp.tile(jnp.array([0, 0, 0, 1, 0, 0]), (num_segments, 1)).reshape(
             6 * num_segments
@@ -115,12 +111,12 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
     axes_cycle = ("x", "y", "z")
     planes_cycle = ("xy", "yz", "xz")
 
-    def _circular_link(idx: int) -> LinkAttributes:
+    def _circular_link(idx: int) -> LinkSpec:
         repeat = idx // pattern_count
         scale = 1.0 + 0.04 * repeat
         r_i = 0.015 + 0.0008 * repeat
         r_f = r_i + 0.003 + 0.0004 * repeat
-        return LinkAttributes(
+        return LinkSpec(
             cross_section_geometry=CrossSectionGeometry.CIRCULAR,
             E=1.2e6,
             nu=0.45,
@@ -131,14 +127,14 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
             r_f=float(r_f),
         )
 
-    def _rectangular_link(idx: int) -> LinkAttributes:
+    def _rectangular_link(idx: int) -> LinkSpec:
         repeat = idx // pattern_count
         scale = 1.0 + 0.03 * repeat
         h_i = 0.03 + 0.001 * repeat
         h_f = max(0.022, h_i * 0.9)
         w_i = 0.02 + 0.0008 * repeat
         w_f = max(0.016, w_i * 0.88)
-        return LinkAttributes(
+        return LinkSpec(
             cross_section_geometry=CrossSectionGeometry.RECTANGULAR,
             E=9.5e5,
             nu=0.38,
@@ -151,14 +147,14 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
             w_f=float(w_f),
         )
 
-    def _elliptical_link(idx: int) -> LinkAttributes:
+    def _elliptical_link(idx: int) -> LinkSpec:
         repeat = idx // pattern_count
         scale = 1.0 + 0.025 * repeat
         a_i = max(0.016, 0.02 - 0.0006 * repeat)
         a_f = max(0.014, a_i * 0.92)
         b_i = 0.015 + 0.0007 * repeat
         b_f = b_i * 1.05
-        return LinkAttributes(
+        return LinkSpec(
             cross_section_geometry=CrossSectionGeometry.ELLIPTICAL,
             E=8.0e5,
             nu=0.4,
@@ -171,47 +167,47 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
             b_f=float(b_f),
         )
 
-    def _revolute_joint(idx: int) -> JointAttributes:
+    def _revolute_joint(idx: int) -> JointSpec:
         axis = axes_cycle[idx % len(axes_cycle)]
-        return JointAttributes(jointtype="Revolute", axis=axis)
+        return JointSpec(type="revolute", axis=axis)
 
-    def _planar_joint(idx: int) -> JointAttributes:
+    def _planar_joint(idx: int) -> JointSpec:
         repeat = idx // pattern_count
         plane = planes_cycle[(idx + repeat) % len(planes_cycle)]
-        return JointAttributes(jointtype="Planar", plane=plane)
+        return JointSpec(type="planar", plane=plane)
 
-    def _helical_joint(idx: int) -> JointAttributes:
+    def _helical_joint(idx: int) -> JointSpec:
         repeat = idx // pattern_count
         axis = axes_cycle[(idx + 1) % len(axes_cycle)]
         pitch = 0.02 + 0.003 * repeat
-        return JointAttributes(jointtype="Helical", axis=axis, pitch=float(pitch))
+        return JointSpec(type="helical", axis=axis, pitch=float(pitch))
 
-    def _monomial_basis(idx: int) -> BasisAttributes:
+    def _monomial_basis(idx: int) -> StrainBasisSpec:
         repeat = idx // pattern_count
         extra = repeat % 2
-        return BasisAttributes(
-            basistype="Monomial",
-            Bdof=[1, 1, 0, 1, 0, 0],
-            Bodr=[2 + extra, 1 + (idx % 2), 0, 2 + ((idx + repeat) % 2), 0, 0],
+        return StrainBasisSpec(
+            type="monomial",
+            active=[1, 1, 0, 1, 0, 0],
+            orders=[2 + extra, 1 + (idx % 2), 0, 2 + ((idx + repeat) % 2), 0, 0],
             xi_ref=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         )
 
-    def _legendre_basis(idx: int) -> BasisAttributes:
+    def _legendre_basis(idx: int) -> StrainBasisSpec:
         repeat = idx // pattern_count
-        return BasisAttributes(
-            basistype="Legendre",
-            Bdof=[0, 1, 1, 0, 1, 0],
-            Bodr=[0, 2 + (repeat % 2), 1 + ((idx + 1) % 2), 0, 1 + (repeat % 3), 0],
+        return StrainBasisSpec(
+            type="legendre",
+            active=[0, 1, 1, 0, 1, 0],
+            orders=[0, 2 + (repeat % 2), 1 + ((idx + 1) % 2), 0, 1 + (repeat % 3), 0],
             xi_ref=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         )
 
-    def _fourier_basis(idx: int) -> BasisAttributes:
+    def _fourier_basis(idx: int) -> StrainBasisSpec:
         repeat = idx // pattern_count
         xi_sigma = max(0.7, 0.9 - 0.05 * repeat)
-        return BasisAttributes(
-            basistype="Fourier",
-            Bdof=[1, 0, 1, 1, 0, 1],
-            Bodr=[
+        return StrainBasisSpec(
+            type="fourier",
+            active=[1, 0, 1, 1, 0, 1],
+            orders=[
                 1 + (idx % 2),
                 0,
                 2 + (repeat % 2),
@@ -255,24 +251,22 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
         },
     )
 
-    links: list[LinkAttributes] = []
-    joints: list[JointAttributes] = []
-    bases: list[BasisAttributes] = []
-    n_gauss_list: list[int] = []
+    segments: list[GVSSegment] = []
 
     for idx in range(num_segments):
         pattern = pattern_builders[idx % pattern_count]
-        links.append(pattern["link"](idx))
-        joints.append(pattern["joint"](idx))
-        bases.append(pattern["basis"](idx))
-        n_gauss_list.append(int(pattern["n_gauss"](idx)))
+        segments.append(
+            GVSSegment(
+                link=pattern["link"](idx),
+                joint=pattern["joint"](idx),
+                basis=pattern["basis"](idx),
+                num_gauss_points=int(pattern["n_gauss"](idx)),
+            )
+        )
 
     return GVS(
-        links_list=links,
-        joints_list=joints,
-        basis_list=bases,
-        n_gauss_list=n_gauss_list,
-        gravity_vector=[0.0, 0.0, -9.81],
+        segments=segments,
+        g=[0.0, 0.0, -9.81],
     )
 
 
@@ -284,43 +278,40 @@ def build_constant_strain_gvs(
     if selector_per_segment is None:
         selector_per_segment = (True, True, True, True, True, True)
 
-    links = [
-        LinkAttributes(
-            cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-            E=1e6,
-            nu=0.5,
-            rho=1000.0,
-            eta=0.0,
-            L=0.2,
-            r_i=0.02,
-            r_f=0.02,
-        )
-        for _ in range(num_segments)
-    ]
-    joints = [JointAttributes(jointtype="Fixed") for _ in range(num_segments)]
-    bases = [
-        BasisAttributes(
-            basistype="Monomial",
-            Bdof=[int(active) for active in selector_per_segment],
-            Bodr=[0, 0, 0, 0, 0, 0],
-            xi_ref=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    segments = [
+        GVSSegment(
+            link=LinkSpec(
+                cross_section_geometry=CrossSectionGeometry.CIRCULAR,
+                E=1e6,
+                nu=0.5,
+                rho=1000.0,
+                eta=0.0,
+                L=0.2,
+                r_i=0.02,
+                r_f=0.02,
+            ),
+            joint=JointSpec(type="fixed"),
+            basis=StrainBasisSpec(
+                type="monomial",
+                active=[int(active) for active in selector_per_segment],
+                orders=[0, 0, 0, 0, 0, 0],
+                xi_ref=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            ),
+            num_gauss_points=5,
         )
         for _ in range(num_segments)
     ]
 
     return GVS(
-        links_list=links,
-        joints_list=joints,
-        basis_list=bases,
-        n_gauss_list=[5 for _ in range(num_segments)],
-        gravity_vector=[0.0, 0.0, -9.81],
+        segments=segments,
+        g=[0.0, 0.0, -9.81],
         max_dof=max_dof,
         p0=jnp.zeros(6),
     )
 
 
 def sample_arc_lengths(robot: GVS) -> jnp.ndarray:
-    lengths = jnp.asarray(robot.V_L)
+    lengths = jnp.asarray(robot.segment_lengths)
     cumulative = jnp.cumsum(lengths)
     total = float(cumulative[-1])
 
@@ -334,11 +325,11 @@ def sample_arc_lengths(robot: GVS) -> jnp.ndarray:
 
 
 def tip_arc_lengths(robot: GVS) -> jnp.ndarray:
-    return jnp.asarray(robot.V_L_cum[1:], dtype=jnp.float64)
+    return jnp.asarray(robot.segment_end_positions[1:], dtype=jnp.float64)
 
 
 def random_q(robot: GVS, key, scale: float = 0.05) -> jnp.ndarray:
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
     return scale * jax.random.normal(key, (dof,), dtype=jnp.float64)
 
 
@@ -403,7 +394,7 @@ def build_full_and_reduced_constant_strain_gvs(
         selector_per_segment=selector_per_segment,
         max_dof=6,
     )
-    B = jnp.zeros((int(full.dof_tot_system), int(reduced.dof_tot_system)))
+    B = jnp.zeros((int(full.num_dofs), int(reduced.num_dofs)))
     col = 0
     for segment_idx in range(num_segments):
         for component_idx, active in enumerate(selector_per_segment):
@@ -460,7 +451,7 @@ def gvs_jacobian_inertialframe_from_body(
 def _assert_gvs_pcs_coherence(num_segments: int) -> None:
     print("\nTesting GVS-PCS coherence for", num_segments, "segments")
     robot_gvs, robot_pcs = build_matched_gvs_pcs(num_segments)
-    n = int(robot_gvs.dof_tot_system)
+    n = int(robot_gvs.num_dofs)
 
     zero_cfg = jnp.zeros((n,), dtype=jnp.float64)
     zero_vel = jnp.zeros((n,), dtype=jnp.float64)
@@ -480,7 +471,7 @@ def _assert_gvs_pcs_coherence(num_segments: int) -> None:
         qd_random = random_q(robot_gvs, key_qd, scale=0.1)
         config_velocity_cases += ((q_random, qd_random),)
 
-    L_total = float(jnp.sum(robot_gvs.V_L))
+    L_total = float(jnp.sum(robot_gvs.segment_lengths))
     s_candidates = jnp.concatenate(
         [
             jnp.asarray([0.0], dtype=jnp.float64),
@@ -608,43 +599,47 @@ def _assert_gvs_pcs_coherence(num_segments: int) -> None:
 
 def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
     robot = build_varied_basis_gvs(num_segments=3)
-    q = jnp.zeros((int(robot.dof_tot_system),), dtype=jnp.float64)
+    q = jnp.zeros((int(robot.num_dofs),), dtype=jnp.float64)
 
     assert robot.is_planar is False
-    assert_allclose(robot.length, jnp.sum(robot.V_L), rtol=RTOL, atol=ATOL)
-    assert_allclose(robot.segment_length, robot.V_L, rtol=RTOL, atol=ATOL)
+    assert_allclose(robot.length, jnp.sum(robot.segment_lengths), rtol=RTOL, atol=ATOL)
+    assert_allclose(robot.segment_length, robot.segment_lengths, rtol=RTOL, atol=ATOL)
 
-    s_second = robot.V_L[0] + 0.25 * robot.V_L[1]
+    s_second = robot.segment_lengths[0] + 0.25 * robot.segment_lengths[1]
     segment_idx, s_local = robot.classify_segment(s_second)
     assert int(segment_idx) == 1
-    assert_allclose(s_local, 0.25 * robot.V_L[1], rtol=RTOL, atol=ATOL)
+    assert_allclose(s_local, 0.25 * robot.segment_lengths[1], rtol=RTOL, atol=ATOL)
 
-    tag, geom = robot.cross_section_geometry(q, 0.5 * robot.V_L[0])
-    expected_radius = robot.V_r_params[0, 0] + 0.5 * (
-        robot.V_r_params[0, 1] - robot.V_r_params[0, 0]
+    tag, geom = robot.cross_section_geometry(q, 0.5 * robot.segment_lengths[0])
+    expected_radius = robot.radius_params[0, 0] + 0.5 * (
+        robot.radius_params[0, 1] - robot.radius_params[0, 0]
     )
     assert int(tag) == CrossSectionGeometry.CIRCULAR
     assert_allclose(geom, jnp.array([expected_radius]), rtol=RTOL, atol=ATOL)
 
     tag, geom = robot.cross_section_geometry(q, s_second)
-    expected_width = robot.V_w_params[1, 0] + 0.25 * (
-        robot.V_w_params[1, 1] - robot.V_w_params[1, 0]
+    expected_width = robot.width_params[1, 0] + 0.25 * (
+        robot.width_params[1, 1] - robot.width_params[1, 0]
     )
-    expected_height = robot.V_h_params[1, 0] + 0.25 * (
-        robot.V_h_params[1, 1] - robot.V_h_params[1, 0]
+    expected_height = robot.height_params[1, 0] + 0.25 * (
+        robot.height_params[1, 1] - robot.height_params[1, 0]
     )
     assert int(tag) == CrossSectionGeometry.RECTANGULAR
     assert_allclose(
         geom, jnp.array([expected_width, expected_height]), rtol=RTOL, atol=ATOL
     )
 
-    s_third = robot.V_L[0] + robot.V_L[1] + 0.75 * robot.V_L[2]
-    tag, geom = robot.cross_section_geometry(q, s_third)
-    expected_a = robot.V_a_params[2, 0] + 0.75 * (
-        robot.V_a_params[2, 1] - robot.V_a_params[2, 0]
+    s_third = (
+        robot.segment_lengths[0]
+        + robot.segment_lengths[1]
+        + 0.75 * robot.segment_lengths[2]
     )
-    expected_b = robot.V_b_params[2, 0] + 0.75 * (
-        robot.V_b_params[2, 1] - robot.V_b_params[2, 0]
+    tag, geom = robot.cross_section_geometry(q, s_third)
+    expected_a = robot.semi_major_params[2, 0] + 0.75 * (
+        robot.semi_major_params[2, 1] - robot.semi_major_params[2, 0]
+    )
+    expected_b = robot.semi_minor_params[2, 0] + 0.75 * (
+        robot.semi_minor_params[2, 1] - robot.semi_minor_params[2, 0]
     )
     assert int(tag) == CrossSectionGeometry.ELLIPTICAL
     assert_allclose(geom, jnp.array([expected_a, expected_b]), rtol=RTOL, atol=ATOL)
@@ -663,7 +658,7 @@ def test_forward_kinematics_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    total_length = float(robot.V_L_cum[-1])
+    total_length = float(robot.segment_end_positions[-1])
 
     q_keys = jax.random.split(jax.random.PRNGKey(888), NUM_RANDOM_SAMPLES)
     s_keys = jax.random.split(jax.random.PRNGKey(777), NUM_RANDOM_SAMPLES)
@@ -760,7 +755,7 @@ def test_jacobian_bodyframe_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    total_length = float(robot.V_L_cum[-1])
+    total_length = float(robot.segment_end_positions[-1])
 
     q_keys = jax.random.split(jax.random.PRNGKey(4242), NUM_RANDOM_SAMPLES)
     s_keys = jax.random.split(jax.random.PRNGKey(1313), NUM_RANDOM_SAMPLES)
@@ -910,7 +905,7 @@ def test_jacobian_inertialframe_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    total_length = float(robot.V_L_cum[-1])
+    total_length = float(robot.segment_end_positions[-1])
 
     q_keys = jax.random.split(jax.random.PRNGKey(4243), NUM_RANDOM_SAMPLES)
     s_keys = jax.random.split(jax.random.PRNGKey(1314), NUM_RANDOM_SAMPLES)
@@ -957,7 +952,7 @@ def test_jacobian_tips_matches_pointwise_and_gauss(num_segments: int):
     )
 
     q_gathered = robot._min_size_gathered(q)
-    J_local_gauss_tips = robot._jacobian_gauss(q_gathered)[:, -1] @ robot.B_select
+    J_local_gauss_tips = robot._jacobian_gauss(q_gathered)[:, -1] @ robot.active_dof_map
     g_tips = robot.forward_kinematics_tips(q)
 
     def rotate_pair(g_i: jax.Array, J_i: jax.Array) -> jax.Array:
@@ -1082,7 +1077,7 @@ def test_jacobian_and_derivative_bodyframe_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
 
     zero_cfg = jnp.zeros((dof,), dtype=jnp.float64)
     zero_vel = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1110,7 +1105,7 @@ def test_jacobian_and_derivative_inertialframe_batched_matches_pointwise_evaluat
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
 
     zero_cfg = jnp.zeros((dof,), dtype=jnp.float64)
     zero_vel = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1323,7 +1318,7 @@ def test_active_quadrature_forward_dynamics_terms_match_public_matrices(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
 
     zero_q = jnp.zeros((dof,), dtype=jnp.float64)
     zero_qd = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1350,8 +1345,8 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
 
     updated = robot.update_params(
         {
-            "links_list": [
-                LinkAttributes(
+            "links": [
+                LinkSpec(
                     cross_section_geometry=CrossSectionGeometry.CIRCULAR,
                     E=1.25e6,
                     nu=0.45,
@@ -1361,7 +1356,7 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
                     r_i=0.022,
                     r_f=0.022,
                 )
-                for length in robot.V_L
+                for length in robot.segment_lengths
             ]
         }
     )
@@ -1369,22 +1364,23 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     assert updated.K_full.shape == robot.K_full.shape
     assert updated.D_full.shape == robot.D_full.shape
     assert_allclose(
-        updated.B_select_blocks,
-        updated.B_select.reshape(
-            updated.num_segments, 2, updated.max_dof, updated.dof_tot_system
+        updated.active_dof_map_blocks,
+        updated.active_dof_map.reshape(
+            updated.num_segments, 2, updated.max_dof, updated.num_dofs
         ),
         rtol=RTOL,
         atol=ATOL,
     )
     assert_allclose(
-        updated.V_Ws_inner,
-        updated.V_Ws[:, 1 : updated.max_nip - 1] * updated.V_L[:, None],
+        updated.inner_integration_weights,
+        updated.integration_weights[:, 1 : updated.max_num_integration_points - 1]
+        * updated.segment_lengths[:, None],
         rtol=RTOL,
         atol=ATOL,
     )
     assert_allclose(
-        updated.V_Ms_inner,
-        updated.V_Ms[:, 1 : updated.max_nip - 1],
+        updated.inner_mass_matrices,
+        updated.mass_matrices[:, 1 : updated.max_num_integration_points - 1],
         rtol=RTOL,
         atol=ATOL,
     )
@@ -1468,12 +1464,12 @@ def test_forward_mode_automatic_differentiability_at_zero_configuration(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
     q = jnp.zeros((dof,), dtype=jnp.float64)
     qd = jnp.zeros((dof,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
     u = jnp.zeros((robot.num_actuators,), dtype=jnp.float64)
-    s = float(robot.V_L_cum[-1])
+    s = float(robot.segment_end_positions[-1])
 
     dg_dq = jacfwd(robot.forward_kinematics, argnums=0)(q, s)
     dJ_bodyframe_dq = jacfwd(robot.jacobian_bodyframe, argnums=0)(q, s)
@@ -1564,12 +1560,12 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.dof_tot_system)
+    dof = int(robot.num_dofs)
     q = jnp.zeros((dof,), dtype=jnp.float64)
     qd = jnp.zeros((dof,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
     u = jnp.zeros((robot.num_actuators,), dtype=jnp.float64)
-    s = float(robot.V_L_cum[-1])
+    s = float(robot.segment_end_positions[-1])
 
     dg_dq = jacrev(robot.forward_kinematics, argnums=0)(q, s)
     dJ_bodyframe_dq = jacrev(robot.jacobian_bodyframe, argnums=0)(q, s)
@@ -1659,10 +1655,10 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration(
 def test_gvs_autodiff_checks(num_segments: int) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
 
-    n = int(robot.dof_tot_system)
+    n = int(robot.num_dofs)
     q = jnp.linspace(0.01, 0.01 * n, n, dtype=jnp.float64)
     qd = jnp.linspace(0.02, 0.02 * n, n, dtype=jnp.float64)
-    s = jnp.sum(robot.V_L, dtype=jnp.float64) * 0.7
+    s = jnp.sum(robot.segment_lengths, dtype=jnp.float64) * 0.7
 
     def J_body(q_):
         return robot.jacobian_bodyframe(q_, s)
