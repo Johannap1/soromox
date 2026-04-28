@@ -6,8 +6,15 @@ import matplotlib.pyplot as plt
 import optimistix as optx
 
 from soromox.rendering import Open3DRenderer
-from soromox.systems import CrossSectionGeometry, SystemState, TendonActuatedGVS
-from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
+from soromox.systems import (
+    CrossSectionGeometry,
+    GVSSegment,
+    JointSpec,
+    LinkSpec,
+    StrainBasisSpec,
+    SystemState,
+    TendonActuatedGVS,
+)
 
 jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_platform_name", "gpu")  # or "cpu"

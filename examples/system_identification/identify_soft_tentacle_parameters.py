@@ -1,14 +1,20 @@
-import jax
-import pandas as pd
-import jax.numpy as jnp
-from soromox.systems import CrossSectionGeometry, TendonActuatedGVS
-from soromox.systems.gvs import LinkSpec, JointSpec, StrainBasisSpec
-from functools import partial
-import matplotlib.pyplot as plt
-import optimistix as optx
 import equinox as eqx
-import optax
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as onp
+import optax
+import optimistix as optx
+import pandas as pd
+
+from soromox.systems import (
+    CrossSectionGeometry,
+    GVSSegment,
+    JointSpec,
+    LinkSpec,
+    StrainBasisSpec,
+    TendonActuatedGVS,
+)
 
 jax.config.update("jax_enable_x64", True)
 

@@ -13,8 +13,15 @@ from soromox.rendering import (
     RendererColorConfig,
     ViserRenderer,
 )
-from soromox.systems import GVS, CrossSectionGeometry, SystemState
-from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
+from soromox.systems import (
+    GVS,
+    CrossSectionGeometry,
+    GVSSegment,
+    JointSpec,
+    LinkSpec,
+    StrainBasisSpec,
+    SystemState,
+)
 
 jnp.set_printoptions(
     threshold=jnp.inf,
