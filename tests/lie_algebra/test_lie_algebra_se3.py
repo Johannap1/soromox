@@ -279,10 +279,6 @@ def test_tangent_derivative_gi_se3_zero_without_motion():
     assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
 
 
-@pytest.mark.xfail(
-    reason="Closed-form Tangent_derivative_gi_se3 appears inconsistent with autodiff results",
-    strict=False,
-)
 def test_tangent_derivative_matches_autodiff_random(N: int = 10):
     key = jax.random.PRNGKey(2)
     samples = 0
