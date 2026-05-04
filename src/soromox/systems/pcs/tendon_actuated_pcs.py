@@ -205,7 +205,7 @@ class TendonActuatedPCS(PCS):
         if active_tendon_routing_basis is None:
             active_tendon_routing_basis = {
                 "d_s": act.linear_routing,
-                "dd_s_ds": act.linear_routing_derivative,
+                "dd_s_ds": act.linear_routing_arc_length_derivative,
             }
         if active_tendon_routing_params is None:
             active_tendon_routing_params = {
@@ -226,7 +226,7 @@ class TendonActuatedPCS(PCS):
         if passive_tendon_routing_basis is None:
             passive_tendon_routing_basis = {
                 "d_s": act.linear_routing,
-                "dd_s_ds": act.linear_routing_derivative,
+                "dd_s_ds": act.linear_routing_arc_length_derivative,
             }
         if passive_tendon_routing_params is None:
             passive_tendon_routing_params = {
@@ -888,7 +888,7 @@ class TendonActuatedPCS(PCS):
         return D_tot
 
     @eqx.filter_jit
-    def elastic_energy(self, q: Array) -> Array:
+    def _elastic_energy(self, q: Array) -> Array:
         """
         Compute the elastic energy of the robot.
 
@@ -899,7 +899,7 @@ class TendonActuatedPCS(PCS):
             U_K_tot (float): Total elastic energy of the robot.
         """
         # Elastic energy of the body
-        U_K = super().elastic_energy(q)
+        U_K = super()._elastic_energy(q)
 
         # Elastic energy of the passive tendons
         l_pt = self.passive_tendon_length(q)
