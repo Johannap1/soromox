@@ -630,7 +630,6 @@ def test_tendon_actatuated_ActMatrix_gvs_vs_pcs():
         )
         print("[Valid test]\n")
 
-
 def test_tendon_actatuated_gvs_vs_pcs():
     """
     Compares the results of the tendon actuated GVS class with the tendon actuated
