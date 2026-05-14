@@ -28,9 +28,9 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains.
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
         r_chamber_in: Inner radius of each segment's pneumatic chamber.
         r_chamber_out: Outer radius of each segment's pneumatic chamber.
         phi_chamber: Sector angle of each segment's pneumatic chamber.
@@ -252,6 +252,7 @@ class PneumaticActuatedPlanarPCS(PlanarPCS):
                     Sector angle of each segment's pneumatic chamber [rad]
                 - "d_chamber" : Array of num_segments floats
                     Radial distance of the center of the chambers from the centerline of the backbone [m]
+
         Returns:
             updated_self (PneumaticallyActuatedPlanarPCS):
                 A new instance of PneumaticallyActuatedPlanarPCS with updated parameters.

@@ -40,9 +40,9 @@ class TendonActuatedPCS(PCS):
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
         active_tendon_routing_params: Dictionary of arrays of length n_actuators representing the tendon parameters.
         active_d_s: Function that returns the vector [d_x, d_y, d_z] of the active tendon
             position w.r.t. the central backbone within the cross-sectional plane at a given
@@ -107,6 +107,8 @@ class TendonActuatedPCS(PCS):
         num_segments: int,
         params: dict[str, Array],
         *args,
+        tendon_routing_basis: dict[str, Callable] | None = None,
+        tendon_routing_params: dict[str, Array] | None = None,
         active_tendon_routing_basis: dict[str, Callable] | None = None,
         active_tendon_routing_params: dict[str, Array] | None = None,
         passive_tendon_routing_basis: dict[str, Callable] | None = None,
@@ -145,6 +147,10 @@ class TendonActuatedPCS(PCS):
                     Shear modulus of each segment [Pa]
                 - "D": Array of shape (6*num_segments, 6*num_segments)
                     Damping matrix [Pa·s]
+            tendon_routing_basis (Optional[Dict[str, Callable]]):
+                Alias for active_tendon_routing_basis. If active_tendon_routing_basis is provided, this argument is ignored.
+            tendon_routing_params (Optional[Dict[str, Array]]):
+                Alias for active_tendon_routing_params. If active_tendon_routing_params is provided, this argument is ignored.
             active_tendon_routing_basis (Optional[Dict[str, Callable]]):
                 Dictionary with the active tendon routing functions. If None, a linear routing is used.
                 Expected keys and signatures:
@@ -189,11 +195,17 @@ class TendonActuatedPCS(PCS):
             **kwargs,
         )
 
+        # if active tendon routing basis/params are not provided, default to the alias (tendon_routing_basis and tendon_routing_params)
+        if active_tendon_routing_basis is None:
+            active_tendon_routing_basis = tendon_routing_basis
+        if active_tendon_routing_params is None:
+            active_tendon_routing_params = tendon_routing_params
+
         # Set default active tendon routing basis to linear routing if not provided
         if active_tendon_routing_basis is None:
             active_tendon_routing_basis = {
                 "d_s": act.linear_routing,
-                "dd_s_ds": act.linear_routing_derivative,
+                "dd_s_ds": act.linear_routing_arc_length_derivative,
             }
         if active_tendon_routing_params is None:
             active_tendon_routing_params = {
@@ -214,7 +226,7 @@ class TendonActuatedPCS(PCS):
         if passive_tendon_routing_basis is None:
             passive_tendon_routing_basis = {
                 "d_s": act.linear_routing,
-                "dd_s_ds": act.linear_routing_derivative,
+                "dd_s_ds": act.linear_routing_arc_length_derivative,
             }
         if passive_tendon_routing_params is None:
             passive_tendon_routing_params = {
@@ -580,16 +592,19 @@ class TendonActuatedPCS(PCS):
                 return Ws_j * A_j
 
             Xs_scaled, Ws_scaled = scale_gaussian_quadrature(
-                self.Xs, self.Ws, self.L_cum[i], self.L_cum[i + 1]
+                self.integration_points,
+                self.integration_weights,
+                self.L_cum[i],
+                self.L_cum[i + 1],
             )
 
             # Vectorize the actuation matrix computation for all gaussian points
             A_i = vmap(A_point_j)(
-                jnp.arange(self.num_gauss_points)
+                jnp.arange(self.num_integration_points)
             )  # (num_gauss_points, 6, nt)
 
             # # For debugging purposes, you can uncomment the following line to see the step-by-step computation
-            # A_blocks_i = jnp.stack([A_point_j(j) for j in range(self.num_gauss_points)], axis=0)
+            # A_blocks_i = jnp.stack([A_point_j(j) for j in range(self.num_integration_points)], axis=0)
             # print('A_blocks_i =\n', A_blocks_i.shape)
 
             return A_i
@@ -707,7 +722,7 @@ class TendonActuatedPCS(PCS):
                     # compute tendon length density contribution
                     dl_ds_k = jnp.dot(
                         Phi_a_k.T,
-                        xi_i + jnp.concat([jnp.zeros((3,)), dd_s[:3]], axis=-1),
+                        xi_i + jnp.concatenate([jnp.zeros((3,)), dd_s[:3]], axis=-1),
                     )  # ()
 
                     return dl_ds_k
@@ -720,12 +735,15 @@ class TendonActuatedPCS(PCS):
                 return Ws_j * dl_ds_j
 
             Xs_scaled, Ws_scaled = scale_gaussian_quadrature(
-                self.Xs, self.Ws, self.L_cum[i], self.L_cum[i + 1]
+                self.integration_points,
+                self.integration_weights,
+                self.L_cum[i],
+                self.L_cum[i + 1],
             )
 
             # Vectorize the tendon length density evaluation for all Gauss points
             dl_ds_i = vmap(tendon_length_density_point_j)(
-                jnp.arange(self.num_gauss_points)
+                jnp.arange(self.num_integration_points)
             )  # (num_gauss_points, num_actuators)
 
             return dl_ds_i
@@ -870,7 +888,7 @@ class TendonActuatedPCS(PCS):
         return D_tot
 
     @eqx.filter_jit
-    def elastic_energy(self, q: Array) -> Array:
+    def _elastic_energy(self, q: Array) -> Array:
         """
         Compute the elastic energy of the robot.
 
@@ -881,7 +899,7 @@ class TendonActuatedPCS(PCS):
             U_K_tot (float): Total elastic energy of the robot.
         """
         # Elastic energy of the body
-        U_K = super().elastic_energy(q)
+        U_K = super()._elastic_energy(q)
 
         # Elastic energy of the passive tendons
         l_pt = self.passive_tendon_length(q)

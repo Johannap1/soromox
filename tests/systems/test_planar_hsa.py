@@ -98,11 +98,11 @@ def test_jacobian_virtual_backbone(seed: int = 0):
                 raise ValueError("Symbolic Jacobian does not match autograd Jacobian")
 
 
-def test_jacobian_alias(seed: int = 0):
+def test_jacobian_wrapper_matches_virtual_backbone(seed: int = 0):
     """
-    Test that jacobian is an alias for jacobian_virtual_backbone.
+    Test that jacobian matches jacobian_virtual_backbone.
     """
-    print("Testing jacobian alias...")
+    print("Testing jacobian wrapper...")
     robot = _create_robot()
 
     rng = random.PRNGKey(seed)
@@ -113,14 +113,33 @@ def test_jacobian_alias(seed: int = 0):
     J1 = robot.jacobian(q, s)
     J2 = robot.jacobian_virtual_backbone(q, s)
 
-    assert jnp.allclose(J1, J2, atol=1e-12), "jacobian should be alias of jacobian_virtual_backbone"
+    assert jnp.allclose(J1, J2, atol=1e-12), "jacobian should match jacobian_virtual_backbone"
 
 
-def test_jacobian_and_derivative_virtual_backbone(seed: int = 0):
+def test_jacobian_tips(seed: int = 0):
+    """
+    Test that jacobian_tips matches virtual-backbone Jacobians at segment tips.
+    """
+    print("Testing jacobian_tips...")
+    robot = _create_robot()
+
+    rng = random.PRNGKey(seed)
+    rng, q = _sample_configuration(rng, num_segments)
+
+    s_tips = robot.L_cum[1:]
+    J_tips = robot.jacobian_tips(q)
+    J_expected = robot.jacobian_batched(q, s_tips)
+
+    assert jnp.allclose(J_tips, J_expected, atol=1e-12), (
+        "jacobian_tips should match jacobian_batched at segment tips"
+    )
+
+
+def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
     """
     Test the Jacobian and its time derivative.
     """
-    print("Testing jacobian_and_derivative_virtual_backbone...")
+    print("Testing jacobian_and_time_derivative_virtual_backbone...")
     robot = _create_robot()
 
     rng = random.PRNGKey(seed)
@@ -132,11 +151,11 @@ def test_jacobian_and_derivative_virtual_backbone(seed: int = 0):
         rng, subrng = random.split(rng)
         s = random.uniform(subrng, (), minval=0.1 * robot.Lmax, maxval=0.9 * robot.Lmax)
 
-        J, Jd = robot.jacobian_and_derivative_virtual_backbone(q, qd, s)
+        J, Jd = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
 
         # Verify J matches the Jacobian method
         J_direct = robot.jacobian_virtual_backbone(q, s)
-        assert jnp.allclose(J, J_direct, atol=1e-10), "J from jacobian_and_derivative should match jacobian"
+        assert jnp.allclose(J, J_direct, atol=1e-10), "J from jacobian_and_time_derivative should match jacobian"
 
         # Verify Jd by numerical differentiation
         eps_t = 1e-6
@@ -151,11 +170,11 @@ def test_jacobian_and_derivative_virtual_backbone(seed: int = 0):
             raise ValueError("Jd does not match numerical derivative")
 
 
-def test_jacobian_and_derivative_alias(seed: int = 0):
+def test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone(seed: int = 0):
     """
-    Test that jacobian_and_derivative is an alias for jacobian_and_derivative_virtual_backbone.
+    Test that jacobian_and_time_derivative matches jacobian_and_time_derivative_virtual_backbone.
     """
-    print("Testing jacobian_and_derivative alias...")
+    print("Testing jacobian_and_time_derivative wrapper...")
     robot = _create_robot()
 
     rng = random.PRNGKey(seed)
@@ -165,11 +184,11 @@ def test_jacobian_and_derivative_alias(seed: int = 0):
     rng, subrng = random.split(rng)
     s = random.uniform(subrng, (), minval=0.0, maxval=robot.Lmax)
 
-    J1, Jd1 = robot.jacobian_and_derivative(q, qd, s)
-    J2, Jd2 = robot.jacobian_and_derivative_virtual_backbone(q, qd, s)
+    J1, Jd1 = robot.jacobian_and_time_derivative(q, qd, s)
+    J2, Jd2 = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
 
-    assert jnp.allclose(J1, J2, atol=1e-12), "jacobian_and_derivative J should match"
-    assert jnp.allclose(Jd1, Jd2, atol=1e-12), "jacobian_and_derivative Jd should match"
+    assert jnp.allclose(J1, J2, atol=1e-12), "jacobian_and_time_derivative J should match"
+    assert jnp.allclose(Jd1, Jd2, atol=1e-12), "jacobian_and_time_derivative Jd should match"
 
 
 def test_gravitational_energy(seed: int = 0):
@@ -183,9 +202,6 @@ def test_gravitational_energy(seed: int = 0):
     rng = random.PRNGKey(seed)
     for _ in range(5):
         rng, q = _sample_configuration(rng, num_segments)
-
-        # Compute gravitational energy
-        U_g = robot.gravitational_energy(q)
 
         # Compute gravitational force
         G = robot.gravitational_force(q)
@@ -259,6 +275,29 @@ def test_elastic_energy(seed: int = 0):
         assert jnp.abs(U_K_zero) < 1e-15, "Elastic energy at zero config should be zero"
 
 
+def test_elastic_force_matches_elastic_energy_gradient(seed: int = 0):
+    """
+    Test that elastic_force is the conservative gradient of elastic_energy.
+    """
+    print("Testing elastic_force gradient...")
+    robot = _create_robot()
+
+    rng = random.PRNGKey(seed)
+    for _ in range(5):
+        rng, q = _sample_configuration(rng, num_segments)
+
+        force = robot.elastic_force(q)
+        force_from_primal = grad(lambda q_: robot._elastic_energy(q_))(q)
+        force_from_public = grad(lambda q_: robot.elastic_energy(q_))(q)
+
+        assert jnp.allclose(force, force_from_primal, atol=1e-10), (
+            "elastic_force should match the primal elastic-energy gradient"
+        )
+        assert jnp.allclose(force, force_from_public, atol=1e-10), (
+            "elastic_energy custom JVP should use elastic_force"
+        )
+
+
 def test_stiffness_matrix(seed: int = 0):
     """
     Test the stiffness matrix computation.
@@ -317,9 +356,9 @@ def test_total_energy(seed: int = 0):
 if __name__ == "__main__":
     test_end_effector_kinematics()
     test_jacobian_virtual_backbone()
-    test_jacobian_alias()
-    test_jacobian_and_derivative_virtual_backbone()
-    test_jacobian_and_derivative_alias()
+    test_jacobian_wrapper_matches_virtual_backbone()
+    test_jacobian_and_time_derivative_virtual_backbone()
+    test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone()
     test_gravitational_energy()
     test_kinetic_energy()
     test_elastic_energy()

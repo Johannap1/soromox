@@ -22,9 +22,9 @@ class ISupport(PCS):
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
         r_chamber_in: Inner radius of each segment's actuator [m].
         r_chamber_out: Outer radius of each segment's actuator [m].
         d_chamber: Radial distance of the center of the actuators from the centerline of the backbone [m].
@@ -269,6 +269,7 @@ class ISupport(PCS):
                     Radial distance of the center of the chambers from the centerline of the backbone [m]
                 - "varphi_chamber_off" : Array of num_segments floats
                     Angular offset of the first actuator from the local z-axis [rad]
+
         Returns:
             updated_self (PneumaticallyActuatedPlanarPCS):
                 A new instance of PneumaticallyActuatedPlanarPCS with updated parameters.
@@ -366,6 +367,7 @@ class ISupport(PCS):
         Args:
             i (Array): index of the segment as array of shape ()
             varphi_angle (Array): polar angle of the actuator center from the local z-axis as Array of shape ()
+
         Returns:
             centroid_actuator (Array): position of the centroid of one pneumatic actuator in the local reference frame of the i-th segment as array of shape (3, )
         """
@@ -425,6 +427,7 @@ class ISupport(PCS):
         Args:
             i (Array): index of the segment as array of shape ()
             varphi_chamber (Array): polar angle of the chamber center from the local z-axis as Array of shape ()
+
         Returns:
             I_one_actuator_i (Array): local second moment of area of one actuator of the i-th segment as array of shape (3, )
         """

@@ -49,7 +49,7 @@ def _create_robot(
     robot_kwargs = dict(
         num_segments=num_segments,
         params=params,
-        order_gauss=5,
+        num_gauss_points=5,
         active_tendon_routing_params=tendon_params,
     )
     if strain_selector is not None:

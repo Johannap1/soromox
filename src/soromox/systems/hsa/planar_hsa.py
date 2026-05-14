@@ -822,6 +822,7 @@ class PlanarHSA(SoftRobot):
         Map the generalized coordinates to the strains in the virtual backbone
         Args:
             q: generalized coordinates of shape (num_dofs, )
+
         Returns:
             xi: strains of the virtual backbone of shape (num_dofs, )
         """
@@ -839,6 +840,7 @@ class PlanarHSA(SoftRobot):
         Map the generalized coordinates to the strains in the physical rods
         Args:
             vxi: strains of the virtual backbone of shape (num_dofs, )
+
         Returns:
             pxi: strains in the physical rods of shape (num_segments, num_rods_per_segment, 3)
         """
@@ -860,6 +862,7 @@ class PlanarHSA(SoftRobot):
         Map the strains in the physical rods to the strains of the virtual backbone
         Args:
             pxi: strains in the physical rods of shape (num_segments, num_rods_per_segment, 3)
+
         Returns:
             vxi: strains of the virtual backbone of shape (num_dofs, )
         """
@@ -931,6 +934,7 @@ class PlanarHSA(SoftRobot):
         Args:
             q: generalized coordinates of shape (num_dofs, )
             s: point coordinate along the rod in the interval [0, L].
+
         Returns:
             chi: pose of the backbone point in Cartesian-space with shape (3, )
                 Consists of [theta, p_x, p_y]
@@ -960,7 +964,21 @@ class PlanarHSA(SoftRobot):
 
         return chi
 
-    forward_kinematics = forward_kinematics_virtual_backbone
+    _forward_kinematics = forward_kinematics_virtual_backbone
+
+    @eqx.filter_jit
+    def forward_kinematics_tips(self, q: Array) -> Array:
+        """
+        Compute virtual-backbone forward kinematics at all segment tips.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_dofs,).
+
+        Returns:
+            chi_tips (Array): virtual-backbone poses at each segment tip, shape
+                (num_segments, 3).
+        """
+        return self.forward_kinematics_batched(q, self.L_cum[1:])
 
     @eqx.filter_jit
     def forward_kinematics_rod(
@@ -976,6 +994,7 @@ class PlanarHSA(SoftRobot):
             q: generalized coordinates of shape (num_dofs, )
             s: point coordinate along the rod in the interval [0, L].
             rod_idx: index of the rod. If there are two rods per segment, then rod_idx can be 0 or 1.
+
         Returns:
             chir: pose of the rod centerline point in Cartesian-space with shape (3, )
                 Consists of [theta, p_x, p_y]
@@ -1013,6 +1032,7 @@ class PlanarHSA(SoftRobot):
         Args:
             q: generalized coordinates of shape (num_dofs, )
             segment_idx: index of the segment
+
         Returns:
             chip: pose of the CoG of the platform in Cartesian-space with shape (3, )
                 Consists of [theta, p_x, p_y]
@@ -1041,6 +1061,7 @@ class PlanarHSA(SoftRobot):
         Evaluate the forward kinematics of the end-effector
         Args:
             q: generalized coordinates of shape (num_dofs, )
+
         Returns:
             chiee: pose of the end-effector in Cartesian-space of shape (3, )
                 Consists of [theta, p_x, p_y]
@@ -1067,6 +1088,7 @@ class PlanarHSA(SoftRobot):
         Evaluate the Jacobian of the end-effector
         Args:
             q: generalized coordinates of shape (num_dofs, )
+
         Returns:
             Jee: the Jacobian of the end-effector pose with respect to the generalized coordinates.
                 Jee is an array of shape (3, num_dofs).
@@ -1125,11 +1147,27 @@ class PlanarHSA(SoftRobot):
 
         return J
 
-    # Alias for consistency: jacobian is the same as jacobian_virtual_backbone
-    jacobian = jacobian_virtual_backbone
+    @eqx.filter_jit
+    def _jacobian(self, q: Array, s: Array) -> Array:
+        """Protected SoftRobot hook for the virtual-backbone Jacobian."""
+        return self.jacobian_virtual_backbone(q, s)
 
     @eqx.filter_jit
-    def jacobian_and_derivative_virtual_backbone(
+    def jacobian_tips(self, q: Array) -> Array:
+        """
+        Compute inertial-frame virtual-backbone Jacobians at all segment tips.
+
+        Args:
+            q (Array): generalized coordinates of shape (num_dofs,).
+
+        Returns:
+            J_tips (Array): Jacobians at each segment tip, shape
+                (num_segments, 3, num_dofs).
+        """
+        return self.jacobian_batched(q, self.L_cum[1:])
+
+    @eqx.filter_jit
+    def jacobian_and_time_derivative_virtual_backbone(
         self, q: Array, qd: Array, s: Array
     ) -> tuple[Array, Array]:
         """
@@ -1147,7 +1185,7 @@ class PlanarHSA(SoftRobot):
         # Compute the Jacobian using the symbolic expression
         J = self.jacobian_virtual_backbone(q, s)
 
-        # Compute the Jacobian derivative: d/dt(J(q(t))) = d(J)/dq @ qd
+        # Compute the Jacobian time derivative: d/dt(J(q(t))) = d(J)/dq @ qd
         # Define a function that computes the Jacobian for a given q
         def jacobian_fn(q: Array) -> Array:
             return self.jacobian_virtual_backbone(q, s)
@@ -1160,8 +1198,12 @@ class PlanarHSA(SoftRobot):
 
         return J, Jd
 
-    # Alias for consistency: jacobian_and_derivative is the same as jacobian_and_derivative_virtual_backbone
-    jacobian_and_derivative = jacobian_and_derivative_virtual_backbone
+    @eqx.filter_jit
+    def _jacobian_and_time_derivative(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """Protected SoftRobot hook for the virtual-backbone Jacobian time derivative."""
+        return self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
 
     @eqx.filter_jit
     def inverse_kinematics_end_effector(self, chiee: Array) -> Array:
@@ -1172,6 +1214,7 @@ class PlanarHSA(SoftRobot):
             params: Dictionary of robot parameters
             chiee: pose of the end-effector in Cartesian-space of shape (3, )
             eps: small number to avoid singularities (e.g., division by zero)
+
         Returns:
             q: generalized coordinates of shape (num_dofs, )
         """
@@ -1380,7 +1423,7 @@ class PlanarHSA(SoftRobot):
         return G_full
 
     @eqx.filter_jit
-    def gravitational_force(self, q: Array, eps: float | None = None) -> Array:
+    def _gravitational_force(self, q: Array, eps: float | None = None) -> Array:
         """
         Compute the gravitational vector of the robot.
 
@@ -1419,31 +1462,39 @@ class PlanarHSA(SoftRobot):
         return K_full
 
     @eqx.filter_jit
-    def elastic_force(self, q: Array, z: Array) -> Array:
+    def elastic_force(self, q: Array) -> Array:
         """
-        Compute the elastic force vector of the robot.
+        Compute the conservative elastic force vector of the robot.
+
+        This is the gradient of ``elastic_energy(q)`` and intentionally excludes
+        hysteresis-state effects. Hysteresis contributions are provided by
+        ``hysteresis_force`` and are combined in ``forward_dynamics``.
 
         Args:
             q (Array): generalized coordinates of shape (num_dofs,).
-            z (Array): hysteresis state vector of shape (num_hysteresis, )
 
         Returns:
             K (Array): Stiffness vector of shape (num_dofs, ).
         """
-        K_full = self._stiffness_full_vector(q)
+        return self.stiffness_matrix() @ q
 
-        if self.consider_hysteresis is True:
-            Shat = self.Shat()
-            # add the post-yield potential forces
-            K_full = self.hyst_alpha * K_full + (1 - self.hyst_alpha) * Shat @ (
-                self.B_hyst @ z
-            )
+    @eqx.filter_jit
+    def hysteresis_force(self, q: Array, z: Array) -> Array:
+        """
+        Compute the hysteresis-state elastic force contribution.
 
-            # TODO: add post-yield potential forces (i.e., hysteresis effects) to the actuation vector
+        Args:
+            q (Array): generalized coordinates of shape (num_dofs,).
+            z (Array): hysteresis state vector of shape (num_hysteresis,).
 
-        K = self.B_xi.T @ K_full
+        Returns:
+            K_hyst (Array): Hysteresis force vector of shape (num_dofs,).
+        """
+        del q
 
-        return K
+        Shat = self.Shat()
+        K_hyst_full = Shat @ (self.B_hyst @ z)
+        return self.B_xi.T @ K_hyst_full
 
     @eqx.filter_jit
     def _damping_full_matrix(self) -> Array:
@@ -1540,7 +1591,7 @@ class PlanarHSA(SoftRobot):
     # -----------------------------------------
 
     @eqx.filter_jit
-    def gravitational_energy(self, q: Array, eps: float | None = None) -> Array:
+    def _gravitational_energy(self, q: Array, eps: float | None = None) -> Array:
         """
         Compute the gravitational potential energy of the robot.
 
@@ -1616,27 +1667,31 @@ class PlanarHSA(SoftRobot):
             phi = u
             B = self.inertia_matrix(q)
             C = self.coriolis_matrix(q, qd)
-            G = self.gravitational_force(q)
-            tau_el = self.elastic_force(q, z)
+            G = self._gravitational_force(q)
+            tau_el = self.elastic_force(q)
+            if self.consider_hysteresis:
+                tau_hyst = self.hysteresis_force(q, z)
+                tau_el = self.hyst_alpha * tau_el + (1 - self.hyst_alpha) * tau_hyst
             D = self.damping_matrix(q)
             alpha = self.actuation_force(q, phi)
 
         else:
             B = self.inertia_matrix(q)
             C = self.coriolis_matrix(q, qd)
-            G = self.gravitational_force(q)
-            tau_el = self.elastic_force(q, z)
+            G = self._gravitational_force(q)
+            tau_el = self.elastic_force(q)
+            if self.consider_hysteresis:
+                tau_hyst = self.hysteresis_force(q, z)
+                tau_el = self.hyst_alpha * tau_el + (1 - self.hyst_alpha) * tau_hyst
             D = self.damping_matrix(q)
 
             phi = jnp.zeros((self.num_segments * self.num_rods_per_segment,))
 
             alpha = u
 
-        # Inverse of the inertia matrix
-        B_inv = jnp.linalg.inv(B)
-
-        # Compute the acceleration
-        qdd = B_inv @ (-C @ qd - G - tau_el - D @ qd + alpha + tau_ext)
+        qdd = jnp.linalg.solve(
+            B, -C @ qd - G - tau_el - D @ qd + alpha + tau_ext
+        )  # Compute the acceleration
 
         if self.consider_hysteresis:
             yd = jnp.concatenate([qd, qdd, zd])

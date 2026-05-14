@@ -32,9 +32,9 @@ class TendonActuatedPlanarPCS(PlanarPCS):
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
         xi_ref: Reference strain (reference configuration) of the robot.
-        num_gauss_points: Number of points used for numerical integration.
-            Corresponds to the order of Gauss-Legendre quadrature + 2 (for the endpoints).
-        Xs, Ws: Gauss-Legendre quadrature nodes and weights for numerical integration.
+        num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
+        num_integration_points: Stored integration nodes, including zero-weight endpoints.
+        integration_points, integration_weights: Quadrature nodes and weights.
         d: Distances of the tendons from the segment's backbone.
         segment_indices_to_actuate: Indices of the segments that are actuated.
 
@@ -228,6 +228,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
             Args:
                 segment_idx: index of the segment
                 d_sm: distance of the tendons from the segment's backbone (shape: (num_segment_tendons,))
+
             Returns:
                 A_sm: actuation matrix of shape (n_xi, num_segment_tendons)
             """
@@ -248,6 +249,7 @@ class TendonActuatedPlanarPCS(PlanarPCS):
                         i: index of the segment
                         L_i: length of the segment
                         xi_i: strains for the segment
+
                     Returns:
                         A_d_segment: actuation matrix for the segment of shape (3, 3)
                     """

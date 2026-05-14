@@ -1,90 +1,68 @@
-# GVS (Generalized Variable Strain)
+# GVS (Geometric Variable Strain)
 
 3D continuum soft robots with generalized strain basis functions.
 
 ## Overview
 
-`GVS` (Generalized Variable Strain) extends the PCS approach by allowing arbitrary strain basis functions instead of piecewise constant assumptions. This provides:
-
-- **Flexible strain parametrization**: Multiple basis function types
-- **Arbitrary joint types**: Various joint configurations at segment boundaries
-- **Higher accuracy**: Better representation of complex deformation patterns
+`GVS` extends the PCS approach by letting each segment declare its own link, joint, strain basis, and quadrature resolution. The public construction API is based on segment specifications rather than preassembled internal arrays.
 
 ## Quick Start
 
 ```python
 import jax.numpy as jnp
-from soromox.systems import GVS
+from soromox.systems import GVS, GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 
-# Create a GVS robot with Legendre polynomial basis
-robot = GVS(
-    num_segments=2,
-    max_dof=6,                         # Max DOFs per segment
-    V_L=jnp.array([0.1, 0.1]),         # Segment lengths
-    V_basistype_idx=jnp.array([3, 3]), # Legendre basis (index 3)
-    # ... additional parameters
+segment = GVSSegment(
+    link=LinkSpec.circular(E=1e6, nu=0.45, rho=1000.0, eta=1e4, L=0.3, r=0.03),
+    joint=JointSpec.fixed(),
+    basis=StrainBasisSpec(
+        type="legendre",
+        active=["kappa_y", "kappa_z"],
+        orders=[0, 1, 1, 0, 0, 0],
+        xi_ref=[0, 0, 0, 1, 0, 0],
+    ),
+    num_gauss_points=5,
 )
 
-# Configuration
-q = jnp.zeros(robot.dof_tot_system)
-
-# Forward kinematics
-chi = robot.forward_kinematics(q, s=robot.length)
+robot = GVS(segments=[segment], g=[0.0, 0.0, -9.81], p0=jnp.zeros(6))
+q = jnp.zeros(robot.num_dofs)
+g = robot.forward_kinematics(q, s=robot.segment_end_positions[-1])
 ```
 
-## Basis Function Types
+## Segment Specs
 
-GVS supports multiple basis function types for strain representation:
+- `LinkSpec`: link geometry, material properties, and length. Use `LinkSpec.circular`, `LinkSpec.rectangular`, or `LinkSpec.elliptical` for common cross sections.
+- `JointSpec`: joint type and optional axis, plane, pitch, and stiffness. Factory methods include `fixed`, `revolute`, `prismatic`, `helical`, `cylindrical`, `planar`, `spherical`, and `free`.
+- `StrainBasisSpec`: basis family, active strain components, basis orders, and reference strain.
+- `GVSSegment`: combines one link, one preceding joint, one strain basis, and `num_gauss_points`.
 
-| Index | Type | Description |
-|-------|------|-------------|
-| 0 | `B_Monomial` | Polynomial basis |
-| 1 | `B_Fourier` | Fourier series |
-| 2 | `B_Gaussian` | Gaussian radial basis |
-| 3 | `B_Legendre` | Legendre polynomials |
-| 4 | `B_Chebyshev` | Chebyshev polynomials |
-| 5 | `B_IMQ` | Inverse multiquadric |
+## Basis And Joint Names
 
-## Joint Types
+Basis names are lower-case strings: `monomial`, `legendre`, `chebyshev`, `fourier`, `gaussian`, and `imq`.
 
-At segment boundaries, GVS supports various joint types:
+Joint names are lower-case strings: `fixed`, `revolute`, `prismatic`, `helical`, `cylindrical`, `planar`, `spherical`, and `free`.
 
-| Joint | DOF | Description |
-|-------|-----|-------------|
-| `B_Fixed` | 0 | Rigidly connected |
-| `B_Free` | 6 | Fully free |
-| `B_Revolute` | 1 | Single rotation |
-| `B_Prismatic` | 1 | Single translation |
-| `B_Spherical` | 3 | 3-axis rotation |
-| `B_Planar` | 3 | Planar motion |
-| `B_Cylindrical` | 2 | Rotation + translation |
-| `B_Helical` | 1 | Coupled rotation-translation |
+Active strain components can be passed either as a six-entry mask or as names: `kappa_x`, `kappa_y`, `kappa_z`, `sigma_x`, `sigma_y`, and `sigma_z`.
 
-## Key Features
+## Runtime Arrays
 
-### Strain Basis Matrices
+After construction, GVS exposes canonical runtime arrays:
 
-The GVS system uses basis matrices to represent strains:
+- `segment_lengths`, `segment_end_positions`
+- `num_gauss_points`, `num_integration_points`
+- `integration_points`, `integration_weights`
+- `dofs_per_segment`, `num_dofs`, `num_padded_dofs`, `active_dof_map`
+- `B_joint`, `B_Xs`, `B_Z1`, `B_Z2`
+- `xi_ref_joint`, `xi_ref_Xs`, `xi_ref_Z1`, `xi_ref_Z2`
+- `mass_matrices`, `stiffness_matrices`, `damping_matrices`, `joint_stiffness`
 
-- `V_B_joint`: Joint basis matrices at segment boundaries
-- `V_B_Xs`: Strain basis matrices along each segment
-
-### Integration Points
-
-Physical properties are evaluated at Gauss-Legendre integration points:
-
-- `V_Ms`: Mass matrices at integration points
-- `V_Es`: Stiffness matrices at integration points
-- `V_Gs`: Damping matrices at integration points
-
-## When to Use GVS vs PCS
+## When To Use GVS vs PCS
 
 | Use GVS when... | Use PCS when... |
 |-----------------|-----------------|
-| Complex deformation patterns | Simple constant strain segments |
-| Comparing basis function approaches | Standard continuum modeling |
-| Research on strain parametrization | Real-time applications |
-| Custom joint configurations | Straightforward serial segments |
+| Complex deformation patterns need higher-order basis functions | Piecewise constant strain is sufficient |
+| Segment joints differ or include hybrid soft-rigid structure | The robot is a standard serial continuum chain |
+| You are comparing strain parametrizations | Runtime simplicity is the priority |
 
 ## API Reference
 
@@ -96,3 +74,27 @@ Physical properties are evaluated at Gauss-Legendre integration points:
       group_by_category: true
       docstring_section_style: table
       members_order: source
+
+::: soromox.systems.gvs.specs.GVSSegment
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: soromox.systems.gvs.specs.LinkSpec
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: soromox.systems.gvs.specs.JointSpec
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: soromox.systems.gvs.specs.StrainBasisSpec
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3

@@ -1,9 +1,12 @@
 # Soromox Benchmarking Toolkit
 
-Soromox ships two complementary benchmarking CLIs under `tools/benchmarks`:
+Soromox ships complementary benchmarking CLIs under `tools/benchmarks`:
 
 - `benchmark_system_methods.py` profiles individual model routines (forward kinematics,
   dynamics, etc.) to track JIT compile and steady-state execution costs.
+- `benchmark_derivative_paths.py` compares direct analytical derivative hooks,
+  protected autograd fallbacks, and public APIs with custom JVPs enabled or disabled
+  for PlanarPCS, PCS, and GVS systems.
 - `benchmark_simulation_batch_scaling.py` measures how simulation throughput scales as
   you increase the number of batched environments (e.g., via `jax.vmap`) and reports
   the simulated-time / wall-time ratio.
@@ -26,7 +29,7 @@ averages a number of warm calls to estimate steady-state latency.
 
 ```bash
 python tools/benchmarks/benchmark_system_methods.py \
-  --systems pendulum planar_pcs pcs \
+  --systems articulated_soft_robot pendulum planar_pcs pcs \
   --segment-counts 1 3 5 7 \
   --duration 2.0 \
   --solver-dt 5e-4 \
@@ -58,6 +61,34 @@ For each system/function pair the script prints:
 The plots group results by system, highlighting how complexity evolves with segment
 count for each tracked method.
 
+For `articulated_soft_robot`, the method benchmark includes both the default
+articulated-body forward dynamics path and a dense Jacobian-energy forward
+dynamics solve (`forward_dynamics_dense`). Comparing these two cases is useful
+for tracking ABA performance against the controller-facing dense dynamics API.
+
+## Benchmarking derivative paths
+
+Use `benchmark_derivative_paths.py` when you want a direct runtime comparison
+between direct analytical derivative implementations, protected autograd paths,
+and public APIs with custom JVPs enabled or disabled. The benchmark covers
+kinematic derivatives, Jacobian derivatives, and gradients of gravitational,
+elastic, potential, kinetic, and total energy.
+
+```bash
+python tools/benchmarks/benchmark_derivative_paths.py \
+  --systems planar_pcs pcs gvs \
+  --segment-counts 1 2 4 8 16 32 \
+  --execution-repeats 3 \
+  --csv benchmarks/derivative-paths.csv \
+  --json benchmarks/derivative-paths.json \
+  --markdown-summary benchmarks/derivative-paths.md
+```
+
+Each row reports one `case`/`strategy` pair, including compile time, warm
+execution time, ratios to the direct analytical and protected-autograd references,
+and `max_abs_diff` / `max_rel_diff` sanity checks. The Markdown summary groups the
+main speedup ratios by system and case.
+
 ## Benchmarking simulation batch scaling
 
 `benchmark_simulation_batch_scaling.py` runs full simulations in parallel batches
@@ -69,7 +100,7 @@ second. Each configuration can export tables and plots spanning multiple segment
 
 ```bash
 python tools/benchmarks/benchmark_simulation_batch_scaling.py \
-  --systems pcs planar_pcs \
+  --systems articulated_soft_robot pcs planar_pcs \
   --segment-counts 1 3 5 \
   --batch-sizes 1 2 4 8 16 32 64 \
   --duration 2.0 \
@@ -129,5 +160,5 @@ Both CLIs share `tools/benchmarks/_benchmark_common.py`. To add a new system:
 3. Register the new entry in the shared registry so it automatically becomes available
    to every benchmarking tool.
 
-Following this pattern keeps benchmarks for future robot models (e.g., GVS variants)
-consistent and easy to maintain.
+Following this pattern keeps benchmarks for future robot models (e.g., new
+articulated variants or GVS variants) consistent and easy to maintain.
