@@ -10,6 +10,7 @@ from jax import Array, lax, vmap
 import soromox.utils.lie_algebra as lie
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
 from soromox.systems.gvs._runtime import SegmentRuntimeData
+from soromox.systems.gvs.construction import params_and_structure_from_segments
 from soromox.systems.gvs.joint_bases import (
     B_Cylindrical,
     B_Fixed,
@@ -21,8 +22,9 @@ from soromox.systems.gvs.joint_bases import (
     B_Spherical,
 )
 from soromox.systems.gvs.operands import GeometricOperand, JointOperand
+from soromox.systems.gvs.params import GVSLinkParams, GVSParams
 from soromox.systems.gvs.primitives import Basis, Joint, Link
-from soromox.systems.gvs.specs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
+from soromox.systems.gvs.specs import GVSSegment
 from soromox.systems.gvs.strain_bases import (
     B_IMQ,
     B_Chebychev,
@@ -36,6 +38,12 @@ from soromox.systems.gvs.strain_bases import (
     dB_IMQ,
     dB_LegendrePolynomial,
     dB_Monomial,
+)
+from soromox.systems.gvs.structures import (
+    GVSJointStructure,
+    GVSLinkStructure,
+    GVSStrainBasisStructure,
+    GVSStructure,
 )
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.integration import gauss_quadrature
@@ -183,29 +191,88 @@ class GVS(SoftRobot):
     width_params: Array  # Rectangular width params (num_segments, 2)
     semi_major_params: Array  # Elliptical semi-major params (num_segments, 2)
     semi_minor_params: Array  # Elliptical semi-minor params (num_segments, 2)
+    params: GVSParams
+    structure: GVSStructure = eqx.field(static=True)
 
     def __init__(
         self,
-        segments: list[GVSSegment] | tuple[GVSSegment, ...],
-        g: list[float] | Array,
-        max_dof: int | None = None,
-        max_num_gauss_points: int | None = None,
-        p0: Array | None = None,
-        scale_rotational_basis_by_length: bool | None = False,
+        params: GVSParams,
+        structure: GVSStructure,
         **kwargs: Any,
     ) -> None:
-        """Initialize a GVS robot from explicit per-segment specifications."""
+        """Initialize a GVS robot from typed params and static segment structure."""
         super().__init__(**kwargs)
-        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
+        if not isinstance(params, GVSParams):
+            raise TypeError("params must be a GVSParams instance.")
+        if not isinstance(structure, GVSStructure):
+            raise TypeError("structure must be a GVSStructure instance.")
+        params.validate_against_structure(structure)
+        self.params = params
+        self.structure = structure
+        self.scale_rotational_basis_by_length = bool(
+            structure.scale_rotational_basis_by_length
+        )
         assign_gvs_runtime_arrays(
             self,
-            segments=segments,
-            max_dof=max_dof,
-            max_num_gauss_points=max_num_gauss_points,
-            g=g,
-            p0=p0,
+            segments=structure.segments,
+            params=params,
+            max_dof=structure.max_dof,
+            max_num_gauss_points=structure.max_num_gauss_points,
+            g=params.gravity,
+            p0=params.base_pose,
         )
         self.precompute()
+
+    @staticmethod
+    def params_from_segments(
+        segments: list[GVSSegment] | tuple[GVSSegment, ...],
+        *,
+        gravity: Array,
+        base_pose: Array | None = None,
+        max_dof: int | None = None,
+        max_num_gauss_points: int | None = None,
+        scale_rotational_basis_by_length: bool = False,
+    ) -> tuple[GVSParams, GVSStructure]:
+        """Build typed GVS params and static structure from segment specs.
+
+        This is the user-facing bridge between the natural GVS construction
+        language, a sequence of ``GVSSegment`` objects, and the typed PyTree
+        params used for JAX-friendly updates. Per-segment choices such as joint
+        family, basis family, quadrature count, and cross-section family remain
+        static in ``GVSStructure``. Numeric link, joint, and reference-strain
+        values are copied into ``GVSParams``.
+        """
+        return params_and_structure_from_segments(
+            segments,
+            gravity=gravity,
+            base_pose=base_pose,
+            max_dof=max_dof,
+            max_num_gauss_points=max_num_gauss_points,
+            scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        )
+
+    @classmethod
+    def from_segments(
+        cls,
+        segments: list[GVSSegment] | tuple[GVSSegment, ...],
+        *,
+        gravity: Array,
+        base_pose: Array | None = None,
+        max_dof: int | None = None,
+        max_num_gauss_points: int | None = None,
+        scale_rotational_basis_by_length: bool = False,
+        **kwargs: Any,
+    ) -> "GVS":
+        """Construct a GVS model directly from user-facing segment specs."""
+        params, structure = cls.params_from_segments(
+            segments,
+            gravity=gravity,
+            base_pose=base_pose,
+            max_dof=max_dof,
+            max_num_gauss_points=max_num_gauss_points,
+            scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        )
+        return cls(params=params, structure=structure, **kwargs)
 
     @property
     def is_planar(self) -> bool:
@@ -250,24 +317,42 @@ class GVS(SoftRobot):
 
     def _build_segment_i(
         self,
-        link_spec: LinkSpec,
-        joint_spec: JointSpec,
-        basis_spec: StrainBasisSpec,
+        link_structure: GVSLinkStructure,
+        joint_structure: GVSJointStructure,
+        basis_structure: GVSStrainBasisStructure,
         num_gauss_points: int,
         max_dof: int,
         max_num_integration_points: int,
+        *,
+        length: Array,
+        young_modulus: Array,
+        poisson_ratio: Array,
+        density: Array,
+        damping_coefficient: Array,
+        radius_initial: Array,
+        radius_final: Array,
+        height_initial: Array,
+        height_final: Array,
+        width_initial: Array,
+        width_final: Array,
+        semi_major_initial: Array,
+        semi_major_final: Array,
+        semi_minor_initial: Array,
+        semi_minor_final: Array,
+        reference_strain: Array,
+        joint_stiffness: Array,
     ) -> SegmentRuntimeData:
         """
         Construct the discretized model data for a single segment.
 
         Args
         ----
-        link_spec : LinkSpec
-            Geometric and material properties for the link.
-        joint_spec : JointSpec
-            Joint type and kinematic properties between this link and the previous.
-        basis_spec : StrainBasisSpec
-            Strain basis definition for variable strain representation in the link.
+        link_structure : GVSLinkStructure
+            Static cross-section family for the link.
+        joint_structure : GVSJointStructure
+            Static joint type and kinematic choices.
+        basis_structure : GVSStrainBasisStructure
+            Static strain basis definition for variable strain representation.
         num_gauss_points : int
             Number of Gauss-Legendre quadrature points for integration.
         max_dof : int
@@ -297,20 +382,16 @@ class GVS(SoftRobot):
         full-robot arrays.
         """
         # === Joint attributes
-        jointtype = joint_spec.type
+        jointtype = joint_structure.type
         jointtype_idx = Joint.JOINTTYPE_MAP[jointtype]
 
         dof_joint = Joint.DICT_JOINT_TYPE_DOF[jointtype]
-        K_joint = (
-            jnp.asarray(joint_spec.stiffness)
-            if jnp.asarray(joint_spec.stiffness).shape == (dof_joint, dof_joint)
-            else jnp.zeros((dof_joint, dof_joint))
-        )
+        K_joint = jnp.asarray(joint_stiffness)
 
         joint_operand = JointOperand(
-            axis_idx=Joint.AXIS_MAP[joint_spec.axis],
-            plane_idx=Joint.PLANE_MAP[joint_spec.plane],
-            pitch=joint_spec.pitch,
+            axis_idx=Joint.AXIS_MAP[joint_structure.axis],
+            plane_idx=Joint.PLANE_MAP[joint_structure.plane],
+            pitch=joint_structure.pitch,
         )
 
         B_joint_full = lax.switch(
@@ -343,25 +424,25 @@ class GVS(SoftRobot):
         )  # shape (6, max_dof)
 
         # === Link attributes
-        cross_section_geometry = link_spec.cross_section_geometry
+        cross_section_geometry = link_structure.cross_section_geometry
         cross_section_geometry_idx = int(cross_section_geometry)
 
-        E = jnp.asarray(link_spec.E)
-        nu = jnp.asarray(link_spec.nu)
-        rho = jnp.asarray(link_spec.rho)
-        eta = jnp.asarray(link_spec.eta)
-        L = jnp.asarray(link_spec.L)
+        E = jnp.asarray(young_modulus)
+        nu = jnp.asarray(poisson_ratio)
+        rho = jnp.asarray(density)
+        eta = jnp.asarray(damping_coefficient)
+        L = jnp.asarray(length)
 
-        r_i = jnp.asarray(link_spec.r_i)
-        r_f = jnp.asarray(link_spec.r_f)
-        h_i = jnp.asarray(link_spec.h_i)
-        h_f = jnp.asarray(link_spec.h_f)
-        w_i = jnp.asarray(link_spec.w_i)
-        w_f = jnp.asarray(link_spec.w_f)
-        a_i = jnp.asarray(link_spec.a_i)
-        a_f = jnp.asarray(link_spec.a_f)
-        b_i = jnp.asarray(link_spec.b_i)
-        b_f = jnp.asarray(link_spec.b_f)
+        r_i = jnp.asarray(radius_initial)
+        r_f = jnp.asarray(radius_final)
+        h_i = jnp.asarray(height_initial)
+        h_f = jnp.asarray(height_final)
+        w_i = jnp.asarray(width_initial)
+        w_f = jnp.asarray(width_final)
+        a_i = jnp.asarray(semi_major_initial)
+        a_f = jnp.asarray(semi_major_final)
+        b_i = jnp.asarray(semi_minor_initial)
+        b_f = jnp.asarray(semi_minor_final)
 
         G = E / (2 * (1 + nu))  # Shear modulus
 
@@ -372,11 +453,11 @@ class GVS(SoftRobot):
         b_params = (b_i, b_f)
 
         # === Basis attributes
-        basetype = basis_spec.type
+        basetype = basis_structure.type
         basistype_idx = Basis.BASISTYPE_MAP[basetype]
-        Bdof = jnp.asarray(basis_spec.active).flatten()
-        Bodr = jnp.asarray(basis_spec.orders).flatten()
-        xi_ref = jnp.asarray(basis_spec.xi_ref).reshape(6, 1)
+        Bdof = jnp.asarray(basis_structure.active).flatten()
+        Bodr = jnp.asarray(basis_structure.orders).flatten()
+        xi_ref = jnp.asarray(reference_strain).reshape(6, 1)
 
         dof_link = lax.switch(
             index=basistype_idx, branches=Basis.DOF_BRANCHES, operand=(Bdof, Bodr)
@@ -623,7 +704,7 @@ class GVS(SoftRobot):
         )
 
     def _link_parameter_arrays(
-        self, links: list[LinkSpec] | tuple[LinkSpec, ...]
+        self, link: GVSLinkParams
     ) -> tuple[
         Array,
         Array,
@@ -638,7 +719,7 @@ class GVS(SoftRobot):
         Array,
     ]:
         """
-        Build the link-derived GVS arrays for an updated set of link attributes.
+        Build link-derived GVS arrays from dynamic link params.
 
         This helper recomputes only quantities that depend on the physical link
         parameters: length, cross-section geometry, local mass matrices, local
@@ -646,13 +727,6 @@ class GVS(SoftRobot):
         joint basis, link strain basis, reference strain, and active coordinate
         layout unchanged. That makes it suitable for parameter updates that keep
         the GVS discretization and generalized coordinates fixed.
-
-        Args:
-            links: Updated link specs, one per segment. Length must be
-                ``self.num_segments``. Each ``LinkSpec`` entry provides the
-                segment length, material constants, damping coefficient, density,
-                cross-section family, and the relevant linearly interpolated
-                cross-section parameters.
 
         Returns:
             A tuple containing:
@@ -680,13 +754,13 @@ class GVS(SoftRobot):
               parameters, shape ``(self.num_segments, 2)``.
 
         Raises:
-            ValueError: If ``links`` does not contain exactly one entry per
-                segment.
+            ValueError: If link params do not contain one entry per segment.
         """
-        if len(links) != self.num_segments:
+        link.validate()
+        if link.length.shape != (self.num_segments,):
             raise ValueError(
-                "links must contain one LinkSpec entry per segment, "
-                f"got {len(links)} for {self.num_segments} segments."
+                "link params must contain one entry per segment, "
+                f"got {link.length.shape[0]} for {self.num_segments} segments."
             )
 
         segment_length_items = []
@@ -700,34 +774,36 @@ class GVS(SoftRobot):
         semi_major_param_items = []
         semi_minor_param_items = []
 
-        for i_segment, link_spec in enumerate(links):
-            cross_section_geometry_idx = int(link_spec.cross_section_geometry)
+        for i_segment, segment_structure in enumerate(self.structure.segments):
+            cross_section_geometry_idx = int(
+                segment_structure.link.cross_section_geometry
+            )
 
-            E = jnp.asarray(link_spec.E, dtype=jnp.float64)
-            nu = jnp.asarray(link_spec.nu, dtype=jnp.float64)
-            rho = jnp.asarray(link_spec.rho, dtype=jnp.float64)
-            eta = jnp.asarray(link_spec.eta, dtype=jnp.float64)
-            L = jnp.asarray(link_spec.L, dtype=jnp.float64)
+            E = jnp.asarray(link.young_modulus[i_segment], dtype=jnp.float64)
+            nu = jnp.asarray(link.poisson_ratio[i_segment], dtype=jnp.float64)
+            rho = jnp.asarray(link.density[i_segment], dtype=jnp.float64)
+            eta = jnp.asarray(link.damping_coefficient[i_segment], dtype=jnp.float64)
+            L = jnp.asarray(link.length[i_segment], dtype=jnp.float64)
 
             r_params = (
-                jnp.asarray(link_spec.r_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.r_f, dtype=jnp.float64),
+                jnp.asarray(link.radius_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.radius_final[i_segment], dtype=jnp.float64),
             )
             h_params = (
-                jnp.asarray(link_spec.h_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.h_f, dtype=jnp.float64),
+                jnp.asarray(link.height_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.height_final[i_segment], dtype=jnp.float64),
             )
             w_params = (
-                jnp.asarray(link_spec.w_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.w_f, dtype=jnp.float64),
+                jnp.asarray(link.width_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.width_final[i_segment], dtype=jnp.float64),
             )
             a_params = (
-                jnp.asarray(link_spec.a_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.a_f, dtype=jnp.float64),
+                jnp.asarray(link.semi_major_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.semi_major_final[i_segment], dtype=jnp.float64),
             )
             b_params = (
-                jnp.asarray(link_spec.b_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.b_f, dtype=jnp.float64),
+                jnp.asarray(link.semi_minor_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.semi_minor_final[i_segment], dtype=jnp.float64),
             )
 
             geometric_operand = GeometricOperand(
@@ -784,116 +860,121 @@ class GVS(SoftRobot):
             jnp.stack(semi_minor_param_items),
         )
 
-    def update_params(self, params: dict[str, Any]) -> "GVS":
-        """
-        Return a copy of the GVS model with selected parameters updated.
-
-        The supported updates are intentionally limited to parameters that do
-        not change the generalized-coordinate layout:
-
-        - ``"links"`` refreshes segment lengths, cross-section geometry,
-          local mass/stiffness/damping arrays, and cached full stiffness and
-          damping matrices.
-        - ``"g"`` refreshes the inertial gravity vector.
-        - ``"p0"`` refreshes the base pose from a 6D SE(3) exponential
-          coordinate.
-
-        Changing joint families, basis families, basis orders, or quadrature
-        orders can change the active coordinate layout and should be done by
-        constructing a new ``GVS`` instance.
-
-        Args:
-            params: Dictionary of parameter updates. Supported keys are
-                ``"links"``, ``"g"``, and ``"p0"``.
-                ``"links"`` must have length ``self.num_segments``.
-                ``"g"`` must have shape ``(3,)``.
-                ``"p0"`` must have shape ``(6,)``.
-
-        Returns:
-            updated_self: A new ``GVS`` instance with the requested parameters
-                updated. The original instance is left unchanged.
-
-        Raises:
-            KeyError: If an unsupported update key is provided.
-            ValueError: If an update has an incompatible shape.
-        """
-        supported_keys = {"links", "g", "p0"}
-        unknown_keys = set(params) - supported_keys
-        if unknown_keys:
-            unknown = ", ".join(sorted(unknown_keys))
-            raise KeyError(f"Unsupported GVS update_params keys: {unknown}")
-
-        updated_self = self
-
-        if "links" in params:
-            link_arrays = self._link_parameter_arrays(params["links"])
-            updated_self = eqx.tree_at(
-                lambda model: (
-                    model.segment_lengths,
-                    model.segment_end_positions,
-                    model.mass_matrices,
-                    model.stiffness_matrices,
-                    model.damping_matrices,
-                    model.cross_section_geometry_index,
-                    model.radius_params,
-                    model.height_params,
-                    model.width_params,
-                    model.semi_major_params,
-                    model.semi_minor_params,
-                ),
-                updated_self,
-                link_arrays,
+    def _reference_strain_runtime_arrays(
+        self, reference_strain: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """Build padded GVS reference-strain arrays without changing layout."""
+        reference_strain = jnp.asarray(reference_strain, dtype=jnp.float64)
+        if reference_strain.shape != (self.num_segments, 6):
+            raise ValueError(
+                "reference_strain must have shape "
+                f"({self.num_segments}, 6), got {reference_strain.shape}."
             )
-            K_full = updated_self._stiffness_full_matrix()
-            D_full = updated_self._damping_full_matrix()
-            updated_self = eqx.tree_at(
-                lambda model: (
-                    model.inner_integration_weights,
-                    model.inner_mass_matrices,
-                    model.K_full,
-                    model.K,
-                    model.D_full,
-                    model.D_active,
-                ),
-                updated_self,
-                (
-                    updated_self.integration_weights[
-                        :, 1 : updated_self.max_num_integration_points - 1
-                    ]
-                    * updated_self.segment_lengths[:, None],
-                    updated_self.mass_matrices[
-                        :, 1 : updated_self.max_num_integration_points - 1
-                    ],
-                    K_full,
-                    updated_self.active_dof_map.T
-                    @ K_full
-                    @ updated_self.active_dof_map,
-                    D_full,
-                    updated_self.active_dof_map.T
-                    @ D_full
-                    @ updated_self.active_dof_map,
-                ),
+        xs_mask = (
+            jnp.arange(self.max_num_integration_points)[None, :]
+            < self.num_integration_points[:, None]
+        )
+        z_mask = jnp.arange(self.max_num_integration_points - 1)[None, :] < (
+            self.num_integration_points[:, None] - 1
+        )
+        xi_ref_joint = jnp.zeros_like(self.xi_ref_joint)
+        xi_ref_Xs = reference_strain[:, None, :] * xs_mask[:, :, None]
+        xi_ref_Z1 = reference_strain[:, None, :] * z_mask[:, :, None]
+        xi_ref_Z2 = reference_strain[:, None, :] * z_mask[:, :, None]
+        return xi_ref_joint, xi_ref_Xs, xi_ref_Z1, xi_ref_Z2
+
+    def with_params(self, params: GVSParams) -> "GVS":
+        """Return an updated copy with a full typed parameter object."""
+        if not isinstance(params, GVSParams):
+            raise TypeError("params must be a GVSParams instance.")
+        params.validate_against_structure(self.structure)
+        link_arrays = self._link_parameter_arrays(params.link)
+        (
+            xi_ref_joint,
+            xi_ref_Xs,
+            xi_ref_Z1,
+            xi_ref_Z2,
+        ) = self._reference_strain_runtime_arrays(params.reference_strain)
+
+        joint_stiffness = jnp.asarray(params.joint_stiffness, dtype=jnp.float64)
+        if joint_stiffness.shape != self.joint_stiffness.shape:
+            raise ValueError(
+                "joint_stiffness shape changes the padded GVS layout; "
+                f"expected {self.joint_stiffness.shape}, got {joint_stiffness.shape}."
             )
 
-        if "g" in params:
-            g_vec = jnp.asarray(params["g"], dtype=jnp.float64)
-            if g_vec.shape != (3,):
-                raise ValueError(f"g must have shape (3,), got {g_vec.shape}")
-            updated_self = eqx.tree_at(
-                lambda model: model.g,
-                updated_self,
-                jnp.concatenate([jnp.zeros(3, dtype=g_vec.dtype), g_vec]),
-            )
+        gravity = jnp.asarray(params.gravity, dtype=jnp.float64)
+        if gravity.shape != (3,):
+            raise ValueError(f"gravity must have shape (3,), got {gravity.shape}.")
+        base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
+        if base_pose.shape != (6,):
+            raise ValueError(f"base_pose must have shape (6,), got {base_pose.shape}.")
 
-        if "p0" in params:
-            p0 = jnp.asarray(params["p0"], dtype=jnp.float64)
-            if p0.shape != (6,):
-                raise ValueError(f"p0 must have shape (6,), got {p0.shape}")
-            updated_self = eqx.tree_at(
-                lambda model: model.g0, updated_self, lie.exp_SE3(p0)
-            )
+        updated_self = eqx.tree_at(
+            lambda model: (
+                model.params,
+                model.segment_lengths,
+                model.segment_end_positions,
+                model.mass_matrices,
+                model.stiffness_matrices,
+                model.damping_matrices,
+                model.cross_section_geometry_index,
+                model.radius_params,
+                model.height_params,
+                model.width_params,
+                model.semi_major_params,
+                model.semi_minor_params,
+                model.xi_ref_joint,
+                model.xi_ref_Xs,
+                model.xi_ref_Z1,
+                model.xi_ref_Z2,
+                model.joint_stiffness,
+                model.g0,
+                model.g,
+            ),
+            self,
+            (
+                params,
+                *link_arrays,
+                xi_ref_joint,
+                xi_ref_Xs,
+                xi_ref_Z1,
+                xi_ref_Z2,
+                joint_stiffness,
+                lie.exp_SE3(base_pose),
+                jnp.concatenate([jnp.zeros(3, dtype=gravity.dtype), gravity]),
+            ),
+        )
+        K_full = updated_self._stiffness_full_matrix()
+        D_full = updated_self._damping_full_matrix()
+        return eqx.tree_at(
+            lambda model: (
+                model.inner_integration_weights,
+                model.inner_mass_matrices,
+                model.K_full,
+                model.K,
+                model.D_full,
+                model.D_active,
+            ),
+            updated_self,
+            (
+                updated_self.integration_weights[
+                    :, 1 : updated_self.max_num_integration_points - 1
+                ]
+                * updated_self.segment_lengths[:, None],
+                updated_self.mass_matrices[
+                    :, 1 : updated_self.max_num_integration_points - 1
+                ],
+                K_full,
+                updated_self.active_dof_map.T @ K_full @ updated_self.active_dof_map,
+                D_full,
+                updated_self.active_dof_map.T @ D_full @ updated_self.active_dof_map,
+            ),
+        )
 
-        return updated_self
+    def update_params(self, **updates: Array) -> "GVS":
+        """Return an updated copy with selected typed parameter fields replaced."""
+        return self.with_params(self.params.replace(**updates))
 
     # Gathering functions =========================================================
     @eqx.filter_jit
@@ -3114,7 +3195,7 @@ class GVS(SoftRobot):
         Args:
             q (Array): generalized coordinates of shape
                 ``(num_active_strains,)``.
-            s_ps (Array): arclength locations in ``[0, self.length]``, shape
+            s_ps (Array): arclength locations in ``[0, self.segment_lengths]``, shape
                 ``(N,)``.
 
         Returns:
@@ -3671,7 +3752,7 @@ class GVS(SoftRobot):
                 ``(num_active_strains,)``.
             qd (Array): generalized velocities of shape
                 ``(num_active_strains,)``.
-            s_ps (Array): arclength locations in ``[0, self.length]``, shape
+            s_ps (Array): arclength locations in ``[0, self.segment_lengths]``, shape
                 ``(N,)``.
 
         Returns:

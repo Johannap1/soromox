@@ -6,8 +6,9 @@ import numpy as onp
 import pytest
 from numpy.testing import assert_allclose
 
-from soromox.systems import Pendulum
+from soromox.systems import Pendulum, TendonActuatedPendulum
 from soromox.utils.tolerance import Tolerance
+from system_param_builders import pendulum_params, tendon_actuated_pendulum_params
 
 
 def make_pendulum(N: int = 2):
@@ -24,14 +25,72 @@ def make_pendulum(N: int = 2):
         L = jnp.array([1.0, 1.5, 0.8])
         Lc = jnp.array([0.5, 0.75, 0.4])
 
-    params = {
-        "m": m,
-        "I": I,
-        "L": L,
-        "Lc": Lc,
-        "g": jnp.array([0.0, -9.81]),
-    }
+    params = pendulum_params(
+        mass=m,
+        moment_inertia=I,
+        length=L,
+        center_of_mass_length=Lc,
+        gravity=jnp.array([0.0, -9.81]),
+    )
     return Pendulum(params)
+
+
+def test_pendulum_update_rejects_all_fixed_size_shape_changes():
+    robot = make_pendulum(2)
+
+    invalid_updates = {
+        "length": jnp.ones((3,)),
+        "moment_inertia": jnp.ones((3,)),
+        "center_of_mass_length": jnp.ones((3,)),
+        "joint_stiffness": jnp.eye(3),
+        "joint_damping": jnp.eye(3),
+        "joint_rest_configuration": jnp.ones((3,)),
+        "radius": jnp.ones((3,)),
+        "gravity": jnp.ones((3,)),
+    }
+
+    for name, value in invalid_updates.items():
+        with pytest.raises(ValueError, match=name):
+            robot.update_params(**{name: value})
+
+
+def test_tendon_pendulum_update_reapplies_routing_invariants():
+    body = pendulum_params(
+        mass=jnp.ones((3,)),
+        moment_inertia=0.1 * jnp.ones((3,)),
+        length=jnp.ones((3,)),
+        center_of_mass_length=0.5 * jnp.ones((3,)),
+        gravity=jnp.array([0.0, -9.81]),
+    )
+    params = tendon_actuated_pendulum_params(
+        body=body,
+        active_routing_matrix=jnp.tril(jnp.ones((3, 3))),
+    )
+    robot = TendonActuatedPendulum(params)
+
+    rank_deficient = params.replace(
+        active_routing_matrix=jnp.array(
+            [
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="full row rank"):
+        robot.with_params(rank_deficient)
+
+    joint_skipping = params.replace(
+        active_routing_matrix=jnp.array(
+            [
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0],
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="skip joints"):
+        robot.with_params(joint_skipping)
 
 
 @pytest.mark.parametrize("N", [2, 3])
@@ -233,7 +292,9 @@ def test_forward_dynamics_rest_with_zero_forces(N):
 
     # Zero gravity, no stiffness or damping
     robot = robot.update_params(
-        {"g": jnp.array([0.0, 0.0]), "K": jnp.zeros((N, N)), "D": jnp.zeros((N, N))}
+        gravity=jnp.array([0.0, 0.0]),
+        joint_stiffness=jnp.zeros((N, N)),
+        joint_damping=jnp.zeros((N, N)),
     )
 
     q = jnp.zeros((N,))
