@@ -133,11 +133,6 @@ class Pendulum(SoftRobot):
         return True
 
     @property
-    def length(self) -> Array:
-        """Total chain length."""
-        return jnp.sum(self.L)
-
-    @property
     def segment_length(self) -> Array:
         """Per-link lengths."""
         return jnp.asarray(self.L)

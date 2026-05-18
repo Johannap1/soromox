@@ -28,10 +28,6 @@ class _PlanarDefaultRobot(SoftRobot):
         self.integration_weights = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float64)
 
     @property
-    def length(self) -> Array:
-        return jnp.sum(self.L)
-
-    @property
     def segment_length(self) -> Array:
         return self.L
 
@@ -151,6 +147,12 @@ def test_custom_jvp_global_toggle_context_manager_restores_state() -> None:
 
     assert not custom_jvp_enabled()
     set_custom_jvp_enabled(True)
+
+
+def test_default_length_sums_segment_lengths() -> None:
+    robot = _PlanarDefaultRobot()
+
+    assert_allclose(robot.length, jnp.sum(robot.segment_length), rtol=1e-12, atol=1e-12)
 
 
 def test_custom_jvp_toggle_controls_public_forward_kinematics_arc_length_jvp() -> None:

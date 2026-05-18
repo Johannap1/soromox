@@ -102,10 +102,9 @@ class SoftRobot(DynamicalSystem):
         return None
 
     @property
-    @abstractmethod
     def length(self) -> Array:
         """Total backbone length of the robot (scalar)."""
-        ...
+        return jnp.sum(jnp.atleast_1d(jnp.asarray(self.segment_length)))
 
     @property
     @abstractmethod
