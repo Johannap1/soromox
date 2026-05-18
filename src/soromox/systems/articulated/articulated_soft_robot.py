@@ -173,11 +173,6 @@ class ArticulatedSoftRobot(SoftRobot):
         return False
 
     @property
-    def length(self) -> Array:
-        """Total chain length measured along the straight link centerlines."""
-        return jnp.sum(self.segment_length)
-
-    @property
     def segment_length(self) -> Array:
         """Per-link centerline lengths."""
         return jnp.linalg.norm(self.p_tip, axis=1)

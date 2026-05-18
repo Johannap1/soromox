@@ -195,11 +195,6 @@ class PCS(SoftRobot):
         return False
 
     @property
-    def length(self) -> Array:
-        """Total backbone length."""
-        return jnp.sum(self.L)
-
-    @property
     def segment_length(self) -> Array:
         """Per-segment backbone lengths."""
         return jnp.asarray(self.L)

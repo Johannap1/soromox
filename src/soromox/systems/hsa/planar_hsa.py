@@ -574,11 +574,6 @@ class PlanarHSA(SoftRobot):
         return True
 
     @property
-    def length(self) -> Array:
-        """Total backbone length."""
-        return self.Lmax
-
-    @property
     def segment_length(self) -> Array:
         """Per-segment backbone lengths."""
         return jnp.asarray(self.L)
