@@ -117,6 +117,49 @@ def spatial_from_body(g: Array, xi_body: Array) -> Array:
     return Adjoint_g_SE3(g_rot) @ xi_body
 
 
+def quadrature_jacobian_spatial_integral(
+    model: PCS,
+    q: Array,
+    jacobian_fn,
+    s0: float,
+    s1: float,
+    order: int = 48,
+) -> Array:
+    sign = 1.0
+    lower = float(s0)
+    upper = float(s1)
+    if upper < lower:
+        lower, upper = upper, lower
+        sign = -1.0
+
+    dof = int(model.num_active_strains.item())
+    result = jnp.zeros((6, dof), dtype=jnp.float64)
+    if abs(upper - lower) < EPS:
+        return result
+
+    breakpoints = [lower]
+    breakpoints.extend(
+        float(s)
+        for s in onp.asarray(model.L_cum[1:-1])
+        if lower < float(s) < upper
+    )
+    breakpoints.append(upper)
+
+    nodes, weights = onp.polynomial.legendre.leggauss(order)
+    nodes = jnp.asarray(nodes, dtype=jnp.float64)
+    weights = jnp.asarray(weights, dtype=jnp.float64)
+
+    for a, b in zip(breakpoints[:-1], breakpoints[1:]):
+        half_width = 0.5 * (b - a)
+        midpoint = 0.5 * (a + b)
+        s_points = midpoint + half_width * nodes
+        w_points = half_width * weights
+        J_points = jax.vmap(lambda s: jacobian_fn(q, s))(s_points)
+        result = result + jnp.tensordot(w_points, J_points, axes=(0, 0))
+
+    return sign * result
+
+
 def segment_tip_transforms(model: PCS, q: Array) -> Array:
     s_vals = model.L_cum[1:]
 
@@ -1265,6 +1308,92 @@ def test_integration_kinematics_matches_existing_batched_path(
     assert_allclose(g_quads, g_expected, rtol=RTOL, atol=ATOL)
     assert_allclose(J_quads, J_expected, rtol=RTOL, atol=ATOL)
     assert_allclose(Jd_quads, Jd_expected, rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.parametrize("num_segments", [1, 3])
+@pytest.mark.parametrize(
+    "selector_per_segment",
+    [
+        None,
+        (False, False, True, True, False, False),
+    ],
+)
+def test_jacobian_spatial_integrals_match_gauss_quadrature(
+    num_segments: int, selector_per_segment: tuple[bool, ...] | None
+) -> None:
+    strain_selector = (
+        None
+        if selector_per_segment is None
+        else jnp.tile(jnp.asarray(selector_per_segment, dtype=bool), num_segments)
+    )
+    model, _ = make_pcs(
+        num_segments=num_segments,
+        strain_selector=strain_selector,
+        total_length=PCS_TOTAL_LENGTH,
+    )
+    q = random_q(model, jax.random.PRNGKey(10203), scale=0.035)
+    total = float(model.L_cum[-1])
+    boundary = float(model.L_cum[min(num_segments, 2)])
+
+    intervals = [
+        (None, None, 0.0, total),
+        (None, 0.73 * total, 0.0, 0.73 * total),
+        (0.17 * total, 0.88 * total, 0.17 * total, 0.88 * total),
+        (0.0, boundary, 0.0, boundary),
+    ]
+
+    for api_s0, api_s1, ref_s0, ref_s1 in intervals:
+        J_body = model.jacobian_spatial_integral_bodyframe(
+            q, s0=api_s0, s1=api_s1
+        )
+        J_body_expected = quadrature_jacobian_spatial_integral(
+            model, q, model.jacobian_bodyframe, ref_s0, ref_s1
+        )
+        assert_allclose(J_body, J_body_expected, rtol=2e-6, atol=2e-8)
+
+        J_inertial = model.jacobian_spatial_integral_inertialframe(
+            q, s0=api_s0, s1=api_s1
+        )
+        J_inertial_expected = quadrature_jacobian_spatial_integral(
+            model, q, model.jacobian_inertialframe, ref_s0, ref_s1
+        )
+        assert_allclose(J_inertial, J_inertial_expected, rtol=2e-6, atol=2e-8)
+
+
+def test_jacobian_spatial_integral_alias_defaults_and_interval_properties() -> None:
+    model, _ = make_pcs(num_segments=3, total_length=PCS_TOTAL_LENGTH)
+    q = random_q(model, jax.random.PRNGKey(88231), scale=0.035)
+    total = float(model.L_cum[-1])
+    a = 0.15 * total
+    b = float(model.L_cum[1])
+    c = 0.91 * total
+
+    J_default = model.jacobian_spatial_integral(q)
+    J_default_explicit = model.jacobian_spatial_integral_inertialframe(
+        q, s0=0.0, s1=total
+    )
+    assert_allclose(J_default, J_default_explicit, rtol=RTOL, atol=ATOL)
+
+    J_alias_interval = model.jacobian_spatial_integral(q, s0=a, s1=c)
+    J_inertial_interval = model.jacobian_spatial_integral_inertialframe(
+        q, s0=a, s1=c
+    )
+    assert_allclose(J_alias_interval, J_inertial_interval, rtol=RTOL, atol=ATOL)
+
+    J_zero = model.jacobian_spatial_integral(q, s0=b, s1=b)
+    assert_allclose(J_zero, jnp.zeros_like(J_zero), rtol=RTOL, atol=ATOL)
+
+    J_body_ac = model.jacobian_spatial_integral_bodyframe(q, s0=a, s1=c)
+    J_body_ab = model.jacobian_spatial_integral_bodyframe(q, s0=a, s1=b)
+    J_body_bc = model.jacobian_spatial_integral_bodyframe(q, s0=b, s1=c)
+    assert_allclose(J_body_ac, J_body_ab + J_body_bc, rtol=RTOL, atol=ATOL)
+
+    J_inertial_ac = model.jacobian_spatial_integral_inertialframe(q, s0=a, s1=c)
+    J_inertial_ab = model.jacobian_spatial_integral_inertialframe(q, s0=a, s1=b)
+    J_inertial_bc = model.jacobian_spatial_integral_inertialframe(q, s0=b, s1=c)
+    assert_allclose(
+        J_inertial_ac, J_inertial_ab + J_inertial_bc, rtol=RTOL, atol=ATOL
+    )
 
 
 @pytest.mark.parametrize("num_segments", [1, 3])

@@ -6,6 +6,7 @@ from typing import Any
 import equinox as eqx
 from jax import Array, lax, vmap
 from jax import numpy as jnp
+from jax.scipy.linalg import expm
 
 import soromox.utils.lie_algebra as lie
 from soromox.systems.pcs.params import PCSParams
@@ -1354,10 +1355,12 @@ class PCS(SoftRobot):
 
     def _rotation_adjoint_from_pose(self, g_s: Array) -> Array:
         """Adjoint of the pose rotation, with zero translational coupling."""
-        g_rot = jnp.block(
-            [[g_s[:3, :3], jnp.zeros((3, 1))], [jnp.zeros((1, 3)), jnp.ones((1, 1))]]
-        )
-        return lie.Adjoint_g_SE3(g_rot)
+        return self._rotation_adjoint_from_rotation(g_s[:3, :3])
+
+    def _rotation_adjoint_from_rotation(self, R: Array) -> Array:
+        """Return ``diag(R, R)`` in the PCS inertial-frame Jacobian convention."""
+        zeros = jnp.zeros((3, 3), dtype=R.dtype)
+        return jnp.block([[R, zeros], [zeros, R]])
 
     def _body_jacobian_to_inertial(self, g_s: Array, J_local: Array) -> Array:
         """Rotate a PCS body-frame Jacobian into the inertial frame."""
@@ -1474,6 +1477,205 @@ class PCS(SoftRobot):
             return lie.Adjoint_g_SE3(g_rot) @ J_i
 
         return vmap(rotate_pair)(g_tips, J_local_tips)
+
+    def _spatial_integral_bounds(
+        self, s0: Array | None, s1: Array | None
+    ) -> tuple[Array, Array]:
+        """Resolve optional spatial integration bounds."""
+        lower = (
+            jnp.asarray(0.0, dtype=self.L.dtype)
+            if s0 is None
+            else jnp.asarray(s0, dtype=self.L.dtype)
+        )
+        upper = (
+            jnp.asarray(self.L_cum[-1], dtype=self.L.dtype)
+            if s1 is None
+            else jnp.asarray(s1, dtype=self.L.dtype)
+        )
+        return lower, upper
+
+    def _rotation_flow_adjoint(self, xi_i: Array) -> Array:
+        """Return the generator of ``diag(R(s), R(s))`` for one PCS segment."""
+        k_tilde = lie.tilde_SE3(xi_i[:3])
+        zeros = jnp.zeros((3, 3), dtype=xi_i.dtype)
+        return jnp.block([[k_tilde, zeros], [zeros, k_tilde]])
+
+    def _body_spatial_integral_blocks(
+        self, xi_i: Array, arc_len: Array
+    ) -> tuple[Array, Array]:
+        """
+        Return exact blocks for the body-frame Jacobian integral over a segment.
+
+        The blocks are ``P = integral exp(-u ad_xi) du`` and
+        ``Q = integral integral exp(-r ad_xi) dr du`` over ``u in [0, arc_len]``.
+        """
+        A = lie.adjoint_se3(xi_i)
+        F = -A
+        zeros = jnp.zeros_like(A)
+        eye = jnp.eye(6, dtype=xi_i.dtype)
+        M = jnp.block(
+            [
+                [F, eye, zeros],
+                [zeros, zeros, eye],
+                [zeros, zeros, zeros],
+            ]
+        )
+        E = expm(arc_len * M)
+        P = E[:6, 6:12]
+        Q = E[:6, 12:18]
+        return P, Q
+
+    def _inertial_spatial_integral_blocks(
+        self, xi_i: Array, arc_len: Array
+    ) -> tuple[Array, Array]:
+        """
+        Return exact local blocks for the inertial-frame Jacobian integral.
+
+        The returned blocks omit the segment-base rotation, which is applied by
+        the caller. They include the local rotation flow along the segment.
+        """
+        A = lie.adjoint_se3(xi_i)
+        D = self._rotation_flow_adjoint(xi_i)
+        zeros = jnp.zeros_like(A)
+        eye = jnp.eye(6, dtype=xi_i.dtype)
+
+        M_p = jnp.block(
+            [
+                [-D, eye],
+                [zeros, -A],
+            ]
+        )
+        E_p = expm(arc_len * M_p)
+
+        M_q = jnp.block(
+            [
+                [-D, eye, zeros],
+                [zeros, zeros, eye],
+                [zeros, zeros, -A],
+            ]
+        )
+        E_q = expm(arc_len * M_q)
+        R_flow = expm(arc_len * D)
+        P = R_flow @ E_p[:6, 6:12]
+        Q = R_flow @ E_q[:6, 12:18]
+        return P, Q
+
+    @eqx.filter_jit
+    def _jacobian_spatial_integral_bodyframe_cumulative(
+        self, q: Array, s: Array
+    ) -> Array:
+        """Compute ``integral_0^s J_body(q, sigma) d sigma`` analytically."""
+        xi = self.strain(q).reshape(self.num_segments, 6)
+        B_segments = self.B_xi.reshape(self.num_segments, 6, self.num_dofs)
+
+        zeros = jnp.zeros((6, self.num_dofs), dtype=xi.dtype)
+
+        def scan_body(
+            carry: tuple[Array, Array], i: Array
+        ) -> tuple[tuple[Array, Array], None]:
+            J_base, integral = carry
+            xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
+            B_i = lax.dynamic_index_in_dim(B_segments, i, axis=0, keepdims=False)
+            L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
+            s_start_i = lax.dynamic_index_in_dim(
+                self.L_cum, i, axis=0, keepdims=False
+            )
+            arc_len = jnp.clip(s - s_start_i, 0.0, L_i)
+
+            P, Q = self._body_spatial_integral_blocks(xi_i, arc_len)
+            integral_next = integral + P @ J_base + Q @ B_i
+
+            Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, L_i)
+            J_tip = Ad_inv @ J_base + (Ad_inv @ T) @ B_i
+            return (J_tip, integral_next), None
+
+        indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+        (_, integral), _ = lax.scan(scan_body, (zeros, zeros), indices)
+        return integral
+
+    @eqx.filter_jit
+    def _jacobian_spatial_integral_inertialframe_cumulative(
+        self, q: Array, s: Array
+    ) -> Array:
+        """Compute ``integral_0^s J_inertial(q, sigma) d sigma`` analytically."""
+        xi = self.strain(q).reshape(self.num_segments, 6)
+        B_segments = self.B_xi.reshape(self.num_segments, 6, self.num_dofs)
+
+        zeros = jnp.zeros((6, self.num_dofs), dtype=xi.dtype)
+
+        def scan_body(
+            carry: tuple[Array, Array, Array], i: Array
+        ) -> tuple[tuple[Array, Array, Array], None]:
+            g_base, J_base, integral = carry
+            xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
+            B_i = lax.dynamic_index_in_dim(B_segments, i, axis=0, keepdims=False)
+            L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
+            s_start_i = lax.dynamic_index_in_dim(
+                self.L_cum, i, axis=0, keepdims=False
+            )
+            arc_len = jnp.clip(s - s_start_i, 0.0, L_i)
+
+            P, Q = self._inertial_spatial_integral_blocks(xi_i, arc_len)
+            Ad_R_base = self._rotation_adjoint_from_rotation(g_base[:3, :3])
+            integral_next = integral + Ad_R_base @ (P @ J_base + Q @ B_i)
+
+            Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, L_i)
+            J_tip = Ad_inv @ J_base + (Ad_inv @ T) @ B_i
+            g_tip = g_base @ self._pcs_relative_pose(xi_i, L_i)
+            return (g_tip, J_tip, integral_next), None
+
+        indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+        (_, _, integral), _ = lax.scan(scan_body, (self.g0, zeros, zeros), indices)
+        return integral
+
+    @eqx.filter_jit
+    def jacobian_spatial_integral_bodyframe(
+        self, q: Array, *, s0: Array | None = None, s1: Array | None = None
+    ) -> Array:
+        """
+        Compute the spatial integral of the body-frame Jacobian.
+
+        Args:
+            q: Generalized coordinates of shape ``(num_active_strains,)``.
+            s0: Lower arc-length bound. Defaults to ``0``.
+            s1: Upper arc-length bound. Defaults to the total robot length.
+
+        Returns:
+            Integral ``int_{s0}^{s1} J_body(q, s) ds`` with shape
+            ``(6, num_active_strains)``.
+        """
+        lower, upper = self._spatial_integral_bounds(s0, s1)
+        return self._jacobian_spatial_integral_bodyframe_cumulative(
+            q, upper
+        ) - self._jacobian_spatial_integral_bodyframe_cumulative(q, lower)
+
+    @eqx.filter_jit
+    def jacobian_spatial_integral_inertialframe(
+        self, q: Array, *, s0: Array | None = None, s1: Array | None = None
+    ) -> Array:
+        """
+        Compute the spatial integral of the inertial-frame Jacobian.
+
+        Args:
+            q: Generalized coordinates of shape ``(num_active_strains,)``.
+            s0: Lower arc-length bound. Defaults to ``0``.
+            s1: Upper arc-length bound. Defaults to the total robot length.
+
+        Returns:
+            Integral ``int_{s0}^{s1} J_inertial(q, s) ds`` with shape
+            ``(6, num_active_strains)``.
+        """
+        lower, upper = self._spatial_integral_bounds(s0, s1)
+        return self._jacobian_spatial_integral_inertialframe_cumulative(
+            q, upper
+        ) - self._jacobian_spatial_integral_inertialframe_cumulative(q, lower)
+
+    @eqx.filter_jit
+    def jacobian_spatial_integral(
+        self, q: Array, *, s0: Array | None = None, s1: Array | None = None
+    ) -> Array:
+        """Compute the spatial integral of the inertial-frame Jacobian."""
+        return self.jacobian_spatial_integral_inertialframe(q, s0=s0, s1=s1)
 
     @eqx.filter_jit
     def _J_Jd_local_tips(self, q: Array, qd: Array) -> tuple[Array, Array]:
