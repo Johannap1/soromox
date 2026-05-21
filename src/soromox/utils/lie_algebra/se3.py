@@ -646,3 +646,650 @@ def Tangent_derivative_gi_se3(
         operand=None,
     )
     return Td
+
+def coadjointbar_se3(vec6: Array) -> Array:
+    """
+    Computes the co-adjoint-bar representation of a vector of se(3).
+
+    """
+    vec6 = vec6.reshape(-1)  # Ensure vec6 is a 1D array
+
+    ang = vec6[:3].reshape((3, 1))  # Angular as a (3,1) vector
+    lin = vec6[3:].reshape((3, 1))  # Linear as a (3,1) vector
+
+    angtilde = tilde_SE3(ang)  # Tilde operator for angular part
+    lintilde = tilde_SE3(lin)  # Tilde operator for linear part
+
+    coadbar = -jnp.block([[angtilde, lintilde], [lintilde, jnp.zeros((3, 3))]])
+
+    return coadbar
+
+def gvs_SoftJointDifferentialKinematics_Z4(
+        eps,
+        H,
+        Phi_Z1,
+        Phi_Z2,
+        xi_star_Z1,
+        xi_star_Z2,
+        q,
+        qd,
+        qdd) -> tuple[
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array
+            ]:
+    
+    I_theta = jnp.diag(jnp.array([1, 1, 1, 0, 0, 0]))
+    xi_Z1 = Phi_Z1 @ q + xi_star_Z1
+    xi_Z2 = Phi_Z2 @ q + xi_star_Z2
+    xid_Z1 = Phi_Z1 @ qd
+    xid_Z2 = Phi_Z2 @ qd
+    xidd_Z1 = Phi_Z1 @ qdd
+    xidd_Z2 = Phi_Z2 @ qdd
+
+    Omega = (H/2) * (xi_Z1 + xi_Z2) + (jnp.sqrt(3) * H**2 / 12) * (adjoint_se3(xi_Z1) @ xi_Z2)
+
+    Z = (H/2) * (Phi_Z1 + Phi_Z2) + (jnp.sqrt(3) * H**2 / 12) * (
+        adjoint_se3(xi_Z1) @ Phi_Z2 - adjoint_se3(xi_Z2) @ Phi_Z1
+        )
+    
+    Omegad  = Z @ qd
+
+    Zd      = (jnp.sqrt(3) * H**2 / 12) * (adjoint_se3(xid_Z1) @ Phi_Z2 - adjoint_se3(xid_Z2) @ Phi_Z1)
+
+    Zdd     = (jnp.sqrt(3) * H**2 / 12) * (adjoint_se3(xidd_Z1) @ Phi_Z2 - adjoint_se3(xidd_Z2) @ Phi_Z1)
+
+    adjOmegap  = jnp.zeros((24, 6))
+    adjOmegapd = jnp.zeros((24, 6))
+
+    k = Omega[:3]
+    kd = Omegad[:3]
+    theta = _rotational_strain_magnitude(Omega, eps)
+    thetad = (kd @ k) / theta
+
+    Omegahat = hat_SE3(Omega)
+    Omegahatp2 = Omegahat @ Omegahat
+    Omegahatp3 = Omegahatp2 @ Omegahat
+
+    adjOmegap = adjOmegap.at[0:6, :].set(adjoint_se3(Omega))
+    adjOmegap = adjOmegap.at[6:12, :].set(adjOmegap[0:6, :] @ adjOmegap[0:6, :])
+    adjOmegap = adjOmegap.at[12:18, :].set(adjOmegap[6:12, :] @ adjOmegap[0:6, :])
+    adjOmegap = adjOmegap.at[18:24, :].set(adjOmegap[12:18, :] @ adjOmegap[0:6, :])
+
+    adjOmegapd = adjOmegapd.at[0:6, :].set(adjoint_se3(Omegad))
+    adjOmegapd = adjOmegapd.at[6:12, :].set(adjOmegapd[0:6, :] @ adjOmegap[0:6, :] +
+    adjOmegap[0:6, :] @ adjOmegapd[0:6, :]
+    )
+    adjOmegapd = adjOmegapd.at[12:18, :].set(adjOmegapd[6:12, :] @ adjOmegap[0:6, :] +
+    adjOmegap[6:12, :] @ adjOmegapd[0:6, :]
+    )
+    adjOmegapd = adjOmegapd.at[18:24, :].set(adjOmegapd[12:18, :] @ adjOmegap[0:6, :] +
+    adjOmegap[12:18, :] @ adjOmegapd[0:6, :]
+    )
+
+    def _g_series_branch() -> tuple[Array, Array, Array, Array, Array, Array]:
+        g = jnp.eye(4) + Omegahat + Omegahatp2 / 2 + Omegahatp3 / 6
+        f = jnp.array([1/2, 1/6, 1/24, 1/120])
+        fd  = jnp.zeros((4,))
+        fdd = jnp.zeros((4,))
+
+        T = (
+            jnp.eye(6)
+            + f[0] * adjOmegap[0:6, :]
+            + f[1] * adjOmegap[6:12, :]
+            + f[2] * adjOmegap[12:18, :]
+            + f[3] * adjOmegap[18:24, :]
+        )
+
+        Td = (
+            f[0] * adjOmegapd[0:6, :]
+            + f[1] * adjOmegapd[6:12, :]
+            + f[2] * adjOmegapd[12:18, :]
+            + f[3] * adjOmegapd[18:24, :]
+        )
+
+        return (f, fd, fdd, g, T, Td)
+    
+    def _g_general_branch(theta: Array) -> tuple[Array, Array, Array, Array, Array, Array]:
+        tp2        = theta * theta
+        tp3        = tp2 * theta
+        tp4        = tp3 * theta
+        tp5        = tp4 * theta
+        tp6        = tp5 * theta
+        tp7        = tp6 * theta
+        costheta = jnp.cos(theta)
+        sintheta = jnp.sin(theta)
+
+        t1 = theta * sintheta
+        t2 = theta * costheta
+        t3 = -8 + (8 - tp2) * costheta + 5 * t1
+        t4 = -8 * theta + (15 - tp2) * sintheta - 7 * t2
+        t3d = 5 * sintheta + sintheta * (tp2 - 8) + 3 * theta * costheta
+        t4d = -8 + 5 * theta * sintheta + (15 - tp2) * costheta - 7 * costheta
+
+        f = jnp.array([
+            (4 - 4 * costheta - t1) / (2 * tp2),
+            (4 * theta - 5 * sintheta + t2) / (2 * tp3),
+            (2 - 2 * costheta - t1) / (2 * tp4),
+            (2 * theta - 3 * sintheta + t2) / (2 * tp5),
+        ])
+
+        fd = jnp.array([
+            t3 / (2 * tp3),
+            t4 / (2 * tp4),
+            t3 / (2 * tp5),
+            t4 / (2 * tp6),
+        ])
+
+        fdd = jnp.array([
+            (theta * t3d - 3 * t3) / (2 * tp4),
+            (theta * t4d - 4 * t4) / (2 * tp5),
+            (theta * t3d - 5 * t3) / (2 * tp6),
+            (theta * t4d - 6 * t4) / (2 * tp7),
+        ])
+
+        g = jnp.eye(4) + Omegahat + ((1 - costheta) / tp2) * Omegahatp2 + ((theta - sintheta) / tp3) * Omegahatp3
+        
+        T = (
+            jnp.eye(6)
+            + f[0] * adjOmegap[0:6, :]
+            + f[1] * adjOmegap[6:12, :]
+            + f[2] * adjOmegap[12:18, :]
+            + f[3] * adjOmegap[18:24, :]
+        )
+
+        Td = (
+            fd[0] * thetad * adjOmegap[0:6, :] + f[0] * adjOmegapd[0:6, :]
+            + fd[1] * thetad * adjOmegap[6:12, :] + f[1] * adjOmegapd[6:12, :]
+            + fd[2] * thetad * adjOmegap[12:18, :] + f[2] * adjOmegapd[12:18, :]
+            + fd[3] * thetad * adjOmegap[18:24, :] + f[3] * adjOmegapd[18:24, :]
+        )
+
+        return (f, fd, fdd, g, T, Td)
+
+    f, fd, fdd, g, T, Td = lax.cond(
+        theta <= eps,
+        lambda _: _g_series_branch(),
+        lambda _: _g_general_branch(theta),
+        operand=None,
+    )
+
+    S  = T @ Z
+    TZd = T @ Zd
+    Sd = Td @ Z + TZd
+    dSdq_qd  = TZd
+    dSdq_qdd = T @ Zdd
+    dSddq_qd = Td @ Zd
+
+    Zqdd = Z @ qdd
+    Zdqd = Zd @ qd
+
+    def _block6(A: Array, k: int) -> Array:
+        # k = 0,1,2,3 gives rows [0:6], [6:12], [12:18], [18:24]
+        return A[k * 6:(k + 1) * 6, :]
+
+    def _S_series_branch() -> tuple[Array, Array, Array]:
+        dSdq_qd  = TZd
+        dSdq_qdd = T @ Zdd
+        dSddq_qd = Td @ Zd
+        # dSdq_qd = jnp.zeros_like(Z)
+        # dSdq_qdd = jnp.zeros_like(Z)
+        # dSddq_qd = jnp.zeros_like(Z)
+        for r in range(4):
+            for u in range(1, r + 2):
+                if u == 1:
+                    adjOmegap1 = jnp.eye(6)
+                else:
+                    adjOmegap1 = _block6(adjOmegap, u - 2)
+                
+                if u == r + 1:
+                    adjOmegap2 = jnp.eye(6)
+                else:
+                    adjOmegap2 = _block6(adjOmegap, r - u)
+                
+                dSdq_qd = dSdq_qd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z)
+                dSdq_qdd = dSdq_qdd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zqdd) @ Z)
+                dSddq_qd = dSddq_qd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zdqd) @ Z) - f[r] * (
+                    adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Zd
+                    )
+                                
+                for p in range(1, u):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == u - 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, u - p - 2)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ _block6(adjOmegapd, 0) @ adjOmegap2 @ Omegad)
+                        @ Z
+                    )
+                
+                for p in range(1, r - u + 2):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == r - u + 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, r - u - p)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap1
+                        @ _block6(adjOmegapd, 0)
+                        @ adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ Omegad)
+                        @ Z
+                    )
+        return (dSdq_qd, dSdq_qdd, dSddq_qd)
+    
+    def _S_general_branch(theta: Array) -> tuple[Array, Array, Array]:
+        # dSdq_qd = jnp.zeros_like(Z)
+        # dSdq_qdd = jnp.zeros_like(Z)
+        # dSddq_qd = jnp.zeros_like(Z)
+
+        dSdq_qd  = TZd
+        dSdq_qdd = T @ Zdd
+        dSddq_qd = Td @ Zd
+        for r in range(4):
+            adjr = _block6(adjOmegap, r)
+            adjrd = _block6(adjOmegapd, r)
+
+            dSdq_qd = dSdq_qd + (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Omegad,
+                Omega @ (I_theta @ Z),
+            )
+
+            dSdq_qdd = dSdq_qdd + (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Zqdd,
+                Omega @ (I_theta @ Z),
+            )
+
+            term1 = (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Zdqd,
+                Omega @ (I_theta @ Z),
+            )
+
+            term2 = (1 / theta) * jnp.outer(
+                ((fdd[r] * thetad) * adjr + fd[r] * adjrd) @ Omegad,
+                Omega @ (I_theta @ Z),
+            )
+
+            term3 = (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Omegad,
+                (Omegad - (thetad / theta) * Omega) @ (I_theta @ Z) + Omega @ (I_theta @ Zd),
+            )
+
+            dSddq_qd = dSddq_qd + term1 + term2 + term3
+            for u in range(1, r + 2):
+                if u == 1:
+                    adjOmegap1 = jnp.eye(6)
+                else:
+                    adjOmegap1 = _block6(adjOmegap, u - 2)
+
+                if u == r + 1:
+                    adjOmegap2 = jnp.eye(6)
+                else:
+                    adjOmegap2 = _block6(adjOmegap, r - u)
+                
+                dSdq_qd = dSdq_qd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z)
+                dSdq_qdd = dSdq_qdd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zqdd) @ Z)
+
+                dSddq_qd = (
+                    dSddq_qd
+                    - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zdqd) @ Z)
+                    - fd[r] * thetad * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z)
+                    - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Zd)
+                )
+
+                for p in range(1, u):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == u - 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, u - p - 2)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap3 @ adjoint_se3(adjOmegap4 @ _block6(adjOmegapd, 0) @ adjOmegap2 @ Omegad) @ Z)
+                                            
+                for p in range(1, r - u + 2):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == r - u + 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, r - u - p)
+
+                    dSddq_qd = dSddq_qd - f[r] * (adjOmegap1 @ _block6(adjOmegapd, 0) @ adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ Omegad) @ Z
+                    )
+
+
+        return (dSdq_qd, dSdq_qdd, dSddq_qd)
+
+    dSdq_qd, dSdq_qdd, dSddq_qd = lax.cond(
+        theta <= eps,
+        lambda _: _S_series_branch(),
+        lambda _: _S_general_branch(theta),
+        operand=None,
+    )
+
+    return (Omega, Z, g, T, S, Sd, f, fd, adjOmegap, dSdq_qd, dSdq_qdd, dSddq_qd)
+
+
+def pcs_SoftJointDifferentialKinematics(
+        eps,
+        H,
+        Phi,
+        xi_star,
+        q,
+        qd,
+        qdd) -> tuple[
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array
+            ]:
+    
+    I_theta = jnp.diag(jnp.array([1, 1, 1, 0, 0, 0]))
+    xi = Phi @ q + xi_star
+    Omega = H * xi
+    Z = H * Phi    
+    Omegad  = Z @ qd
+
+    Zd      = jnp.zeros_like(Z)
+    Zdd     = jnp.zeros_like(Z)
+
+    adjOmegap  = jnp.zeros((24, 6))
+    adjOmegapd = jnp.zeros((24, 6))
+
+    k = Omega[:3]
+    kd = Omegad[:3]
+    theta = _rotational_strain_magnitude(Omega, eps)
+    thetad = (kd @ k) / theta
+
+    Omegahat = hat_SE3(Omega)
+    Omegahatp2 = Omegahat @ Omegahat
+    Omegahatp3 = Omegahatp2 @ Omegahat
+
+    adjOmegap = adjOmegap.at[0:6, :].set(adjoint_se3(Omega))
+    adjOmegap = adjOmegap.at[6:12, :].set(adjOmegap[0:6, :] @ adjOmegap[0:6, :])
+    adjOmegap = adjOmegap.at[12:18, :].set(adjOmegap[6:12, :] @ adjOmegap[0:6, :])
+    adjOmegap = adjOmegap.at[18:24, :].set(adjOmegap[12:18, :] @ adjOmegap[0:6, :])
+
+    adjOmegapd = adjOmegapd.at[0:6, :].set(adjoint_se3(Omegad))
+    adjOmegapd = adjOmegapd.at[6:12, :].set(adjOmegapd[0:6, :] @ adjOmegap[0:6, :] +
+    adjOmegap[0:6, :] @ adjOmegapd[0:6, :]
+    )
+    adjOmegapd = adjOmegapd.at[12:18, :].set(adjOmegapd[6:12, :] @ adjOmegap[0:6, :] +
+    adjOmegap[6:12, :] @ adjOmegapd[0:6, :]
+    )
+    adjOmegapd = adjOmegapd.at[18:24, :].set(adjOmegapd[12:18, :] @ adjOmegap[0:6, :] +
+    adjOmegap[12:18, :] @ adjOmegapd[0:6, :]
+    )
+
+    def _g_series_branch() -> tuple[Array, Array, Array, Array, Array, Array]:
+        g = jnp.eye(4) + Omegahat + Omegahatp2 / 2 + Omegahatp3 / 6
+        f = jnp.array([1/2, 1/6, 1/24, 1/120])
+        fd  = jnp.zeros((4,))
+        fdd = jnp.zeros((4,))
+
+        T = (
+            jnp.eye(6)
+            + f[0] * adjOmegap[0:6, :]
+            + f[1] * adjOmegap[6:12, :]
+            + f[2] * adjOmegap[12:18, :]
+            + f[3] * adjOmegap[18:24, :]
+        )
+
+        Td = (
+            f[0] * adjOmegapd[0:6, :]
+            + f[1] * adjOmegapd[6:12, :]
+            + f[2] * adjOmegapd[12:18, :]
+            + f[3] * adjOmegapd[18:24, :]
+        )
+
+        return (f, fd, fdd, g, T, Td)
+    
+    def _g_general_branch(theta: Array) -> tuple[Array, Array, Array, Array, Array, Array]:
+        tp2        = theta * theta
+        tp3        = tp2 * theta
+        tp4        = tp3 * theta
+        tp5        = tp4 * theta
+        tp6        = tp5 * theta
+        tp7        = tp6 * theta
+        costheta = jnp.cos(theta)
+        sintheta = jnp.sin(theta)
+
+        t1 = theta * sintheta
+        t2 = theta * costheta
+        t3 = -8 + (8 - tp2) * costheta + 5 * t1
+        t4 = -8 * theta + (15 - tp2) * sintheta - 7 * t2
+        t3d = 5 * sintheta + sintheta * (tp2 - 8) + 3 * theta * costheta
+        t4d = -8 + 5 * theta * sintheta + (15 - tp2) * costheta - 7 * costheta
+
+        f = jnp.array([
+            (4 - 4 * costheta - t1) / (2 * tp2),
+            (4 * theta - 5 * sintheta + t2) / (2 * tp3),
+            (2 - 2 * costheta - t1) / (2 * tp4),
+            (2 * theta - 3 * sintheta + t2) / (2 * tp5),
+        ])
+
+        fd = jnp.array([
+            t3 / (2 * tp3),
+            t4 / (2 * tp4),
+            t3 / (2 * tp5),
+            t4 / (2 * tp6),
+        ])
+
+        fdd = jnp.array([
+            (theta * t3d - 3 * t3) / (2 * tp4),
+            (theta * t4d - 4 * t4) / (2 * tp5),
+            (theta * t3d - 5 * t3) / (2 * tp6),
+            (theta * t4d - 6 * t4) / (2 * tp7),
+        ])
+
+        g = jnp.eye(4) + Omegahat + ((1 - costheta) / tp2) * Omegahatp2 + ((theta - sintheta) / tp3) * Omegahatp3
+        
+        T = (
+            jnp.eye(6)
+            + f[0] * adjOmegap[0:6, :]
+            + f[1] * adjOmegap[6:12, :]
+            + f[2] * adjOmegap[12:18, :]
+            + f[3] * adjOmegap[18:24, :]
+        )
+
+        Td = (
+            fd[0] * thetad * adjOmegap[0:6, :] + f[0] * adjOmegapd[0:6, :]
+            + fd[1] * thetad * adjOmegap[6:12, :] + f[1] * adjOmegapd[6:12, :]
+            + fd[2] * thetad * adjOmegap[12:18, :] + f[2] * adjOmegapd[12:18, :]
+            + fd[3] * thetad * adjOmegap[18:24, :] + f[3] * adjOmegapd[18:24, :]
+        )
+
+        return (f, fd, fdd, g, T, Td)
+
+    f, fd, fdd, g, T, Td = lax.cond(
+        theta <= eps,
+        lambda _: _g_series_branch(),
+        lambda _: _g_general_branch(theta),
+        operand=None,
+    )
+
+    S  = T @ Z
+    Sd = Td @ Z
+    Zqdd = Z @ qdd
+
+    def _block6(A: Array, k: int) -> Array:
+        # k = 0,1,2,3 gives rows [0:6], [6:12], [12:18], [18:24]
+        return A[k * 6:(k + 1) * 6, :]
+
+    def _S_series_branch() -> tuple[Array, Array, Array]:
+        dSdq_qd  = jnp.zeros_like(Z)
+        dSdq_qdd = jnp.zeros_like(Z)
+        dSddq_qd = jnp.zeros_like(Z)
+        for r in range(4):
+            for u in range(1, r + 2):
+                if u == 1:
+                    adjOmegap1 = jnp.eye(6)
+                else:
+                    adjOmegap1 = _block6(adjOmegap, u - 2)
+                
+                if u == r + 1:
+                    adjOmegap2 = jnp.eye(6)
+                else:
+                    adjOmegap2 = _block6(adjOmegap, r - u)
+                
+                dSdq_qd = dSdq_qd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z)
+                dSdq_qdd = dSdq_qdd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zqdd) @ Z)
+                
+                for p in range(1, u):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == u - 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, u - p - 2)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ _block6(adjOmegapd, 0) @ adjOmegap2 @ Omegad)
+                        @ Z
+                    )
+                
+                for p in range(1, r - u + 2):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == r - u + 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, r - u - p)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap1
+                        @ _block6(adjOmegapd, 0)
+                        @ adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ Omegad)
+                        @ Z
+                    )
+        return (dSdq_qd, dSdq_qdd, dSddq_qd)
+    
+    def _S_general_branch(theta: Array) -> tuple[Array, Array, Array]:
+        dSdq_qd  = jnp.zeros_like(Z)
+        dSdq_qdd = jnp.zeros_like(Z)
+        dSddq_qd = jnp.zeros_like(Z)
+        for r in range(4):
+            adjr = _block6(adjOmegap, r)
+            adjrd = _block6(adjOmegapd, r)
+
+            dSdq_qd = dSdq_qd + (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Omegad,
+                Omega @ (I_theta @ Z),
+            )
+
+            dSdq_qdd = dSdq_qdd + (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Zqdd,
+                Omega @ (I_theta @ Z),
+            )
+
+            term1 = (1 / theta) * jnp.outer(
+                ((fdd[r] * thetad) * adjr + fd[r] * adjrd) @ Omegad,
+                Omega @ (I_theta @ Z),
+            )
+
+            term2 = (1 / theta) * fd[r] * jnp.outer(
+                adjr @ Omegad,
+                (Omegad - (thetad / theta) * Omega) @ (I_theta @ Z) + Omega @ (I_theta @ Zd),
+            )
+
+            dSddq_qd = dSddq_qd + term1 + term2
+            for u in range(1, r + 2):
+                if u == 1:
+                    adjOmegap1 = jnp.eye(6)
+                else:
+                    adjOmegap1 = _block6(adjOmegap, u - 2)
+
+                if u == r + 1:
+                    adjOmegap2 = jnp.eye(6)
+                else:
+                    adjOmegap2 = _block6(adjOmegap, r - u)
+                
+                dSdq_qd = dSdq_qd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z)
+                dSdq_qdd = dSdq_qdd - f[r] * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Zqdd) @ Z)
+                dSddq_qd = (dSddq_qd- fd[r] * thetad * (adjOmegap1 @ adjoint_se3(adjOmegap2 @ Omegad) @ Z))
+
+                for p in range(1, u):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == u - 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, u - p - 2)
+
+                    dSddq_qd = dSddq_qd - f[r] * (
+                        adjOmegap3 @ adjoint_se3(adjOmegap4 @ _block6(adjOmegapd, 0) @ adjOmegap2 @ Omegad) @ Z)
+                
+                for p in range(1, r - u + 2):
+                    if p == 1:
+                        adjOmegap3 = jnp.eye(6)
+                    else:
+                        adjOmegap3 = _block6(adjOmegap, p - 2)
+
+                    if p == r - u + 1:
+                        adjOmegap4 = jnp.eye(6)
+                    else:
+                        adjOmegap4 = _block6(adjOmegap, r - u - p)
+
+                    dSddq_qd = dSddq_qd - f[r] * (adjOmegap1 @ _block6(adjOmegapd, 0) @ adjOmegap3
+                        @ adjoint_se3(adjOmegap4 @ Omegad) @ Z
+                    )
+
+        return (dSdq_qd, dSdq_qdd, dSddq_qd)
+
+    dSdq_qd, dSdq_qdd, dSddq_qd = lax.cond(
+        theta <= eps,
+        lambda _: _S_series_branch(),
+        lambda _: _S_general_branch(theta),
+        operand=None,
+    )
+
+    return (Omega, Z, g, T, S, Sd, f, fd, adjOmegap, dSdq_qd, dSdq_qdd, dSddq_qd)
