@@ -2665,3 +2665,704 @@ class PCS(SoftRobot):
         yd = jnp.concatenate([qd, qdd])
 
         return yd
+
+    @eqx.filter_jit
+    def _eta_etad_bodyframe(
+        self, q: Array, qd: Array, qdd: Array, s: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """
+        Compute body-frame velocity and acceleration twists at a point s.
+
+        Args:
+            q: Generalized coordinates, shape (num_active_strains,).
+            qd: Generalized velocity, shape (num_active_strains,).
+            qdd: Generalized acceleration, shape (num_active_strains,).
+            s: Point coordinate along the robot.
+
+        Returns:
+            eta: Body-frame velocity twist, shape (6,).
+            etad: Body-frame acceleration twist, shape (6,).
+            J_local: Body-frame Jacobian, shape (6, num_active_strains).
+            Jd_local: Body-frame Jacobian derivative, shape (6, num_active_strains).
+        """
+        J_local, Jd_local = self.jacobian_and_time_derivative_bodyframe(q, qd, s)
+
+        eta = J_local @ qd
+        etad = J_local @ qdd + Jd_local @ qd
+
+        return eta, etad, J_local, Jd_local
+    
+
+    @eqx.filter_jit
+    def _pcs_soft_joint_differential_kinematics(
+        self,
+        i: Array,
+        H: Array,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+    ]:
+        """
+        Evaluate PCS soft-joint differential kinematics for segment i over length H.
+
+        This wraps lie.pcs_SoftJointDifferentialKinematics using the local
+        strain basis of segment i.
+
+        Args:
+            i: Segment index.
+            H: Integration length inside the segment.
+            q: Generalized coordinates, shape (num_active_strains,).
+            qd: Generalized velocity, shape (num_active_strains,).
+            qdd: Generalized acceleration, shape (num_active_strains,).
+
+        Returns:
+            Omega, Z, g_step, T, S, Sd, f, fd, adjOmegap,
+            dS_dq_qd, dS_dq_qdd, dSd_dq_qd.
+        """
+        Phi_i = lax.dynamic_slice_in_dim(
+            self.B_xi, 6 * i, 6, axis=0
+        )
+
+        xi_star_i = lax.dynamic_slice_in_dim(
+            self.xi_ref, 6 * i, 6, axis=0
+        )
+
+        (
+            Omega,
+            Z,
+            g_step,
+            T,
+            S,
+            Sd,
+            f,
+            fd,
+            adjOmegap,
+            dS_dq_qd,
+            dS_dq_qdd,
+            dSd_dq_qd,
+        ) = lie.pcs_SoftJointDifferentialKinematics(
+            self.global_eps,
+            H,
+            Phi_i,
+            xi_star_i,
+            q,
+            qd,
+            qdd,
+        )
+
+        return (
+            Omega,
+            Z,
+            g_step,
+            T,
+            S,
+            Sd,
+            f,
+            fd,
+            adjOmegap,
+            dS_dq_qd,
+            dS_dq_qdd,
+            dSd_dq_qd,
+        )
+
+    @eqx.filter_jit
+    def _integrate_R_L_Q_Y_step(
+        self,
+        g_prev: Array,
+        J_prev: Array,
+        Jd_prev: Array,
+        eta_prev: Array,
+        etad_prev: Array,
+        R_B_prev: Array,
+        L_B_prev: Array,
+        Q_B_prev: Array,
+        i: Array,
+        H: Array,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+        """
+        Integrate one PCS segment step and propagate J, Jd, eta, etad,
+        R_B, L_B, Q_B, and Y_B.
+
+        This follows the same recursive structure as the MATLAB code.
+
+        Returns:
+            g_next, J_next, Jd_next, eta_next, etad_next,
+            R_B_next, L_B_next, Q_B_next, Y_B_next.
+        """
+
+        zero_H = jnp.abs(H) <= self.global_eps
+
+        def zero_step(_: None) -> tuple[
+            Array, Array, Array, Array, Array, Array, Array, Array, Array
+        ]:
+            Y_B_prev = R_B_prev + Jd_prev
+            return (
+                g_prev,
+                J_prev,
+                Jd_prev,
+                eta_prev,
+                etad_prev,
+                R_B_prev,
+                L_B_prev,
+                Q_B_prev,
+                Y_B_prev,
+            )
+
+        def finite_step(_: None) -> tuple[
+            Array, Array, Array, Array, Array, Array, Array, Array, Array
+        ]:
+            (
+                _,
+                _,
+                g_step,
+                _,
+                S,
+                Sd,
+                _,
+                _,
+                _,
+                dS_dq_qd,
+                dS_dq_qdd,
+                dSd_dq_qd,
+            ) = self._pcs_soft_joint_differential_kinematics(
+                i, H, q, qd, qdd
+            )
+
+            Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
+
+            adj_eta_prev = lie.adjoint_se3(eta_prev)
+
+            # eta_plus and etad_plus are expressed in the frame before the step.
+            eta_plus = eta_prev + S @ qd
+
+            etad_plus = (
+                etad_prev
+                + S @ qdd
+                + adj_eta_prev @ (S @ qd)
+                + Sd @ qd
+            )
+
+            # Local differential terms before transporting through g_step.
+            R = lie.adjoint_se3(eta_plus) @ S + dS_dq_qd
+
+            L = (
+                lie.adjoint_se3(etad_plus) @ S
+                + lie.adjoint_se3(eta_plus) @ R
+                + adj_eta_prev @ dS_dq_qd
+                + dSd_dq_qd
+                + dS_dq_qdd
+            )
+
+            # Gravity expressed in the current body frame, before the step.
+            g_body = lie.Adjoint_g_inv_SE3(g_prev) @ self.g
+
+            Q = L - lie.adjoint_se3(g_body) @ S
+
+            # Propagate pose.
+            g_next = g_prev @ g_step
+
+            # Propagate body-frame Jacobian terms.
+            J_next = Ad_step_inv @ (J_prev + S)
+
+            Jd_next = Ad_step_inv @ (
+                Jd_prev + Sd + adj_eta_prev @ S
+            )
+
+            eta_next = Ad_step_inv @ eta_plus
+            etad_next = Ad_step_inv @ etad_plus
+
+            R_B_next = Ad_step_inv @ (R_B_prev + R)
+            L_B_next = Ad_step_inv @ (L_B_prev + L)
+            Q_B_next = Ad_step_inv @ (Q_B_prev + Q)
+            Y_B_next = R_B_next + Jd_next
+
+            return (
+                g_next,
+                J_next,
+                Jd_next,
+                eta_next,
+                etad_next,
+                R_B_next,
+                L_B_next,
+                Q_B_next,
+                Y_B_next,
+            )
+
+        return lax.cond(
+            zero_H,
+            zero_step,
+            finite_step,
+            operand=None,
+        )
+
+    @eqx.filter_jit
+    def _R_L_Q_Y_local(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+        s: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """
+        Compute R_B, L_B, Q_B, and Y_B at a point s along the robot.
+
+        Args:
+            q: Generalized coordinates, shape (num_active_strains,).
+            qd: Generalized velocity, shape (num_active_strains,).
+            qdd: Generalized acceleration, shape (num_active_strains,).
+            s: Point coordinate along the robot.
+
+        Returns:
+            R_B: Shape (6, num_active_strains).
+            L_B: Shape (6, num_active_strains).
+            Q_B: Shape (6, num_active_strains).
+            Y_B: Shape (6, num_active_strains).
+        """
+        segment_idx, s_local = self.classify_segment(s)
+
+        zeros_6n = jnp.zeros((6, self.num_dofs), dtype=q.dtype)
+        zeros_6 = jnp.zeros((6,), dtype=q.dtype)
+
+        state_init = (
+            self.g0,
+            zeros_6n,
+            zeros_6n,
+            zeros_6,
+            zeros_6,
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+        )
+
+        target_init = (
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+        )
+
+        carry_init = (
+            state_init,
+            target_init,
+            jnp.array(False, dtype=jnp.bool_),
+        )
+
+        def scan_body(
+            carry: tuple[
+                tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+                tuple[Array, Array, Array, Array],
+                Array,
+            ],
+            i: Array,
+        ) -> tuple[
+            tuple[
+                tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+                tuple[Array, Array, Array, Array],
+                Array,
+            ],
+            Array,
+        ]:
+            state_prev, target_prev, done = carry
+
+            (
+                g_prev,
+                J_prev,
+                Jd_prev,
+                eta_prev,
+                etad_prev,
+                R_B_prev,
+                L_B_prev,
+                Q_B_prev,
+            ) = state_prev
+
+            R_target, L_target, Q_target, Y_target = target_prev
+
+            def compute_branch(_: None):
+                L_i = lax.dynamic_index_in_dim(
+                    self.L, i, axis=0, keepdims=False
+                )
+                H_i = jnp.where(i == segment_idx, s_local, L_i)
+
+                (
+                    g_next,
+                    J_next,
+                    Jd_next,
+                    eta_next,
+                    etad_next,
+                    R_B_next,
+                    L_B_next,
+                    Q_B_next,
+                    Y_B_next,
+                ) = self._integrate_R_L_Q_Y_step(
+                    g_prev,
+                    J_prev,
+                    Jd_prev,
+                    eta_prev,
+                    etad_prev,
+                    R_B_prev,
+                    L_B_prev,
+                    Q_B_prev,
+                    i,
+                    H_i,
+                    q,
+                    qd,
+                    qdd,
+                )
+
+                is_target = i == segment_idx
+
+                R_target_next = jnp.where(is_target, R_B_next, R_target)
+                L_target_next = jnp.where(is_target, L_B_next, L_target)
+                Q_target_next = jnp.where(is_target, Q_B_next, Q_target)
+                Y_target_next = jnp.where(is_target, Y_B_next, Y_target)
+
+                done_next = jnp.logical_or(done, is_target)
+
+                state_next = (
+                    g_next,
+                    J_next,
+                    Jd_next,
+                    eta_next,
+                    etad_next,
+                    R_B_next,
+                    L_B_next,
+                    Q_B_next,
+                )
+
+                target_next = (
+                    R_target_next,
+                    L_target_next,
+                    Q_target_next,
+                    Y_target_next,
+                )
+
+                return (state_next, target_next, done_next), zeros_6
+
+            def skip_branch(_: None):
+                return carry, zeros_6
+
+            return lax.cond(done, skip_branch, compute_branch, operand=None)
+
+        indices = jnp.arange(self.num_segments, dtype=segment_idx.dtype)
+
+        (_, (R_B, L_B, Q_B, Y_B), _), _ = lax.scan(
+            scan_body,
+            carry_init,
+            indices,
+        )
+
+        return R_B, L_B, Q_B, Y_B
+
+    @eqx.filter_jit
+    def _R_L_Q_Y_state_local_tips(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+    ]:
+        """
+        Compute full differential-kinematic state at all segment tips.
+
+        Returns:
+            g_tips: Shape (num_segments, 4, 4).
+            J_tips: Shape (num_segments, 6, num_active_strains).
+            Jd_tips: Shape (num_segments, 6, num_active_strains).
+            eta_tips: Shape (num_segments, 6).
+            etad_tips: Shape (num_segments, 6).
+            R_B_tips: Shape (num_segments, 6, num_active_strains).
+            L_B_tips: Shape (num_segments, 6, num_active_strains).
+            Q_B_tips: Shape (num_segments, 6, num_active_strains).
+            Y_B_tips: Shape (num_segments, 6, num_active_strains).
+        """
+        zeros_6n = jnp.zeros((6, self.num_dofs), dtype=q.dtype)
+        zeros_6 = jnp.zeros((6,), dtype=q.dtype)
+
+        state_init = (
+            self.g0,
+            zeros_6n,
+            zeros_6n,
+            zeros_6,
+            zeros_6,
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+        )
+
+        def scan_body(
+            state_prev: tuple[
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+            ],
+            i: Array,
+        ) -> tuple[
+            tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+            tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array],
+        ]:
+            (
+                g_prev,
+                J_prev,
+                Jd_prev,
+                eta_prev,
+                etad_prev,
+                R_B_prev,
+                L_B_prev,
+                Q_B_prev,
+            ) = state_prev
+
+            H_i = lax.dynamic_index_in_dim(
+                self.L, i, axis=0, keepdims=False
+            )
+
+            (
+                g_next,
+                J_next,
+                Jd_next,
+                eta_next,
+                etad_next,
+                R_B_next,
+                L_B_next,
+                Q_B_next,
+                Y_B_next,
+            ) = self._integrate_R_L_Q_Y_step(
+                g_prev,
+                J_prev,
+                Jd_prev,
+                eta_prev,
+                etad_prev,
+                R_B_prev,
+                L_B_prev,
+                Q_B_prev,
+                i,
+                H_i,
+                q,
+                qd,
+                qdd,
+            )
+
+            state_next = (
+                g_next,
+                J_next,
+                Jd_next,
+                eta_next,
+                etad_next,
+                R_B_next,
+                L_B_next,
+                Q_B_next,
+            )
+
+            output_next = (
+                g_next,
+                J_next,
+                Jd_next,
+                eta_next,
+                etad_next,
+                R_B_next,
+                L_B_next,
+                Q_B_next,
+                Y_B_next,
+            )
+
+            return state_next, output_next
+
+        indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+
+        _, outputs = lax.scan(scan_body, state_init, indices)
+
+        return outputs
+
+    @eqx.filter_jit
+    def _R_L_Q_Y_local_tips(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """
+        Compute R_B, L_B, Q_B, and Y_B at all segment tips.
+
+        Returns:
+            R_B_tips: Shape (num_segments, 6, num_active_strains).
+            L_B_tips: Shape (num_segments, 6, num_active_strains).
+            Q_B_tips: Shape (num_segments, 6, num_active_strains).
+            Y_B_tips: Shape (num_segments, 6, num_active_strains).
+        """
+        (
+            _,
+            _,
+            _,
+            _,
+            _,
+            R_B_tips,
+            L_B_tips,
+            Q_B_tips,
+            Y_B_tips,
+        ) = self._R_L_Q_Y_state_local_tips(q, qd, qdd)
+
+        return R_B_tips, L_B_tips, Q_B_tips, Y_B_tips
+
+    @eqx.filter_jit
+    def _R_L_Q_Y_local_batched(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+        s_ps: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """
+        Compute R_B, L_B, Q_B, and Y_B at a batch of points.
+
+        Args:
+            q: Generalized coordinates, shape (num_active_strains,).
+            qd: Generalized velocity, shape (num_active_strains,).
+            qdd: Generalized acceleration, shape (num_active_strains,).
+            s_ps: Point coordinates along the robot, shape (N,).
+
+        Returns:
+            R_B_ps: Shape (N, 6, num_active_strains).
+            L_B_ps: Shape (N, 6, num_active_strains).
+            Q_B_ps: Shape (N, 6, num_active_strains).
+            Y_B_ps: Shape (N, 6, num_active_strains).
+        """
+        (
+            g_tips,
+            J_tips,
+            Jd_tips,
+            eta_tips,
+            etad_tips,
+            R_B_tips,
+            L_B_tips,
+            Q_B_tips,
+            _,
+        ) = self._R_L_Q_Y_state_local_tips(q, qd, qdd)
+
+        segment_indices, s_local_ps = vmap(self.classify_segment)(s_ps)
+
+        zeros_6n = jnp.zeros_like(J_tips[:1])
+        zeros_6 = jnp.zeros_like(eta_tips[:1])
+
+        g_bases = jnp.concatenate(
+            [self.g0[None, :, :], g_tips[:-1]],
+            axis=0,
+        )
+
+        J_bases = jnp.concatenate(
+            [zeros_6n, J_tips[:-1]],
+            axis=0,
+        )
+
+        Jd_bases = jnp.concatenate(
+            [zeros_6n, Jd_tips[:-1]],
+            axis=0,
+        )
+
+        eta_bases = jnp.concatenate(
+            [zeros_6, eta_tips[:-1]],
+            axis=0,
+        )
+
+        etad_bases = jnp.concatenate(
+            [zeros_6, etad_tips[:-1]],
+            axis=0,
+        )
+
+        R_B_bases = jnp.concatenate(
+            [zeros_6n, R_B_tips[:-1]],
+            axis=0,
+        )
+
+        L_B_bases = jnp.concatenate(
+            [zeros_6n, L_B_tips[:-1]],
+            axis=0,
+        )
+
+        Q_B_bases = jnp.concatenate(
+            [zeros_6n, Q_B_tips[:-1]],
+            axis=0,
+        )
+
+        def integrate_point(
+            i: Array,
+            H: Array,
+            g_base: Array,
+            J_base: Array,
+            Jd_base: Array,
+            eta_base: Array,
+            etad_base: Array,
+            R_B_base: Array,
+            L_B_base: Array,
+            Q_B_base: Array,
+        ) -> tuple[Array, Array, Array, Array]:
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                R_B_point,
+                L_B_point,
+                Q_B_point,
+                Y_B_point,
+            ) = self._integrate_R_L_Q_Y_step(
+                g_base,
+                J_base,
+                Jd_base,
+                eta_base,
+                etad_base,
+                R_B_base,
+                L_B_base,
+                Q_B_base,
+                i,
+                H,
+                q,
+                qd,
+                qdd,
+            )
+
+            return R_B_point, L_B_point, Q_B_point, Y_B_point
+
+        R_B_ps, L_B_ps, Q_B_ps, Y_B_ps = vmap(integrate_point)(
+            segment_indices,
+            s_local_ps,
+            g_bases[segment_indices],
+            J_bases[segment_indices],
+            Jd_bases[segment_indices],
+            eta_bases[segment_indices],
+            etad_bases[segment_indices],
+            R_B_bases[segment_indices],
+            L_B_bases[segment_indices],
+            Q_B_bases[segment_indices],
+        )
+
+        return R_B_ps, L_B_ps, Q_B_ps, Y_B_ps
