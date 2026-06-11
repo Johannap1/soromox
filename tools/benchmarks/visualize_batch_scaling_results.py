@@ -6,17 +6,6 @@ The script reads one or more outputs from
 total-throughput summaries, and a consolidated model comparison.
 
 Examples:
-    Plot the GVS strain-basis-order sweep::
-
-        uv run python tools/benchmarks/visualize_batch_scaling_results.py \
-          benchmarks/batch_scaling/articulated_soft_robot_1s.csv \
-          benchmarks/batch_scaling/planar_pcs_1s.csv \
-          benchmarks/batch_scaling/pcs_1s.csv \
-          benchmarks/batch_scaling/gvs_basis_order_1s.csv \
-          --output benchmarks/batch_scaling/batch_scaling_strain_basis_order.pdf \
-          --log-x \
-          --log-y
-
     Plot the GVS segment-count sweep::
 
         uv run python tools/benchmarks/visualize_batch_scaling_results.py \
@@ -25,6 +14,17 @@ Examples:
           benchmarks/batch_scaling/pcs_1s.csv \
           benchmarks/batch_scaling/gvs_segments_1s.csv \
           --output benchmarks/batch_scaling/batch_scaling_segments.pdf \
+          --log-x \
+          --log-y
+
+    Plot the GVS strain-basis-order sweep::
+
+        uv run python tools/benchmarks/visualize_batch_scaling_results.py \
+          benchmarks/batch_scaling/articulated_soft_robot_1s.csv \
+          benchmarks/batch_scaling/planar_pcs_1s.csv \
+          benchmarks/batch_scaling/pcs_1s.csv \
+          benchmarks/batch_scaling/gvs_basis_order_1s.csv \
+          --output benchmarks/batch_scaling/batch_scaling_strain_basis_order.pdf \
           --log-x \
           --log-y
 """
@@ -65,10 +65,10 @@ if LATEX_AVAILABLE:
 
 MODEL_ORDER = ["articulated_soft_robot", "planar_pcs", "pcs", "gvs"]
 MODEL_LABELS = {
-    "articulated_soft_robot": "ArticulatedSoftRobot",
-    "planar_pcs": "PlanarPCS",
-    "pcs": "PCS",
-    "gvs": "GVS",
+    "articulated_soft_robot": "Articulated Soft Robot",
+    "planar_pcs": "Planar PCS",
+    "pcs": "Spatial PCS",
+    "gvs": "Spatial GVS",
 }
 MODEL_COLORS = {
     "articulated_soft_robot": "#0072B2",
@@ -238,9 +238,7 @@ def _filter_to_shared_segment_range(
 
     common_min = max(min(sizes) for sizes in sizes_by_system.values())
     common_max = min(max(sizes) for sizes in sizes_by_system.values())
-    filtered = [
-        row for row in rows if common_min <= _size_value(row) <= common_max
-    ]
+    filtered = [row for row in rows if common_min <= _size_value(row) <= common_max]
     if not filtered:
         raise ValueError(
             "No rows remain after limiting to the shared segment-count range."
@@ -355,7 +353,7 @@ def _plot(
         ax_per_env.legend()
 
     axes[0, 0].set_ylabel(r"Simulated time / wall time (per env)")
-    axes[1, 0].set_ylabel(r"Total simulated time / wall time ($r_\mathrm{s/w}$)")
+    axes[1, 0].set_ylabel(r"Total simulated time / wall time ($r_{\mathrm{s}/\mathrm{w}}$)")
     fig.tight_layout()
 
     if output is not None:
@@ -418,7 +416,7 @@ def _plot_total_throughput(
             ax.set_yscale("log")
         ax.legend()
 
-    axes[0, 0].set_ylabel(r"Total simulated time / wall time ($r_\mathrm{s/w}$)")
+    axes[0, 0].set_ylabel(r"Total simulated time / wall time ($r_{\mathrm{s}/\mathrm{w}}$)")
     fig.tight_layout()
 
     if output is not None:
@@ -558,7 +556,7 @@ def _plot_combined_scaling(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"Number of parallel environments $n_\mathrm{envs}$")
-    ax.set_ylabel(r"Simulation throughput $r_\mathrm{sw}$")
+    ax.set_ylabel(r"Simulation throughput $r_{\mathrm{s}/\mathrm{w}}$")
     ax.set_title("GPU Batch-Scaling Throughput")
 
     if y_min <= 1.0 <= y_max:
