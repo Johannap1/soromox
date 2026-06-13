@@ -7,6 +7,7 @@ from soromox.systems.params import (
     BaseArticulatedSoftRobotParams,
     BaseSystemParams,
     PassiveTendonParams,
+    validate_planar_base_pose,
 )
 
 
@@ -16,6 +17,9 @@ class PendulumParams(BaseArticulatedSoftRobotParams):
     The leading axis indexes links/joints. ``moment_inertia`` and
     ``center_of_mass_length`` are per link, while stiffness and damping are
     generalized-coordinate matrices inherited from the articulated base class.
+    ``base_pose`` stores the planar pose ``[theta, x, y]`` with shape ``(3,)``.
+    ``theta`` is a right-handed angle in radians about the out-of-plane z-axis,
+    and ``x``/``y`` are direct translations in the parent frame.
     """
 
     moment_inertia: Array
@@ -51,6 +55,7 @@ class PendulumParams(BaseArticulatedSoftRobotParams):
         gravity = jnp.asarray(self.gravity)
         if gravity.shape != (2,):
             raise ValueError(f"gravity must have shape (2,), got {gravity.shape}.")
+        validate_planar_base_pose("base_pose", self.base_pose)
 
 
 class TendonActuatedPendulumParams(BaseSystemParams):

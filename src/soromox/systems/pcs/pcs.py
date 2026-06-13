@@ -107,10 +107,10 @@ class PCS(SoftRobot):
         **kwargs: Any,
     ):
         """Initialize the PCS class from typed dynamic parameters."""
-        super().__init__(**kwargs)
         if not isinstance(params, PCSParams):
             raise TypeError("params must be a PCSParams instance.")
         params.validate()
+        super().__init__(base_pose=params.base_pose, **kwargs)
         if structure is None:
             structure = PCSStructure()
         self.params = params
@@ -229,11 +229,12 @@ class PCS(SoftRobot):
     def _set_params(self, params: PCSParams) -> None:
         """Set cached runtime arrays from typed parameters."""
         # Initial position and orientation angle
-        p0 = params.base_pose
+        self.base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
+        p0 = self.base_pose
         p0 = jnp.asarray(p0, dtype=jnp.float64)
-        if p0.size != 6:
-            raise ValueError(f"base_pose must have shape (6,), got {p0.size}")
-        self.g0 = lie.exp_SE3(p0)
+        if p0.size != 7:
+            raise ValueError(f"base_pose must have shape (7,), got {p0.size}")
+        self.g0 = lie.transform_from_quaternion_pose_SE3(p0)
 
         # Gravitational acceleration vector
         g = params.gravity
@@ -347,6 +348,7 @@ class PCS(SoftRobot):
         updated_self = eqx.tree_at(
             lambda m: (
                 m.params,
+                m.base_pose,
                 m.g0,
                 m.g,
                 m.L,
@@ -361,7 +363,8 @@ class PCS(SoftRobot):
             self,
             (
                 params if stored_params is None else stored_params,
-                lie.exp_SE3(base_pose),
+                base_pose,
+                lie.transform_from_quaternion_pose_SE3(base_pose),
                 jnp.concatenate([jnp.zeros(3, dtype=gravity.dtype), gravity]),
                 segment_lengths,
                 jnp.cumsum(

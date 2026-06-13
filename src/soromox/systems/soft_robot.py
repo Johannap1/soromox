@@ -14,6 +14,10 @@ from jax import numpy as jnp
 import soromox.utils.lie_algebra as lie
 from soromox.autodiff import custom_jvp_enabled
 from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.systems.params import (
+    validate_planar_base_pose,
+    validate_quaternion_base_pose,
+)
 
 
 class CrossSectionGeometry(IntEnum):
@@ -43,6 +47,16 @@ class SoftRobot(DynamicalSystem):
         num_dofs (int): Number of degrees of freedom (configuration variables).
         num_actuators (int): Number of actuators.
         global_eps (float): Global epsilon for numerical computations.
+        base_pose (Array): Base frame pose coordinates for the robot. Planar
+            robots use shape ``(3,)`` with coordinates ``[theta, x, y]``,
+            where ``theta`` is a right-handed angle in radians about the
+            out-of-plane z-axis. Spatial robots use shape ``(7,)`` with
+            coordinates ``[qw, qx, qy, qz, x, y, z]``. Spatial quaternions are
+            scalar-first Hamilton quaternions, normalized before use, and
+            represent the base-frame orientation; translations are inserted
+            directly. Configured spatial quaternions must have nonzero finite
+            norm. In the standard zero-rotation base pose, the soft robot
+            backbone is aligned with the positive base-frame x-axis.
         num_gauss_points (int | Array | None): Requested nonzero
             Gauss-Legendre quadrature point count. May be scalar for systems
             with a uniform grid or an array for systems with per-segment grids.
@@ -57,6 +71,7 @@ class SoftRobot(DynamicalSystem):
 
     # global epsilon for numerical computations
     global_eps: float  # Global epsilon for numerical computations
+    base_pose: Array
     num_gauss_points: int | Array | None
     num_integration_points: int | Array | None
     integration_points: Array | None
@@ -71,17 +86,42 @@ class SoftRobot(DynamicalSystem):
         """
         return jnp.sqrt(self.global_eps)
 
-    def __init__(self, eps: float | None = None, **kwargs: Any):
+    def __init__(
+        self,
+        eps: float | None = None,
+        base_pose: Array | None = None,
+        **kwargs: Any,
+    ):
         """Initialize the SoftRobot.
 
         Args:
             eps (float): Optional global epsilon value for numerical computations.
                 If not provided, defaults to 10x machine epsilon for float64.
+            base_pose: Optional base frame pose coordinates. Planar robots
+                expect shape ``(3,)`` with ``[theta, x, y]``. Spatial robots
+                expect shape ``(7,)`` with ``[qw, qx, qy, qz, x, y, z]``.
+                Spatial quaternions are scalar-first Hamilton quaternions,
+                normalized before use, and must have nonzero finite norm. If
+                omitted, the zero-rotation base pose is used in the appropriate
+                dimension. With zero base rotation, the soft robot backbone is
+                aligned with the positive base-frame x-axis.
             **kwargs: Additional keyword arguments (unused, kept for API compatibility).
         """
         # Note: We don't call super().__init__() here because Equinox modules
         # work like dataclasses - fields are set directly rather than through
         # parent __init__ calls. Child classes must set num_dofs and num_actuators.
+        if base_pose is None:
+            if self.is_planar:
+                base_pose = jnp.zeros(3, dtype=jnp.float64)
+            else:
+                base_pose = jnp.array(
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float64
+                )
+        if self.is_planar:
+            validate_planar_base_pose("base_pose", base_pose)
+        else:
+            validate_quaternion_base_pose("base_pose", base_pose, (7,))
+        self.base_pose = jnp.asarray(base_pose, dtype=jnp.float64)
         self.num_gauss_points = None
         self.num_integration_points = None
         self.integration_points = None
@@ -117,6 +157,19 @@ class SoftRobot(DynamicalSystem):
     def is_planar(self) -> bool:
         """Return True for planar (SE(2)) robots, False for spatial (SE(3))."""
         ...
+
+    @property
+    def base_transform(self) -> Array:
+        """Return the homogeneous transform represented by ``base_pose``.
+
+        Planar robots consume ``[theta, x, y]`` and return an SE(2) matrix with
+        shape ``(3, 3)``. Spatial robots consume
+        ``[qw, qx, qy, qz, x, y, z]`` and return an SE(3) matrix with shape
+        ``(4, 4)``. Spatial quaternions are scalar-first Hamilton quaternions.
+        """
+        if self.is_planar:
+            return lie.transform_from_planar_pose_SE2(jnp.asarray(self.base_pose))
+        return lie.transform_from_quaternion_pose_SE3(jnp.asarray(self.base_pose))
 
     @abstractmethod
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
@@ -597,7 +650,7 @@ class SoftRobot(DynamicalSystem):
         """Convert the public pose representation to a homogeneous matrix."""
         if self.is_planar:
             if pose.ndim == 1 and pose.shape[0] == 3:
-                return lie.exp_SE2(pose)
+                return lie.transform_from_planar_pose_SE2(pose)
             if pose.shape == (3, 3):
                 return pose
             raise ValueError(

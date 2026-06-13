@@ -16,6 +16,8 @@ from soromox.systems.params import (
     BaseTendonRoutingParams,
     LinearTendonRoutingParams,
     PassiveTendonParams,
+    validate_planar_base_pose,
+    validate_quaternion_base_pose,
 )
 
 
@@ -51,16 +53,15 @@ class PCSParams(BaseContinuumSoftRobotParams):
 
     ``length``, ``radius``, material parameters, and density use a leading
     segment axis. ``damping_matrix`` is the full flattened strain damping matrix.
-    ``base_pose`` is the SE(3) base pose vector used to initialize the base
-    transform.
+    ``base_pose`` is the scalar-first quaternion SE(3) base pose vector
+    ``[qw, qx, qy, qz, x, y, z]`` used to initialize the base transform. The
+    quaternion is normalized before use and must have nonzero finite norm.
     """
 
     radius: Array
     young_modulus: Array
     shear_modulus: Array
     damping_matrix: Array
-    base_pose: Array
-
     def validate(self) -> None:
         n_segments = _validate_continuum_base(self, strain_dim=6, gravity_dim=3)
         _require_shape("radius", self.radius, (n_segments,))
@@ -69,22 +70,23 @@ class PCSParams(BaseContinuumSoftRobotParams):
         _require_shape(
             "damping_matrix", self.damping_matrix, (6 * n_segments, 6 * n_segments)
         )
-        _require_shape("base_pose", self.base_pose, (6,))
+        validate_quaternion_base_pose("base_pose", self.base_pose, (7,))
 
 
 class PlanarPCSParams(BaseContinuumSoftRobotParams):
     """Dynamic parameters for the planar PCS model.
 
     The leading axis of per-segment fields indexes planar constant-strain
-    segments. ``base_angle`` stores the planar base orientation.
+    segments. ``base_pose`` stores the planar pose ``[theta, x, y]`` with shape
+    ``(3,)``. ``theta`` is a right-handed angle in radians about the
+    out-of-plane z-axis, and ``x``/``y`` are direct translations in the parent
+    frame.
     """
 
     radius: Array
     young_modulus: Array
     shear_modulus: Array
     damping_matrix: Array
-    base_angle: Array
-
     def validate(self) -> None:
         n_segments = _validate_continuum_base(self, strain_dim=3, gravity_dim=2)
         _require_shape("radius", self.radius, (n_segments,))
@@ -93,7 +95,7 @@ class PlanarPCSParams(BaseContinuumSoftRobotParams):
         _require_shape(
             "damping_matrix", self.damping_matrix, (3 * n_segments, 3 * n_segments)
         )
-        _require_shape("base_angle", self.base_angle, ())
+        validate_planar_base_pose("base_pose", self.base_pose)
 
 
 class TendonActuatedPCSParams(BaseSystemParams):

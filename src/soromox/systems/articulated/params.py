@@ -3,7 +3,10 @@ __all__ = ["ArticulatedSoftRobotParams"]
 from jax import Array
 from jax import numpy as jnp
 
-from soromox.systems.params import BaseArticulatedSoftRobotParams
+from soromox.systems.params import (
+    BaseArticulatedSoftRobotParams,
+    validate_quaternion_base_pose,
+)
 
 
 class ArticulatedSoftRobotParams(BaseArticulatedSoftRobotParams):
@@ -11,6 +14,8 @@ class ArticulatedSoftRobotParams(BaseArticulatedSoftRobotParams):
 
     Per-joint screw axes and transforms define the dynamic link geometry used by
     the articulated model. The number of joints is fixed by array shapes.
+    ``base_pose`` uses scalar-first quaternion SE(3) coordinates
+    ``[qw, qx, qy, qz, x, y, z]`` with nonzero finite quaternion norm.
     """
 
     joint_screw: Array
@@ -47,3 +52,4 @@ class ArticulatedSoftRobotParams(BaseArticulatedSoftRobotParams):
                 raise ValueError(
                     f"{name} must have shape {expected_shape}, got {value.shape}."
                 )
+        validate_quaternion_base_pose("base_pose", self.base_pose, (7,))

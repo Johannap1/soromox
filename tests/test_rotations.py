@@ -21,6 +21,7 @@ from numpy.testing import assert_allclose
 from soromox.utils.rotations import (
     RotationRepresentation,
     angle_error,
+    normalize_quaternion,
     quaternion_conjugate,
     quaternion_multiply,
     quaternion_to_rotation_matrix,
@@ -56,6 +57,21 @@ def rotation_matrix_from_axis_angle(axis, angle):
     return jnp.array(R)
 
 
+def test_normalize_quaternion_uses_configurable_eps():
+    q = jnp.array([1e-8, 1e-8, 0.0, 0.0])
+
+    assert_allclose(
+        normalize_quaternion(q, eps=1e-6),
+        jnp.array([1.0, 0.0, 0.0, 0.0]),
+        atol=1e-12,
+    )
+    assert_allclose(
+        normalize_quaternion(q, eps=1e-10),
+        jnp.array([jnp.sqrt(0.5), jnp.sqrt(0.5), 0.0, 0.0]),
+        atol=1e-12,
+    )
+
+
 class TestRotationMatrixToQuaternion:
     """Tests for rotation_matrix_to_quaternion."""
 
@@ -64,8 +80,8 @@ class TestRotationMatrixToQuaternion:
         R = jnp.eye(3)
         q = rotation_matrix_to_quaternion(R)
 
-        # Identity quaternion is [0, 0, 0, 1]
-        expected = jnp.array([0.0, 0.0, 0.0, 1.0])
+        # Identity quaternion is [1, 0, 0, 0]
+        expected = jnp.array([1.0, 0.0, 0.0, 0.0])
         assert_allclose(q, expected, atol=1e-10)
 
     @pytest.mark.parametrize(
@@ -85,11 +101,11 @@ class TestRotationMatrixToQuaternion:
         # Unit quaternion should have norm 1
         assert_allclose(jnp.linalg.norm(q), 1.0, atol=1e-10)
 
-        # w component should be cos(45°) = sqrt(2)/2
-        assert_allclose(q[3], np.cos(angle / 2), atol=1e-10)
+        # scalar component should be cos(45°) = sqrt(2)/2
+        assert_allclose(q[0], np.cos(angle / 2), atol=1e-10)
 
         # Vector part norm should be sin(45°) = sqrt(2)/2
-        assert_allclose(jnp.linalg.norm(q[:3]), np.sin(angle / 2), atol=1e-10)
+        assert_allclose(jnp.linalg.norm(q[1:4]), np.sin(angle / 2), atol=1e-10)
 
     def test_quaternion_is_normalized(self):
         """Test that output quaternion is always normalized."""
@@ -100,12 +116,12 @@ class TestRotationMatrixToQuaternion:
         assert_allclose(jnp.linalg.norm(q), 1.0, atol=1e-10)
 
     def test_positive_w_convention(self):
-        """Test that w component is non-negative (canonical form)."""
+        """Test that scalar component is non-negative (canonical form)."""
         for angle in [0.5, 1.5, 2.5, 3.0]:
             for axis in [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]:
                 R = rotation_matrix_from_axis_angle(axis, angle)
                 q = rotation_matrix_to_quaternion(R)
-                assert q[3] >= 0, f"w should be non-negative, got {q[3]}"
+                assert q[0] >= 0, f"scalar component should be non-negative, got {q[0]}"
 
     def test_custom_eps(self):
         """Test that custom eps parameter works."""
@@ -121,7 +137,7 @@ class TestQuaternionToRotationMatrix:
 
     def test_identity_quaternion(self):
         """Test that identity quaternion gives identity rotation matrix."""
-        q = jnp.array([0.0, 0.0, 0.0, 1.0])
+        q = jnp.array([1.0, 0.0, 0.0, 0.0])
         R = quaternion_to_rotation_matrix(q)
 
         assert_allclose(R, jnp.eye(3), atol=1e-10)
@@ -142,10 +158,10 @@ class TestQuaternionToRotationMatrix:
         # Create quaternion for 90-degree rotation
         q = jnp.array(
             [
+                np.cos(angle / 2),
                 axis_normalized[0] * np.sin(angle / 2),
                 axis_normalized[1] * np.sin(angle / 2),
                 axis_normalized[2] * np.sin(angle / 2),
-                np.cos(angle / 2),
             ]
         )
 
@@ -156,7 +172,7 @@ class TestQuaternionToRotationMatrix:
 
     def test_rotation_matrix_is_orthonormal(self):
         """Test that output rotation matrix is orthonormal."""
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         q = q / jnp.linalg.norm(q)  # Normalize
 
         R = quaternion_to_rotation_matrix(q)
@@ -185,7 +201,7 @@ class TestQuaternionToRotationVector:
 
     def test_identity_quaternion(self):
         """Test that identity quaternion gives zero rotation vector."""
-        q = jnp.array([0.0, 0.0, 0.0, 1.0])
+        q = jnp.array([1.0, 0.0, 0.0, 0.0])
         omega = quaternion_to_rotation_vector(q)
 
         assert_allclose(omega, jnp.zeros(3), atol=1e-10)
@@ -204,10 +220,10 @@ class TestQuaternionToRotationVector:
         axis = np.array(axis) / np.linalg.norm(axis)
         q = jnp.array(
             [
+                np.cos(angle / 2),
                 axis[0] * np.sin(angle / 2),
                 axis[1] * np.sin(angle / 2),
                 axis[2] * np.sin(angle / 2),
-                np.cos(angle / 2),
             ]
         )
         omega = quaternion_to_rotation_vector(q)
@@ -231,7 +247,7 @@ class TestRotationVectorToQuaternion:
         omega = jnp.zeros(3)
         q = rotation_vector_to_quaternion(omega)
 
-        expected = jnp.array([0.0, 0.0, 0.0, 1.0])
+        expected = jnp.array([1.0, 0.0, 0.0, 0.0])
         assert_allclose(q, expected, atol=1e-10)
 
     @pytest.mark.parametrize(
@@ -253,16 +269,16 @@ class TestRotationVectorToQuaternion:
         # Expected quaternion
         q_expected = jnp.array(
             [
+                np.cos(angle / 2),
                 axis[0] * np.sin(angle / 2),
                 axis[1] * np.sin(angle / 2),
                 axis[2] * np.sin(angle / 2),
-                np.cos(angle / 2),
             ]
         )
 
         # Quaternions may differ by sign (q and -q represent same rotation)
-        # Compare with canonical form (positive w)
-        if q_expected[3] < 0:
+        # Compare with canonical form (positive scalar component)
+        if q_expected[0] < 0:
             q_expected = -q_expected
 
         assert_allclose(q, q_expected, atol=1e-6)
@@ -294,8 +310,8 @@ class TestRotationVectorToQuaternion:
             q = rotation_vector_to_quaternion(omega)
 
             # Should be close to identity with small z component
-            assert_allclose(q[3], 1.0, atol=1e-4)
-            assert_allclose(jnp.linalg.norm(q[:3]), angle / 2, atol=angle)
+            assert_allclose(q[0], 1.0, atol=1e-4)
+            assert_allclose(jnp.linalg.norm(q[1:4]), angle / 2, atol=angle)
 
     def test_custom_eps(self):
         """Test that custom eps parameter works."""
@@ -539,7 +555,7 @@ class TestJAXCompatibility:
         def loss_fn(q_vec_angle):
             # Create a quaternion from angle (rotation around z-axis)
             half_angle = q_vec_angle / 2
-            quat = jnp.array([0.0, 0.0, jnp.sin(half_angle), jnp.cos(half_angle)])
+            quat = jnp.array([jnp.cos(half_angle), 0.0, 0.0, jnp.sin(half_angle)])
             omega = quaternion_to_rotation_vector(quat)
             return jnp.sum(omega**2)
 
@@ -574,7 +590,7 @@ class TestJAXCompatibility:
             R = quaternion_to_rotation_matrix(q)
             return jnp.sum(R**2)
 
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         grad_fn = jax.grad(loss_fn)
 
         grad_q = grad_fn(q)
@@ -678,8 +694,8 @@ class TestQuaternionOperations:
 
     def test_quaternion_identity_multiply(self):
         """Test that multiplying by identity gives the same quaternion."""
-        q_identity = jnp.array([0.0, 0.0, 0.0, 1.0])
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q_identity = jnp.array([1.0, 0.0, 0.0, 0.0])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         q = q / jnp.linalg.norm(q)
 
         result = quaternion_multiply(q_identity, q)
@@ -690,35 +706,35 @@ class TestQuaternionOperations:
 
     def test_quaternion_multiply_inverse(self):
         """Test that q * q^{-1} = identity."""
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         q = q / jnp.linalg.norm(q)
 
         q_inv = quaternion_conjugate(q)
         result = quaternion_multiply(q, q_inv)
 
         # Should be identity quaternion
-        identity = jnp.array([0.0, 0.0, 0.0, 1.0])
+        identity = jnp.array([1.0, 0.0, 0.0, 0.0])
         assert_allclose(result, identity, atol=1e-10)
 
     def test_quaternion_conjugate(self):
         """Test quaternion conjugate."""
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         q_conj = quaternion_conjugate(q)
 
-        expected = jnp.array([-0.1, -0.2, -0.3, 0.9])
+        expected = jnp.array([0.9, -0.1, -0.2, -0.3])
         assert_allclose(q_conj, expected, atol=1e-10)
 
     def test_quaternion_multiply_composition(self):
         """Test that quaternion multiplication correctly composes rotations."""
         # Two 90-degree rotations around z-axis should give 180-degree rotation
         angle = np.pi / 2
-        q_90z = jnp.array([0, 0, np.sin(angle / 2), np.cos(angle / 2)])
+        q_90z = jnp.array([np.cos(angle / 2), 0, 0, np.sin(angle / 2)])
 
         q_180z = quaternion_multiply(q_90z, q_90z)
 
         # Should represent 180-degree rotation around z
-        # q = [0, 0, sin(90°), cos(90°)] = [0, 0, 1, 0]
-        expected = jnp.array([0.0, 0.0, 1.0, 0.0])
+        # q = [cos(90°), 0, 0, sin(90°)] = [0, 0, 0, 1]
+        expected = jnp.array([0.0, 0.0, 0.0, 1.0])
         assert_allclose(jnp.abs(q_180z), jnp.abs(expected), atol=1e-10)
 
 
@@ -911,7 +927,7 @@ class TestRotationQuatError:
 
     def test_small_rotation_error(self):
         """Test small rotation error."""
-        q_current = jnp.array([0.0, 0.0, 0.0, 1.0])  # Identity
+        q_current = jnp.array([1.0, 0.0, 0.0, 0.0])  # Identity
         omega_error = jnp.array([0.0, 0.0, 0.1])
         q_desired = rotation_vector_to_quaternion(omega_error)
 
@@ -943,7 +959,7 @@ class TestRotationQuatError:
 
     def test_antipodal_handling(self):
         """Test that antipodal quaternions give zero error."""
-        q = jnp.array([0.1, 0.2, 0.3, 0.9])
+        q = jnp.array([0.9, 0.1, 0.2, 0.3])
         q = q / jnp.linalg.norm(q)
 
         # Antipodal quaternion represents the same rotation

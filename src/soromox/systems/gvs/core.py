@@ -201,12 +201,12 @@ class GVS(SoftRobot):
         **kwargs: Any,
     ) -> None:
         """Initialize a GVS robot from typed params and static segment structure."""
-        super().__init__(**kwargs)
         if not isinstance(params, GVSParams):
             raise TypeError("params must be a GVSParams instance.")
         if not isinstance(structure, GVSStructure):
             raise TypeError("structure must be a GVSStructure instance.")
         params.validate_against_structure(structure)
+        super().__init__(base_pose=params.base_pose, **kwargs)
         self.params = params
         self.structure = structure
         self.scale_rotational_basis_by_length = bool(
@@ -902,8 +902,8 @@ class GVS(SoftRobot):
         if gravity.shape != (3,):
             raise ValueError(f"gravity must have shape (3,), got {gravity.shape}.")
         base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
-        if base_pose.shape != (6,):
-            raise ValueError(f"base_pose must have shape (6,), got {base_pose.shape}.")
+        if base_pose.shape != (7,):
+            raise ValueError(f"base_pose must have shape (7,), got {base_pose.shape}.")
 
         updated_self = eqx.tree_at(
             lambda model: (
@@ -924,6 +924,7 @@ class GVS(SoftRobot):
                 model.xi_ref_Z1,
                 model.xi_ref_Z2,
                 model.joint_stiffness,
+                model.base_pose,
                 model.g0,
                 model.g,
             ),
@@ -936,7 +937,8 @@ class GVS(SoftRobot):
                 xi_ref_Z1,
                 xi_ref_Z2,
                 joint_stiffness,
-                lie.exp_SE3(base_pose),
+                base_pose,
+                lie.transform_from_quaternion_pose_SE3(base_pose),
                 jnp.concatenate([jnp.zeros(3, dtype=gravity.dtype), gravity]),
             ),
         )

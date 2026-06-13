@@ -28,7 +28,7 @@ def planar_hsa_params_from_values(params: dict[str, Array]) -> PlanarHSAParams:
     """Build typed planar HSA params from the generated numeric value set."""
     hysteresis = params.get("hysteresis", {})
     return PlanarHSAParams(
-        base_angle=jnp.asarray(params["th0"]),
+        base_pose=jnp.array([jnp.asarray(params["th0"]), 0.0, 0.0]),
         length=jnp.asarray(params["L"]),
         proximal_cap_length=jnp.asarray(params["lpc"]),
         distal_cap_length=jnp.asarray(params["ldc"]),
