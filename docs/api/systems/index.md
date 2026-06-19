@@ -94,7 +94,7 @@ Continuum soft robots using piecewise constant strain modeling.
 | [Planar PCS](pcs/planar-pcs.md) | 2D | Strain input | General 2D continuum |
 | [Tendon Actuated PCS](pcs/tendon-actuated-pcs.md) | 3D | Tendons | 3D cable-driven |
 | [Tendon Actuated Planar PCS](pcs/tendon-actuated-planar-pcs.md) | 2D | Tendons | 2D cable-driven |
-| [Pneumatic Actuated Planar PCS](pcs/pneumatic-actuated-planar-pcs.md) | 2D | Pneumatic | Soft pneumatic |
+| [Pressure Actuated Planar PCS](pcs/pressure-actuated-planar-pcs.md) | 2D | Pressure | Pressure-driven soft actuators |
 | [I-Support](pcs/isupport.md) | 3D | Pneumatic | I-Support platform |
 
 ### GVS Systems
@@ -124,7 +124,7 @@ started.
 
 | Capability | Motivation |
 |------------|------------|
-| Floating-base functionality across all systems | Support robots whose base pose is part of the system state, rather than assuming a fixed base. |
-| Closed-chain kinematics, particularly for GVS | Enable modeling of closed-loop mechanisms and parallel soft robots. |
 | `PlanarGVS` | Provide a faster planar setting for prototyping controllers and algorithms that use higher-order geometric shape parametrizations before moving to full spatial GVS models. |
+| Floating-base functionality across all systems | Support robots whose base pose is part of the system state, rather than assuming a fixed base. |
 | Kinematic trees, particularly for GVS | Extend beyond serial kinematic chains to support branched soft robot architectures. |
+| Closed-chain kinematics, particularly for GVS | Enable modeling of closed-loop mechanisms and parallel soft robots. |

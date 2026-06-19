@@ -1,4 +1,3 @@
-__all__ = ["GVS"]
 import math
 from typing import Any
 
@@ -7,9 +6,9 @@ import jax
 import jax.numpy as jnp
 from jax import Array, lax, vmap
 
-import soromox.utils.lie_algebra as lie
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
 from soromox.systems.gvs._runtime import SegmentRuntimeData
+from soromox.systems.gvs.construction import params_and_structure_from_segments
 from soromox.systems.gvs.joint_bases import (
     B_Cylindrical,
     B_Fixed,
@@ -21,8 +20,9 @@ from soromox.systems.gvs.joint_bases import (
     B_Spherical,
 )
 from soromox.systems.gvs.operands import GeometricOperand, JointOperand
+from soromox.systems.gvs.params import GVSLinkParams, GVSParams
 from soromox.systems.gvs.primitives import Basis, Joint, Link
-from soromox.systems.gvs.specs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
+from soromox.systems.gvs.specs import GVSSegment
 from soromox.systems.gvs.strain_bases import (
     B_IMQ,
     B_Chebychev,
@@ -37,8 +37,18 @@ from soromox.systems.gvs.strain_bases import (
     dB_LegendrePolynomial,
     dB_Monomial,
 )
+from soromox.systems.gvs.structures import (
+    GVSJointStructure,
+    GVSLinkStructure,
+    GVSStrainBasisStructure,
+    GVSStructure,
+)
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils.geometry import poses
 from soromox.utils.integration import gauss_quadrature
+from soromox.utils.lie_algebra import constant_strain, se3
+
+__all__ = ["GVS"]
 
 
 class GVS(SoftRobot):
@@ -183,39 +193,93 @@ class GVS(SoftRobot):
     width_params: Array  # Rectangular width params (num_segments, 2)
     semi_major_params: Array  # Elliptical semi-major params (num_segments, 2)
     semi_minor_params: Array  # Elliptical semi-minor params (num_segments, 2)
+    params: GVSParams
+    structure: GVSStructure = eqx.field(static=True)
 
     def __init__(
         self,
-        segments: list[GVSSegment] | tuple[GVSSegment, ...],
-        g: list[float] | Array,
-        max_dof: int | None = None,
-        max_num_gauss_points: int | None = None,
-        p0: Array | None = None,
-        scale_rotational_basis_by_length: bool | None = False,
+        params: GVSParams,
+        structure: GVSStructure,
         **kwargs: Any,
     ) -> None:
-        """Initialize a GVS robot from explicit per-segment specifications."""
-        super().__init__(**kwargs)
-        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
+        """Initialize a GVS robot from typed params and static segment structure."""
+        if not isinstance(params, GVSParams):
+            raise TypeError("params must be a GVSParams instance.")
+        if not isinstance(structure, GVSStructure):
+            raise TypeError("structure must be a GVSStructure instance.")
+        params.validate_against_structure(structure)
+        super().__init__(base_pose=params.base_pose, **kwargs)
+        self.params = params
+        self.structure = structure
+        self.scale_rotational_basis_by_length = bool(
+            structure.scale_rotational_basis_by_length
+        )
         assign_gvs_runtime_arrays(
             self,
-            segments=segments,
-            max_dof=max_dof,
-            max_num_gauss_points=max_num_gauss_points,
-            g=g,
-            p0=p0,
+            segments=structure.segments,
+            params=params,
+            max_dof=structure.max_dof,
+            max_num_gauss_points=structure.max_num_gauss_points,
+            g=params.gravity,
+            p0=params.base_pose,
         )
         self.precompute()
+
+    @staticmethod
+    def params_from_segments(
+        segments: list[GVSSegment] | tuple[GVSSegment, ...],
+        *,
+        gravity: Array,
+        base_pose: Array | None = None,
+        max_dof: int | None = None,
+        max_num_gauss_points: int | None = None,
+        scale_rotational_basis_by_length: bool = False,
+    ) -> tuple[GVSParams, GVSStructure]:
+        """Build typed GVS params and static structure from segment specs.
+
+        This is the user-facing bridge between the natural GVS construction
+        language, a sequence of ``GVSSegment`` objects, and the typed PyTree
+        params used for JAX-friendly updates. Per-segment choices such as joint
+        family, basis family, quadrature count, and cross-section family remain
+        static in ``GVSStructure``. Numeric link, joint, and reference-strain
+        values are copied into ``GVSParams``.
+        """
+        return params_and_structure_from_segments(
+            segments,
+            gravity=gravity,
+            base_pose=base_pose,
+            max_dof=max_dof,
+            max_num_gauss_points=max_num_gauss_points,
+            scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        )
+
+    @classmethod
+    def from_segments(
+        cls,
+        segments: list[GVSSegment] | tuple[GVSSegment, ...],
+        *,
+        gravity: Array,
+        base_pose: Array | None = None,
+        max_dof: int | None = None,
+        max_num_gauss_points: int | None = None,
+        scale_rotational_basis_by_length: bool = False,
+        **kwargs: Any,
+    ) -> "GVS":
+        """Construct a GVS model directly from user-facing segment specs."""
+        params, structure = cls.params_from_segments(
+            segments,
+            gravity=gravity,
+            base_pose=base_pose,
+            max_dof=max_dof,
+            max_num_gauss_points=max_num_gauss_points,
+            scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        )
+        return cls(params=params, structure=structure, **kwargs)
 
     @property
     def is_planar(self) -> bool:
         """GVS is a spatial (3D) model."""
         return False
-
-    @property
-    def length(self) -> Array:
-        """Total backbone length."""
-        return jnp.sum(self.segment_lengths)
 
     @property
     def segment_length(self) -> Array:
@@ -250,24 +314,42 @@ class GVS(SoftRobot):
 
     def _build_segment_i(
         self,
-        link_spec: LinkSpec,
-        joint_spec: JointSpec,
-        basis_spec: StrainBasisSpec,
+        link_structure: GVSLinkStructure,
+        joint_structure: GVSJointStructure,
+        basis_structure: GVSStrainBasisStructure,
         num_gauss_points: int,
         max_dof: int,
         max_num_integration_points: int,
+        *,
+        length: Array,
+        young_modulus: Array,
+        poisson_ratio: Array,
+        density: Array,
+        damping_coefficient: Array,
+        radius_initial: Array,
+        radius_final: Array,
+        height_initial: Array,
+        height_final: Array,
+        width_initial: Array,
+        width_final: Array,
+        semi_major_initial: Array,
+        semi_major_final: Array,
+        semi_minor_initial: Array,
+        semi_minor_final: Array,
+        reference_strain: Array,
+        joint_stiffness: Array,
     ) -> SegmentRuntimeData:
         """
         Construct the discretized model data for a single segment.
 
         Args
         ----
-        link_spec : LinkSpec
-            Geometric and material properties for the link.
-        joint_spec : JointSpec
-            Joint type and kinematic properties between this link and the previous.
-        basis_spec : StrainBasisSpec
-            Strain basis definition for variable strain representation in the link.
+        link_structure : GVSLinkStructure
+            Static cross-section family for the link.
+        joint_structure : GVSJointStructure
+            Static joint type and kinematic choices.
+        basis_structure : GVSStrainBasisStructure
+            Static strain basis definition for variable strain representation.
         num_gauss_points : int
             Number of Gauss-Legendre quadrature points for integration.
         max_dof : int
@@ -297,20 +379,16 @@ class GVS(SoftRobot):
         full-robot arrays.
         """
         # === Joint attributes
-        jointtype = joint_spec.type
+        jointtype = joint_structure.type
         jointtype_idx = Joint.JOINTTYPE_MAP[jointtype]
 
         dof_joint = Joint.DICT_JOINT_TYPE_DOF[jointtype]
-        K_joint = (
-            jnp.asarray(joint_spec.stiffness)
-            if jnp.asarray(joint_spec.stiffness).shape == (dof_joint, dof_joint)
-            else jnp.zeros((dof_joint, dof_joint))
-        )
+        K_joint = jnp.asarray(joint_stiffness)
 
         joint_operand = JointOperand(
-            axis_idx=Joint.AXIS_MAP[joint_spec.axis],
-            plane_idx=Joint.PLANE_MAP[joint_spec.plane],
-            pitch=joint_spec.pitch,
+            axis_idx=Joint.AXIS_MAP[joint_structure.axis],
+            plane_idx=Joint.PLANE_MAP[joint_structure.plane],
+            pitch=joint_structure.pitch,
         )
 
         B_joint_full = lax.switch(
@@ -343,25 +421,25 @@ class GVS(SoftRobot):
         )  # shape (6, max_dof)
 
         # === Link attributes
-        cross_section_geometry = link_spec.cross_section_geometry
+        cross_section_geometry = link_structure.cross_section_geometry
         cross_section_geometry_idx = int(cross_section_geometry)
 
-        E = jnp.asarray(link_spec.E)
-        nu = jnp.asarray(link_spec.nu)
-        rho = jnp.asarray(link_spec.rho)
-        eta = jnp.asarray(link_spec.eta)
-        L = jnp.asarray(link_spec.L)
+        E = jnp.asarray(young_modulus)
+        nu = jnp.asarray(poisson_ratio)
+        rho = jnp.asarray(density)
+        eta = jnp.asarray(damping_coefficient)
+        L = jnp.asarray(length)
 
-        r_i = jnp.asarray(link_spec.r_i)
-        r_f = jnp.asarray(link_spec.r_f)
-        h_i = jnp.asarray(link_spec.h_i)
-        h_f = jnp.asarray(link_spec.h_f)
-        w_i = jnp.asarray(link_spec.w_i)
-        w_f = jnp.asarray(link_spec.w_f)
-        a_i = jnp.asarray(link_spec.a_i)
-        a_f = jnp.asarray(link_spec.a_f)
-        b_i = jnp.asarray(link_spec.b_i)
-        b_f = jnp.asarray(link_spec.b_f)
+        r_i = jnp.asarray(radius_initial)
+        r_f = jnp.asarray(radius_final)
+        h_i = jnp.asarray(height_initial)
+        h_f = jnp.asarray(height_final)
+        w_i = jnp.asarray(width_initial)
+        w_f = jnp.asarray(width_final)
+        a_i = jnp.asarray(semi_major_initial)
+        a_f = jnp.asarray(semi_major_final)
+        b_i = jnp.asarray(semi_minor_initial)
+        b_f = jnp.asarray(semi_minor_final)
 
         G = E / (2 * (1 + nu))  # Shear modulus
 
@@ -372,11 +450,11 @@ class GVS(SoftRobot):
         b_params = (b_i, b_f)
 
         # === Basis attributes
-        basetype = basis_spec.type
+        basetype = basis_structure.type
         basistype_idx = Basis.BASISTYPE_MAP[basetype]
-        Bdof = jnp.asarray(basis_spec.active).flatten()
-        Bodr = jnp.asarray(basis_spec.orders).flatten()
-        xi_ref = jnp.asarray(basis_spec.xi_ref).reshape(6, 1)
+        Bdof = jnp.asarray(basis_structure.active).flatten()
+        Bodr = jnp.asarray(basis_structure.orders).flatten()
+        xi_ref = jnp.asarray(reference_strain).reshape(6, 1)
 
         dof_link = lax.switch(
             index=basistype_idx, branches=Basis.DOF_BRANCHES, operand=(Bdof, Bodr)
@@ -623,7 +701,7 @@ class GVS(SoftRobot):
         )
 
     def _link_parameter_arrays(
-        self, links: list[LinkSpec] | tuple[LinkSpec, ...]
+        self, link: GVSLinkParams
     ) -> tuple[
         Array,
         Array,
@@ -638,7 +716,7 @@ class GVS(SoftRobot):
         Array,
     ]:
         """
-        Build the link-derived GVS arrays for an updated set of link attributes.
+        Build link-derived GVS arrays from dynamic link params.
 
         This helper recomputes only quantities that depend on the physical link
         parameters: length, cross-section geometry, local mass matrices, local
@@ -646,13 +724,6 @@ class GVS(SoftRobot):
         joint basis, link strain basis, reference strain, and active coordinate
         layout unchanged. That makes it suitable for parameter updates that keep
         the GVS discretization and generalized coordinates fixed.
-
-        Args:
-            links: Updated link specs, one per segment. Length must be
-                ``self.num_segments``. Each ``LinkSpec`` entry provides the
-                segment length, material constants, damping coefficient, density,
-                cross-section family, and the relevant linearly interpolated
-                cross-section parameters.
 
         Returns:
             A tuple containing:
@@ -680,13 +751,13 @@ class GVS(SoftRobot):
               parameters, shape ``(self.num_segments, 2)``.
 
         Raises:
-            ValueError: If ``links`` does not contain exactly one entry per
-                segment.
+            ValueError: If link params do not contain one entry per segment.
         """
-        if len(links) != self.num_segments:
+        link.validate()
+        if link.length.shape != (self.num_segments,):
             raise ValueError(
-                "links must contain one LinkSpec entry per segment, "
-                f"got {len(links)} for {self.num_segments} segments."
+                "link params must contain one entry per segment, "
+                f"got {link.length.shape[0]} for {self.num_segments} segments."
             )
 
         segment_length_items = []
@@ -700,34 +771,36 @@ class GVS(SoftRobot):
         semi_major_param_items = []
         semi_minor_param_items = []
 
-        for i_segment, link_spec in enumerate(links):
-            cross_section_geometry_idx = int(link_spec.cross_section_geometry)
+        for i_segment, segment_structure in enumerate(self.structure.segments):
+            cross_section_geometry_idx = int(
+                segment_structure.link.cross_section_geometry
+            )
 
-            E = jnp.asarray(link_spec.E, dtype=jnp.float64)
-            nu = jnp.asarray(link_spec.nu, dtype=jnp.float64)
-            rho = jnp.asarray(link_spec.rho, dtype=jnp.float64)
-            eta = jnp.asarray(link_spec.eta, dtype=jnp.float64)
-            L = jnp.asarray(link_spec.L, dtype=jnp.float64)
+            E = jnp.asarray(link.young_modulus[i_segment], dtype=jnp.float64)
+            nu = jnp.asarray(link.poisson_ratio[i_segment], dtype=jnp.float64)
+            rho = jnp.asarray(link.density[i_segment], dtype=jnp.float64)
+            eta = jnp.asarray(link.damping_coefficient[i_segment], dtype=jnp.float64)
+            L = jnp.asarray(link.length[i_segment], dtype=jnp.float64)
 
             r_params = (
-                jnp.asarray(link_spec.r_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.r_f, dtype=jnp.float64),
+                jnp.asarray(link.radius_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.radius_final[i_segment], dtype=jnp.float64),
             )
             h_params = (
-                jnp.asarray(link_spec.h_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.h_f, dtype=jnp.float64),
+                jnp.asarray(link.height_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.height_final[i_segment], dtype=jnp.float64),
             )
             w_params = (
-                jnp.asarray(link_spec.w_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.w_f, dtype=jnp.float64),
+                jnp.asarray(link.width_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.width_final[i_segment], dtype=jnp.float64),
             )
             a_params = (
-                jnp.asarray(link_spec.a_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.a_f, dtype=jnp.float64),
+                jnp.asarray(link.semi_major_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.semi_major_final[i_segment], dtype=jnp.float64),
             )
             b_params = (
-                jnp.asarray(link_spec.b_i, dtype=jnp.float64),
-                jnp.asarray(link_spec.b_f, dtype=jnp.float64),
+                jnp.asarray(link.semi_minor_initial[i_segment], dtype=jnp.float64),
+                jnp.asarray(link.semi_minor_final[i_segment], dtype=jnp.float64),
             )
 
             geometric_operand = GeometricOperand(
@@ -784,116 +857,123 @@ class GVS(SoftRobot):
             jnp.stack(semi_minor_param_items),
         )
 
-    def update_params(self, params: dict[str, Any]) -> "GVS":
-        """
-        Return a copy of the GVS model with selected parameters updated.
-
-        The supported updates are intentionally limited to parameters that do
-        not change the generalized-coordinate layout:
-
-        - ``"links"`` refreshes segment lengths, cross-section geometry,
-          local mass/stiffness/damping arrays, and cached full stiffness and
-          damping matrices.
-        - ``"g"`` refreshes the inertial gravity vector.
-        - ``"p0"`` refreshes the base pose from a 6D SE(3) exponential
-          coordinate.
-
-        Changing joint families, basis families, basis orders, or quadrature
-        orders can change the active coordinate layout and should be done by
-        constructing a new ``GVS`` instance.
-
-        Args:
-            params: Dictionary of parameter updates. Supported keys are
-                ``"links"``, ``"g"``, and ``"p0"``.
-                ``"links"`` must have length ``self.num_segments``.
-                ``"g"`` must have shape ``(3,)``.
-                ``"p0"`` must have shape ``(6,)``.
-
-        Returns:
-            updated_self: A new ``GVS`` instance with the requested parameters
-                updated. The original instance is left unchanged.
-
-        Raises:
-            KeyError: If an unsupported update key is provided.
-            ValueError: If an update has an incompatible shape.
-        """
-        supported_keys = {"links", "g", "p0"}
-        unknown_keys = set(params) - supported_keys
-        if unknown_keys:
-            unknown = ", ".join(sorted(unknown_keys))
-            raise KeyError(f"Unsupported GVS update_params keys: {unknown}")
-
-        updated_self = self
-
-        if "links" in params:
-            link_arrays = self._link_parameter_arrays(params["links"])
-            updated_self = eqx.tree_at(
-                lambda model: (
-                    model.segment_lengths,
-                    model.segment_end_positions,
-                    model.mass_matrices,
-                    model.stiffness_matrices,
-                    model.damping_matrices,
-                    model.cross_section_geometry_index,
-                    model.radius_params,
-                    model.height_params,
-                    model.width_params,
-                    model.semi_major_params,
-                    model.semi_minor_params,
-                ),
-                updated_self,
-                link_arrays,
+    def _reference_strain_runtime_arrays(
+        self, reference_strain: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """Build padded GVS reference-strain arrays without changing layout."""
+        reference_strain = jnp.asarray(reference_strain, dtype=jnp.float64)
+        if reference_strain.shape != (self.num_segments, 6):
+            raise ValueError(
+                "reference_strain must have shape "
+                f"({self.num_segments}, 6), got {reference_strain.shape}."
             )
-            K_full = updated_self._stiffness_full_matrix()
-            D_full = updated_self._damping_full_matrix()
-            updated_self = eqx.tree_at(
-                lambda model: (
-                    model.inner_integration_weights,
-                    model.inner_mass_matrices,
-                    model.K_full,
-                    model.K,
-                    model.D_full,
-                    model.D_active,
-                ),
-                updated_self,
-                (
-                    updated_self.integration_weights[
-                        :, 1 : updated_self.max_num_integration_points - 1
-                    ]
-                    * updated_self.segment_lengths[:, None],
-                    updated_self.mass_matrices[
-                        :, 1 : updated_self.max_num_integration_points - 1
-                    ],
-                    K_full,
-                    updated_self.active_dof_map.T
-                    @ K_full
-                    @ updated_self.active_dof_map,
-                    D_full,
-                    updated_self.active_dof_map.T
-                    @ D_full
-                    @ updated_self.active_dof_map,
-                ),
+        xs_mask = (
+            jnp.arange(self.max_num_integration_points)[None, :]
+            < self.num_integration_points[:, None]
+        )
+        z_mask = jnp.arange(self.max_num_integration_points - 1)[None, :] < (
+            self.num_integration_points[:, None] - 1
+        )
+        xi_ref_joint = jnp.zeros_like(self.xi_ref_joint)
+        xi_ref_Xs = reference_strain[:, None, :] * xs_mask[:, :, None]
+        xi_ref_Z1 = reference_strain[:, None, :] * z_mask[:, :, None]
+        xi_ref_Z2 = reference_strain[:, None, :] * z_mask[:, :, None]
+        return xi_ref_joint, xi_ref_Xs, xi_ref_Z1, xi_ref_Z2
+
+    def with_params(self, params: GVSParams) -> "GVS":
+        """Return an updated copy with a full typed parameter object."""
+        if not isinstance(params, GVSParams):
+            raise TypeError("params must be a GVSParams instance.")
+        params.validate_against_structure(self.structure)
+        link_arrays = self._link_parameter_arrays(params.link)
+        (
+            xi_ref_joint,
+            xi_ref_Xs,
+            xi_ref_Z1,
+            xi_ref_Z2,
+        ) = self._reference_strain_runtime_arrays(params.reference_strain)
+
+        joint_stiffness = jnp.asarray(params.joint_stiffness, dtype=jnp.float64)
+        if joint_stiffness.shape != self.joint_stiffness.shape:
+            raise ValueError(
+                "joint_stiffness shape changes the padded GVS layout; "
+                f"expected {self.joint_stiffness.shape}, got {joint_stiffness.shape}."
             )
 
-        if "g" in params:
-            g_vec = jnp.asarray(params["g"], dtype=jnp.float64)
-            if g_vec.shape != (3,):
-                raise ValueError(f"g must have shape (3,), got {g_vec.shape}")
-            updated_self = eqx.tree_at(
-                lambda model: model.g,
-                updated_self,
-                jnp.concatenate([jnp.zeros(3, dtype=g_vec.dtype), g_vec]),
-            )
+        gravity = jnp.asarray(params.gravity, dtype=jnp.float64)
+        if gravity.shape != (3,):
+            raise ValueError(f"gravity must have shape (3,), got {gravity.shape}.")
+        base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
+        if base_pose.shape != (7,):
+            raise ValueError(f"base_pose must have shape (7,), got {base_pose.shape}.")
 
-        if "p0" in params:
-            p0 = jnp.asarray(params["p0"], dtype=jnp.float64)
-            if p0.shape != (6,):
-                raise ValueError(f"p0 must have shape (6,), got {p0.shape}")
-            updated_self = eqx.tree_at(
-                lambda model: model.g0, updated_self, lie.exp_SE3(p0)
-            )
+        updated_self = eqx.tree_at(
+            lambda model: (
+                model.params,
+                model.segment_lengths,
+                model.segment_end_positions,
+                model.mass_matrices,
+                model.stiffness_matrices,
+                model.damping_matrices,
+                model.cross_section_geometry_index,
+                model.radius_params,
+                model.height_params,
+                model.width_params,
+                model.semi_major_params,
+                model.semi_minor_params,
+                model.xi_ref_joint,
+                model.xi_ref_Xs,
+                model.xi_ref_Z1,
+                model.xi_ref_Z2,
+                model.joint_stiffness,
+                model.base_pose,
+                model.g0,
+                model.g,
+            ),
+            self,
+            (
+                params,
+                *link_arrays,
+                xi_ref_joint,
+                xi_ref_Xs,
+                xi_ref_Z1,
+                xi_ref_Z2,
+                joint_stiffness,
+                base_pose,
+                poses.quaternion_pose_to_transform(base_pose),
+                jnp.concatenate([jnp.zeros(3, dtype=gravity.dtype), gravity]),
+            ),
+        )
+        K_full = updated_self._stiffness_full_matrix()
+        D_full = updated_self._damping_full_matrix()
+        return eqx.tree_at(
+            lambda model: (
+                model.inner_integration_weights,
+                model.inner_mass_matrices,
+                model.K_full,
+                model.K,
+                model.D_full,
+                model.D_active,
+            ),
+            updated_self,
+            (
+                updated_self.integration_weights[
+                    :, 1 : updated_self.max_num_integration_points - 1
+                ]
+                * updated_self.segment_lengths[:, None],
+                updated_self.mass_matrices[
+                    :, 1 : updated_self.max_num_integration_points - 1
+                ],
+                K_full,
+                updated_self.active_dof_map.T @ K_full @ updated_self.active_dof_map,
+                D_full,
+                updated_self.active_dof_map.T @ D_full @ updated_self.active_dof_map,
+            ),
+        )
 
-        return updated_self
+    def update_params(self, **updates: Array) -> "GVS":
+        """Return an updated copy with selected typed parameter fields replaced."""
+        return self.with_params(self.params.replace(**updates))
 
     # Gathering functions =========================================================
     @eqx.filter_jit
@@ -1103,8 +1183,8 @@ class GVS(SoftRobot):
             ``(6, self.max_dof)``.
             ``comm_coeff`` is the scalar coefficient ``c`` above, shape ``()``.
         """
-        ad_xi_Z1 = lie.adjoint_se3(xi_Z1)
-        ad_xi_Z2 = lie.adjoint_se3(xi_Z2)
+        ad_xi_Z1 = se3.small_adjoint(xi_Z1)
+        ad_xi_Z2 = se3.small_adjoint(xi_Z2)
         comm_coeff = jnp.sqrt(3) * (length**2) * H**2 / 12
 
         Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + (comm_coeff * (ad_xi_Z1 @ xi_Z2))
@@ -1168,9 +1248,11 @@ class GVS(SoftRobot):
         Magnus, B_Magnus, _ = self._magnus_and_basis_from_strains(
             length, H, xi_Z1, xi_Z2, B_Z1, B_Z2
         )
-        g_step = lie.exp_gn_SE3(Magnus, self.global_eps)
-        T_step = lie.Tangent_gi_se3(Magnus, jnp.array(1.0), eps=self.tangent_eps)
-        Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
+        g_step = se3.exp(Magnus, self.global_eps)
+        T_step = constant_strain.tangent_se3(
+            Magnus, jnp.array(1.0), eps=self.tangent_eps
+        )
+        Ad_step_inv = se3.adjoint_inverse(g_step)
         return g_step, T_step, Ad_step_inv, B_Magnus
 
     def _magnus_jacobian_time_derivative_step_terms(
@@ -1242,16 +1324,18 @@ class GVS(SoftRobot):
             length, H, xi_Z1, xi_Z2, B_Z1, B_Z2
         )
         B_Magnus_dot = comm_coeff * (
-            lie.adjoint_se3(xid_Z1) @ B_Z2 - lie.adjoint_se3(xid_Z2) @ B_Z1
+            se3.small_adjoint(xid_Z1) @ B_Z2 - se3.small_adjoint(xid_Z2) @ B_Z1
         )
         Magnusd = B_Magnus @ qd_i
 
-        g_step = lie.exp_gn_SE3(Magnus, self.global_eps)
-        T_step = lie.Tangent_gi_se3(Magnus, jnp.array(1.0), eps=self.tangent_eps)
-        Td_step = lie.Tangent_derivative_gi_se3(
+        g_step = se3.exp(Magnus, self.global_eps)
+        T_step = constant_strain.tangent_se3(
+            Magnus, jnp.array(1.0), eps=self.tangent_eps
+        )
+        Td_step = constant_strain.tangent_derivative_se3(
             Magnus, Magnusd, jnp.array(1.0), eps=self.tangent_eps
         )
-        Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
+        Ad_step_inv = se3.adjoint_inverse(g_step)
         return g_step, T_step, Td_step, Ad_step_inv, B_Magnus, B_Magnus_dot
 
     def _magnus_arc_length_derivative_step_terms(
@@ -1281,10 +1365,10 @@ class GVS(SoftRobot):
         xi_Z1_H = dB_Z1_dH @ q_i
         xi_Z2_H = dB_Z2_dH @ q_i
 
-        ad_xi_Z1 = lie.adjoint_se3(xi_Z1)
-        ad_xi_Z2 = lie.adjoint_se3(xi_Z2)
-        ad_xi_Z1_H = lie.adjoint_se3(xi_Z1_H)
-        ad_xi_Z2_H = lie.adjoint_se3(xi_Z2_H)
+        ad_xi_Z1 = se3.small_adjoint(xi_Z1)
+        ad_xi_Z2 = se3.small_adjoint(xi_Z2)
+        ad_xi_Z1_H = se3.small_adjoint(xi_Z1_H)
+        ad_xi_Z2_H = se3.small_adjoint(xi_Z2_H)
 
         comm_coeff = jnp.sqrt(3) * (length**2) * H**2 / 12
         comm_coeff_H = jnp.sqrt(3) * (length**2) * H / 6
@@ -1313,12 +1397,14 @@ class GVS(SoftRobot):
             )
         )
 
-        g_step = lie.exp_gn_SE3(Magnus, self.global_eps)
-        T_step = lie.Tangent_gi_se3(Magnus, jnp.array(1.0), eps=self.tangent_eps)
-        T_step_H = lie.Tangent_derivative_gi_se3(
+        g_step = se3.exp(Magnus, self.global_eps)
+        T_step = constant_strain.tangent_se3(
+            Magnus, jnp.array(1.0), eps=self.tangent_eps
+        )
+        T_step_H = constant_strain.tangent_derivative_se3(
             Magnus, Magnus_H, jnp.array(1.0), eps=self.tangent_eps
         )
-        Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
+        Ad_step_inv = se3.adjoint_inverse(g_step)
         eta_step_H = Ad_step_inv @ (T_step @ Magnus_H)
 
         return (
@@ -1352,14 +1438,16 @@ class GVS(SoftRobot):
         Returns:
             Tuple ``(g_joint, Ad_joint_inv, T_joint_B)``:
             ``g_joint`` is the joint SE(3) transform, shape ``(4, 4)``;
-            ``Ad_joint_inv`` is ``Adjoint_g_inv_SE3(g_joint)``, shape
+            ``Ad_joint_inv`` is ``se3.adjoint_inverse(g_joint)``, shape
             ``(6, 6)``; ``T_joint_B`` is the tangent-map/basis product
             ``T(g_joint) @ B_joint``, shape ``(6, self.max_dof)``.
         """
         xi_joint = B_joint @ q_joint + xi_ref_joint
-        g_joint = lie.exp_gn_SE3(xi_joint, self.global_eps)
-        T_joint = lie.Tangent_gi_se3(xi_joint, jnp.array(1.0), eps=self.tangent_eps)
-        return g_joint, lie.Adjoint_g_inv_SE3(g_joint), T_joint @ B_joint
+        g_joint = se3.exp(xi_joint, self.global_eps)
+        T_joint = constant_strain.tangent_se3(
+            xi_joint, jnp.array(1.0), eps=self.tangent_eps
+        )
+        return g_joint, se3.adjoint_inverse(g_joint), T_joint @ B_joint
 
     def _joint_jacobian_time_derivative_step_terms(
         self, B_joint: Array, xi_ref_joint: Array, q_joint: Array, qd_joint: Array
@@ -1394,16 +1482,18 @@ class GVS(SoftRobot):
         """
         xi_joint = B_joint @ q_joint + xi_ref_joint
         xid_joint = B_joint @ qd_joint
-        g_joint = lie.exp_gn_SE3(xi_joint, self.global_eps)
-        T_joint = lie.Tangent_gi_se3(xi_joint, jnp.array(1.0), eps=self.tangent_eps)
-        Td_joint = lie.Tangent_derivative_gi_se3(
+        g_joint = se3.exp(xi_joint, self.global_eps)
+        T_joint = constant_strain.tangent_se3(
+            xi_joint, jnp.array(1.0), eps=self.tangent_eps
+        )
+        Td_joint = constant_strain.tangent_derivative_se3(
             xi_joint, xid_joint, jnp.array(1.0), eps=self.tangent_eps
         )
         T_joint_B = T_joint @ B_joint
         joint_velocity = T_joint_B @ qd_joint
-        Ad_joint_inv = lie.Adjoint_g_inv_SE3(g_joint)
+        Ad_joint_inv = se3.adjoint_inverse(g_joint)
         eta_joint_step = Ad_joint_inv @ joint_velocity
-        Ad_joint_inv_dot = -lie.adjoint_se3(eta_joint_step) @ Ad_joint_inv
+        Ad_joint_inv_dot = -se3.small_adjoint(eta_joint_step) @ Ad_joint_inv
         return (
             g_joint,
             Ad_joint_inv,
@@ -1467,7 +1557,7 @@ class GVS(SoftRobot):
                 [jnp.zeros((1, 3), dtype=R.dtype), jnp.ones((1, 1), dtype=R.dtype)],
             ]
         )
-        return lie.Adjoint_g_SE3(g_rot)
+        return se3.adjoint(g_rot)
 
     def _body_jacobian_to_inertial(self, g: Array, J_body: Array) -> Array:
         """
@@ -1509,7 +1599,7 @@ class GVS(SoftRobot):
         Ad_g = self._rotation_adjoint_from_pose(g)
         eta_body = J_body @ qd
         eta_rot = jnp.concatenate([eta_body[:3], jnp.zeros(3, dtype=eta_body.dtype)])
-        Ad_g_dot = Ad_g @ lie.adjoint_se3(eta_rot)
+        Ad_g_dot = Ad_g @ se3.small_adjoint(eta_rot)
         return Ad_g @ J_body, Ad_g @ Jd_body + Ad_g_dot @ J_body
 
     def _body_jacobian_arc_length_derivative_to_inertial(
@@ -1531,7 +1621,7 @@ class GVS(SoftRobot):
         eta_rot_s = jnp.concatenate(
             [omega_body_s, jnp.zeros(3, dtype=omega_body_s.dtype)]
         )
-        Ad_g_s = Ad_g @ lie.adjoint_se3(eta_rot_s)
+        Ad_g_s = Ad_g @ se3.small_adjoint(eta_rot_s)
         return Ad_g @ J_body, Ad_g_s @ J_body + Ad_g @ Js_body
 
     def _inertia_integrand(self, weight: Array, J: Array, M: Array) -> Array:
@@ -1573,7 +1663,7 @@ class GVS(SoftRobot):
             ``(self.num_dofs, self.num_dofs)``.
         """
         eta = J @ qd
-        return weight * (J.T @ (M @ Jd + lie.coadjoint_se3(eta) @ M @ J))
+        return weight * (J.T @ (M @ Jd + se3.coadjoint(eta) @ M @ J))
 
     def _coriolis_force_integrand(
         self, weight: Array, J: Array, Jd: Array, M: Array, qd: Array
@@ -1601,7 +1691,7 @@ class GVS(SoftRobot):
             ``(self.num_dofs,)``.
         """
         eta = J @ qd
-        return weight * (J.T @ (M @ (Jd @ qd) + lie.coadjoint_se3(eta) @ M @ eta))
+        return weight * (J.T @ (M @ (Jd @ qd) + se3.coadjoint(eta) @ M @ eta))
 
     def _gravity_integrand(self, weight: Array, g: Array, J: Array, M: Array) -> Array:
         """
@@ -1619,7 +1709,7 @@ class GVS(SoftRobot):
             G_ij: Generalized gravity contribution, shape
             ``(self.num_dofs,)``.
         """
-        return -weight * J.T @ M @ lie.Adjoint_g_inv_SE3(g) @ self.g
+        return -weight * J.T @ M @ se3.adjoint_inverse(g) @ self.g
 
     # =========================================================================
     @eqx.filter_jit
@@ -1656,7 +1746,7 @@ class GVS(SoftRobot):
 
             xi_joint_i = B_joint_i @ q_joint_i + xi_ref_joint_i  # shape (6,)
 
-            g_joint_i = lie.exp_gn_SE3(xi_joint_i, self.global_eps)  # shape (4, 4)
+            g_joint_i = se3.exp(xi_joint_i, self.global_eps)  # shape (4, 4)
 
             g_j = g_tip @ g_joint_i  # Start with the last transformation matrix
 
@@ -1707,12 +1797,12 @@ class GVS(SoftRobot):
                 xi_Z2_j = B_Z2_j @ q_i + xi_ref_Z2_j
 
                 # Magnus expansion
-                ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
+                ad_xi_Z1_j = se3.small_adjoint(xi_Z1_j)
                 Magnus_j = length_i * (H / 2) * (xi_Z1_j + xi_Z2_j) + (
                     jnp.sqrt(3) * (length_i**2) * H**2 / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
+                g_step = se3.exp(Magnus_j, self.global_eps)
 
                 g_j = g_j_prev @ g_step
 
@@ -1817,9 +1907,7 @@ class GVS(SoftRobot):
             xi_ref_joint = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
 
-            g_joint_i = lie.exp_gn_SE3(
-                B_joint @ q_joint_i + xi_ref_joint, self.global_eps
-            )
+            g_joint_i = se3.exp(B_joint @ q_joint_i + xi_ref_joint, self.global_eps)
 
             g_j = g_tip @ g_joint_i
 
@@ -1857,11 +1945,11 @@ class GVS(SoftRobot):
                 xi_Z2_j = (B_Z2_j @ q_i) + xi_ref_Z2_i[j]
 
                 # Magnus expansion
-                ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
+                ad_xi_Z1_j = se3.small_adjoint(xi_Z1_j)
                 Magnus_j = (H / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (
                     jnp.sqrt(3) * (length_i**2) * H**2 / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
-                g_step = lie.exp_gn_SE3(Magnus_j, self.global_eps)
+                g_step = se3.exp(Magnus_j, self.global_eps)
 
                 return g_prev @ g_step, None
 
@@ -1930,12 +2018,12 @@ class GVS(SoftRobot):
                 xi_Z2_j = (Bp_Z2 @ q_i) + self.xi_ref_Z2[i_segment][j]
 
                 # Magnus expansion
-                ad_xi_Z1_j = lie.adjoint_se3(xi_Z1_j)
+                ad_xi_Z1_j = se3.small_adjoint(xi_Z1_j)
                 Magnus_p = (Hp / 2) * length_i * (xi_Z1_j + xi_Z2_j) + (
                     jnp.sqrt(3) * (length_i**2) * Hp**2 / 12
                 ) * (ad_xi_Z1_j @ xi_Z2_j)
 
-                g_p = lie.exp_gn_SE3(Magnus_p, self.global_eps)
+                g_p = se3.exp(Magnus_p, self.global_eps)
 
                 g_out = g_in @ g_p
                 return g_out
@@ -1996,9 +2084,7 @@ class GVS(SoftRobot):
             B_joint = self.B_joint[i_segment]
             xi_ref_joint = self.xi_ref_joint[i_segment]
             q_joint_i = q_gathered[i_segment, 0]
-            g_joint_i = lie.exp_gn_SE3(
-                B_joint @ q_joint_i + xi_ref_joint, self.global_eps
-            )
+            g_joint_i = se3.exp(B_joint @ q_joint_i + xi_ref_joint, self.global_eps)
             g_j = g_tip @ g_joint_i
 
             Xs_i = self.integration_points[i_segment]
@@ -2076,7 +2162,7 @@ class GVS(SoftRobot):
 
                 g_out = g_in @ g_step
                 eta_step_s = eta_step_H / length_i
-                return g_out, g_out @ lie.hat_SE3(eta_step_s)
+                return g_out, g_out @ se3.hat(eta_step_s)
 
             return lax.cond(
                 i_segment < segment_idx,
@@ -2174,11 +2260,11 @@ class GVS(SoftRobot):
                 Bp = self._eval_B_segment(i, Xp)
                 xi_Z1 = Bp[0] @ q_link + xi_ref_Z1_i[cell_idx]
                 xi_Z2 = Bp[1] @ q_link + xi_ref_Z2_i[cell_idx]
-                ad_xi_Z1 = lie.adjoint_se3(xi_Z1)
+                ad_xi_Z1 = se3.small_adjoint(xi_Z1)
                 Magnus = (ds / 2.0) * (xi_Z1 + xi_Z2) + (
                     jnp.sqrt(3.0) * ds * ds / 12.0
                 ) * (ad_xi_Z1 @ xi_Z2)
-                return lie.exp_gn_SE3(Magnus, self.global_eps)
+                return se3.exp(Magnus, self.global_eps)
 
             g_partial = lax.cond(
                 jnp.logical_or(
@@ -2736,7 +2822,7 @@ class GVS(SoftRobot):
                     .at[i_segment, 1]
                     .set(T_step_H @ B_Magnus_p + T_step @ B_Magnus_H_p)
                 )
-                Ad_step_inv_H = -lie.adjoint_se3(eta_step_H) @ Ad_step_inv
+                Ad_step_inv_H = -se3.small_adjoint(eta_step_H) @ Ad_step_inv
 
                 g_out = g_in @ g_step
                 J_out = jnp.einsum("ij,nmjk->nmik", Ad_step_inv, J_in + T_block)
@@ -2744,7 +2830,7 @@ class GVS(SoftRobot):
                     "ij,nmjk->nmik", Ad_step_inv_H, J_in + T_block
                 ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv, T_block_H)
                 Js = J_H / length_i
-                gs = g_out @ lie.hat_SE3(eta_step_H / length_i)
+                gs = g_out @ se3.hat(eta_step_H / length_i)
                 return g_out, J_out, Js, gs
 
             return lax.cond(
@@ -2976,7 +3062,7 @@ class GVS(SoftRobot):
                 )
 
                 eta_step = Ad_step_inv @ (T_step @ B_Magnus @ qd_link)
-                Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
+                Ad_step_inv_dot = -se3.small_adjoint(eta_step) @ Ad_step_inv
 
                 J_blocks = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, J_blocks_base + T_block
@@ -3114,7 +3200,7 @@ class GVS(SoftRobot):
         Args:
             q (Array): generalized coordinates of shape
                 ``(num_active_strains,)``.
-            s_ps (Array): arclength locations in ``[0, self.length]``, shape
+            s_ps (Array): arclength locations in ``[0, self.segment_lengths]``, shape
                 ``(N,)``.
 
         Returns:
@@ -3239,7 +3325,7 @@ class GVS(SoftRobot):
 
                 eta_step = Ad_step_inv @ (T_step @ B_Magnus_j @ qd_i)
                 eta_next = Ad_step_inv @ (eta_prev + T_step @ B_Magnus_j @ qd_i)
-                Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
+                Ad_step_inv_dot = -se3.small_adjoint(eta_step) @ Ad_step_inv
 
                 g_next = g_prev @ g_step
                 J_next = jnp.einsum("ij,nmjk->nmik", Ad_step_inv, J_prev + T_block)
@@ -3425,7 +3511,7 @@ class GVS(SoftRobot):
                 eta_next = Ad_step_inv @ (eta_prev + T_step @ B_Magnus_j @ qd_i)
 
                 # compute the bodyframe Jacobian time derivative
-                Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
+                Ad_step_inv_dot = -se3.small_adjoint(eta_step) @ Ad_step_inv
                 Jd_next = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, (Jd_prev + Td_block)
                 ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv_dot, J_prev + T_block)
@@ -3528,7 +3614,7 @@ class GVS(SoftRobot):
                 eta_out = Ad_step_inv @ (eta_in + T_step @ B_Magnus_p @ qd_i)
 
                 # compute the bodyframe Jacobian time derivative
-                Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
+                Ad_step_inv_dot = -se3.small_adjoint(eta_step) @ Ad_step_inv
                 Jd_out = jnp.einsum(
                     "ij,nmjk->nmik", Ad_step_inv, (Jd_in + Td_block)
                 ) + jnp.einsum("ij,nmjk->nmik", Ad_step_inv_dot, J_in + T_block)
@@ -3671,7 +3757,7 @@ class GVS(SoftRobot):
                 ``(num_active_strains,)``.
             qd (Array): generalized velocities of shape
                 ``(num_active_strains,)``.
-            s_ps (Array): arclength locations in ``[0, self.length]``, shape
+            s_ps (Array): arclength locations in ``[0, self.segment_lengths]``, shape
                 ``(N,)``.
 
         Returns:
@@ -3954,7 +4040,7 @@ class GVS(SoftRobot):
                 link_velocity = T_step @ B_Magnus_j @ qd_i
                 eta_step = Ad_step_inv @ link_velocity
                 eta_next = Ad_step_inv @ (eta_prev + link_velocity)
-                Ad_step_inv_dot = -lie.adjoint_se3(eta_step) @ Ad_step_inv
+                Ad_step_inv_dot = -se3.small_adjoint(eta_step) @ Ad_step_inv
 
                 T_active = T_step @ B_Magnus_j @ selector_link_i
                 Td_active = (
@@ -4250,7 +4336,7 @@ class GVS(SoftRobot):
                 """
                 Ws_ij = Ws_i[j]  # ()
                 g_ij = g_i[j]  # (4, 4)
-                Ad_g_inv_ij = lie.Adjoint_g_inv_SE3(g_ij)  # (6, 6)
+                Ad_g_inv_ij = se3.adjoint_inverse(g_ij)  # (6, 6)
                 J_ij = J_i[j]  # (6, num_segments * 2 * max_dof)
                 M_ij = Ms_i[j]  # (6, 6)
 

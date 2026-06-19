@@ -3,13 +3,13 @@ from jax import Array
 from jax import numpy as jnp
 from numpy.testing import assert_allclose
 
-import soromox.utils.lie_algebra as lie
 from soromox.autodiff import (
     custom_jvp_enabled,
     custom_jvp_mode,
     set_custom_jvp_enabled,
 )
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils.geometry import poses
 
 jax.config.update("jax_enable_x64", True)
 
@@ -26,10 +26,6 @@ class _PlanarDefaultRobot(SoftRobot):
         self.num_integration_points = 3
         self.integration_points = jnp.array([0.0, 0.5, 1.0], dtype=jnp.float64)
         self.integration_weights = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float64)
-
-    @property
-    def length(self) -> Array:
-        return jnp.sum(self.L)
 
     @property
     def segment_length(self) -> Array:
@@ -153,6 +149,12 @@ def test_custom_jvp_global_toggle_context_manager_restores_state() -> None:
     set_custom_jvp_enabled(True)
 
 
+def test_default_length_sums_segment_lengths() -> None:
+    robot = _PlanarDefaultRobot()
+
+    assert_allclose(robot.length, jnp.sum(robot.segment_length), rtol=1e-12, atol=1e-12)
+
+
 def test_custom_jvp_toggle_controls_public_forward_kinematics_arc_length_jvp() -> None:
     robot = _ToggleSentinelDefaultRobot()
     q = jnp.array([0.2, -0.3], dtype=jnp.float64)
@@ -246,9 +248,9 @@ def test_default_integration_kinematics_uses_bodyframe_samples() -> None:
 
     s_ps = jnp.array([[0.5], [2.0]], dtype=jnp.float64)
     s_flat = s_ps.reshape(-1)
-    g_expected = jax.vmap(lambda s: lie.exp_SE2(robot.forward_kinematics(q, s)))(
-        s_flat
-    ).reshape(2, 1, 3, 3)
+    g_expected = jax.vmap(
+        lambda s: poses.planar_pose_to_transform(robot.forward_kinematics(q, s))
+    )(s_flat).reshape(2, 1, 3, 3)
     J_expected, Jd_expected = robot.jacobian_and_time_derivative_bodyframe_batched(
         q, qd, s_flat
     )
@@ -300,6 +302,21 @@ def test_default_gravity_force_and_forward_dynamics() -> None:
     qdd = jnp.linalg.solve(robot.inertia_matrix(q), rhs)
 
     assert_allclose(robot.forward_dynamics(0.0, y, (u, tau_ext)), jnp.r_[qd, qdd])
+
+
+def test_default_potential_force_sums_conservative_forces() -> None:
+    robot = _PlanarDefaultRobot()
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+
+    expected = robot.gravitational_force(q) + robot.elastic_force(q)
+
+    assert_allclose(robot.potential_force(q), expected, rtol=1e-12, atol=1e-12)
+    assert_allclose(
+        robot._potential_energy_gradient(q),
+        robot.potential_force(q),
+        rtol=1e-12,
+        atol=1e-12,
+    )
 
 
 def test_default_coriolis_matrix_is_energy_consistent() -> None:

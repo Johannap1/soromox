@@ -4,10 +4,15 @@ import numpy as onp
 import pytest
 from jax import Array, jacfwd, jacrev, jvp
 from numpy.testing import assert_allclose
+from system_param_builders import (
+    gvs_params_from_segments,
+    pcs_params,
+    spatial_base_pose,
+)
 
-import soromox.utils.lie_algebra as lie
-from soromox.systems import GVS, PCS, CrossSectionGeometry
+from soromox.systems import GVS, PCS, CrossSectionGeometry, PCSStructure
 from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
+from soromox.utils.lie_algebra import se3
 from soromox.utils.tolerance import Tolerance
 
 jax.config.update("jax_enable_x64", True)
@@ -68,35 +73,69 @@ def build_matched_gvs_pcs(num_segments: int = 1, n_gauss: int = 5) -> tuple[GVS,
     g = jnp.array([0.0, 0.0, -9.81])
 
     # initialize the GVS model
-    robot_gvs = GVS(
-        segments=segments,
-        g=g,
-        p0=jnp.zeros(6),
+    gvs_params, gvs_structure = gvs_params_from_segments(
+        segments, gravity=g, base_pose=spatial_base_pose()
     )
+    robot_gvs = GVS(params=gvs_params, structure=gvs_structure)
 
     # PCS definition with identical geometry and material params
-    params = {
-        "p0": jnp.zeros(6),
-        "L": Ls,
-        "r": rs,
-        "rho": rhos,
-        "g": g,
-        "E": E,
-        "G": Gpcs,
-    }
-    # zero damping for fair comparison
-    params["D"] = jnp.zeros((6 * num_segments, 6 * num_segments))
+    params = pcs_params(
+        base_pose=spatial_base_pose(),
+        length=Ls,
+        radius=rs,
+        density=rhos,
+        gravity=g,
+        young_modulus=E,
+        shear_modulus=Gpcs,
+        damping_matrix=jnp.zeros((6 * num_segments, 6 * num_segments)),
+        reference_strain=jnp.tile(
+            jnp.array([0, 0, 0, 1, 0, 0]), (num_segments, 1)
+        ).reshape(6 * num_segments),
+    )
     robot_pcs = PCS(
-        num_segments=num_segments,
         params=params,
-        num_gauss_points=5,
-        strain_selector=jnp.ones((6 * num_segments,), dtype=bool),
-        xi_ref=jnp.tile(jnp.array([0, 0, 0, 1, 0, 0]), (num_segments, 1)).reshape(
-            6 * num_segments
+        structure=PCSStructure(
+            num_gauss_points=5,
+            strain_selector=jnp.ones((6 * num_segments,), dtype=bool),
         ),
     )
 
     return robot_gvs, robot_pcs
+
+
+def test_params_from_segments_stores_resolved_max_dof():
+    segment = GVSSegment(
+        link=LinkSpec(
+            cross_section_geometry=CrossSectionGeometry.CIRCULAR,
+            E=1e6,
+            nu=0.45,
+            rho=1000.0,
+            eta=0.0,
+            L=0.2,
+            r_i=0.02,
+            r_f=0.02,
+        ),
+        joint=JointSpec(type="fixed"),
+        basis=StrainBasisSpec(
+            type="monomial",
+            active=[1, 1, 1, 1, 1, 1],
+            orders=[0, 0, 0, 0, 0, 0],
+            xi_ref=[0, 0, 0, 1, 0, 0],
+        ),
+        num_gauss_points=5,
+    )
+
+    params, structure = GVS.params_from_segments(
+        [segment], gravity=jnp.array([0.0, 0.0, -9.81])
+    )
+
+    assert structure.max_dof == params.joint_stiffness.shape[1] == 6
+
+    oversized = params.replace(joint_stiffness=jnp.zeros((1, 7, 7)))
+    with pytest.raises(ValueError, match="joint_stiffness"):
+        oversized.validate_against_structure(structure)
+    with pytest.raises(ValueError, match="joint_stiffness"):
+        GVS(params=oversized, structure=structure)
 
 
 def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
@@ -264,10 +303,7 @@ def build_varied_basis_gvs(num_segments: int = 3) -> GVS:
             )
         )
 
-    return GVS(
-        segments=segments,
-        g=[0.0, 0.0, -9.81],
-    )
+    return GVS.from_segments(segments, gravity=jnp.array([0.0, 0.0, -9.81]))
 
 
 def build_constant_strain_gvs(
@@ -304,17 +340,122 @@ def build_constant_strain_gvs(
         for _ in range(num_segments)
     ]
 
-    return GVS(
-        segments=segments,
-        g=[0.0, 0.0, -9.81],
+    params, structure = gvs_params_from_segments(
+        segments,
+        gravity=jnp.array([0.0, 0.0, -9.81]),
+        base_pose=spatial_base_pose(),
         max_dof=max_dof,
-        p0=jnp.zeros(6),
         scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+    )
+    return GVS(params=params, structure=structure)
+
+
+def test_gvs_segment_factories_match_explicit_constructor() -> None:
+    segments = [
+        GVSSegment(
+            link=LinkSpec.circular(
+                E=1.0e6,
+                nu=0.45,
+                rho=1000.0,
+                eta=1.0,
+                L=0.2,
+                r=0.02,
+            ),
+            joint=JointSpec(type="fixed"),
+            basis=StrainBasisSpec(
+                type="monomial",
+                active=[1, 1, 1, 1, 0, 0],
+                orders=[0, 0, 0, 0, 0, 0],
+            ),
+            num_gauss_points=5,
+        ),
+        GVSSegment(
+            link=LinkSpec.rectangular(
+                E=9.0e5,
+                nu=0.4,
+                rho=950.0,
+                eta=2.0,
+                L=0.15,
+                h=0.03,
+                w=0.02,
+            ),
+            joint=JointSpec(type="revolute", axis="z", stiffness=jnp.array([[0.3]])),
+            basis=StrainBasisSpec(
+                type="legendre",
+                active=[0, 1, 1, 0, 0, 0],
+                orders=[0, 1, 1, 0, 0, 0],
+            ),
+            num_gauss_points=6,
+        ),
+    ]
+    gravity = jnp.array([0.0, 0.0, -9.81])
+
+    params, structure = GVS.params_from_segments(
+        segments,
+        gravity=gravity,
+        base_pose=spatial_base_pose(),
+        max_dof=6,
+    )
+    explicit = GVS(params=params, structure=structure)
+    factory = GVS.from_segments(
+        segments,
+        gravity=gravity,
+        base_pose=spatial_base_pose(),
+        max_dof=6,
+    )
+
+    assert_allclose(factory.params.link.length, params.link.length)
+    assert_allclose(factory.joint_stiffness, explicit.joint_stiffness)
+    assert_allclose(
+        factory.cross_section_geometry_index, explicit.cross_section_geometry_index
+    )
+    assert int(factory.cross_section_geometry_index[0]) == CrossSectionGeometry.CIRCULAR
+    assert (
+        int(factory.cross_section_geometry_index[1]) == CrossSectionGeometry.RECTANGULAR
     )
 
 
+def test_gvs_structure_contains_only_static_segment_choices() -> None:
+    segment = GVSSegment(
+        link=LinkSpec.circular(
+            E=1.0e6,
+            nu=0.45,
+            rho=1000.0,
+            eta=1.0,
+            L=0.2,
+            r=0.02,
+        ),
+        joint=JointSpec(type="revolute", axis="z", stiffness=jnp.array([[0.3]])),
+        basis=StrainBasisSpec(
+            type="monomial",
+            active=[1, 1, 0, 0, 0, 0],
+            orders=[0, 1, 0, 0, 0, 0],
+            xi_ref=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        ),
+        num_gauss_points=5,
+    )
+    params, structure = GVS.params_from_segments(
+        [segment],
+        gravity=jnp.array([0.0, 0.0, -9.81]),
+        max_dof=6,
+    )
+    stored_segment = structure.segments[0]
+
+    assert stored_segment.link.cross_section_geometry == CrossSectionGeometry.CIRCULAR
+    for dynamic_name in ("E", "L", "rho", "r_i"):
+        assert not hasattr(stored_segment.link, dynamic_name)
+    assert stored_segment.joint.type == "revolute"
+    assert stored_segment.joint.axis == "z"
+    assert not hasattr(stored_segment.joint, "stiffness")
+    assert stored_segment.basis.active == (1, 1, 0, 0, 0, 0)
+    assert stored_segment.basis.orders == (0, 1, 0, 0, 0, 0)
+    assert not hasattr(stored_segment.basis, "xi_ref")
+    assert_allclose(params.link.young_modulus, jnp.array([1.0e6]))
+    assert_allclose(params.joint_stiffness[0, 0, 0], 0.3)
+
+
 def sample_arc_lengths(robot: GVS) -> jnp.ndarray:
-    lengths = jnp.asarray(robot.segment_lengths)
+    lengths = jnp.asarray(robot.segment_length)
     cumulative = jnp.cumsum(lengths)
     total = float(cumulative[-1])
 
@@ -330,7 +471,7 @@ def sample_arc_lengths(robot: GVS) -> jnp.ndarray:
 def strict_interior_arc_lengths(robot: GVS) -> jnp.ndarray:
     fractions = jnp.asarray([0.37], dtype=jnp.float64)
     starts = robot.segment_end_positions[:-1, None]
-    lengths = robot.segment_lengths[:, None]
+    lengths = robot.segment_length[:, None]
     return (starts + lengths * fractions).reshape(-1)
 
 
@@ -379,7 +520,7 @@ def se3_tangent_to_body_twist(
 
 def body_twist_between(g_base: jnp.ndarray, g_target: jnp.ndarray) -> jnp.ndarray:
     g_rel = se3_inverse(g_base) @ g_target
-    xi = lie.log_SE3(g_rel, eps=1e-12)
+    xi = se3.log(g_rel, eps=1e-12)
     R = g_rel[:3, :3]
     omega = xi[:3]
     alt_omega = 0.5 * jnp.array(
@@ -394,7 +535,7 @@ def spatial_from_body(g: jnp.ndarray, xi_body: jnp.ndarray) -> jnp.ndarray:
     g_rot = jnp.block(
         [[g[:3, :3], jnp.zeros((3, 1))], [jnp.zeros((1, 3)), jnp.ones((1, 1))]]
     )
-    return lie.Adjoint_g_SE3(g_rot) @ xi_body
+    return se3.adjoint(g_rot) @ xi_body
 
 
 def segment_tip_transforms(robot: GVS, q: jnp.ndarray) -> jnp.ndarray:
@@ -464,7 +605,7 @@ def gvs_jacobian_inertialframe_from_body(
     g_s_wo_rot = jnp.block(
         [[g_s[:3, :3], jnp.zeros((3, 1))], [jnp.zeros((1, 3)), jnp.ones((1, 1))]]
     )
-    Adj_g = lie.Adjoint_g_SE3(g_s_wo_rot)
+    Adj_g = se3.adjoint(g_s_wo_rot)
     return Adj_g @ J_local
 
 
@@ -491,7 +632,7 @@ def _assert_gvs_pcs_coherence(num_segments: int) -> None:
         qd_random = random_q(robot_gvs, key_qd, scale=0.1)
         config_velocity_cases += ((q_random, qd_random),)
 
-    L_total = float(jnp.sum(robot_gvs.segment_lengths))
+    L_total = float(jnp.sum(robot_gvs.length))
     s_candidates = jnp.concatenate(
         [
             jnp.asarray([0.0], dtype=jnp.float64),
@@ -626,15 +767,17 @@ def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
     q = jnp.zeros((int(robot.num_dofs),), dtype=jnp.float64)
 
     assert robot.is_planar is False
-    assert_allclose(robot.length, jnp.sum(robot.segment_lengths), rtol=RTOL, atol=ATOL)
-    assert_allclose(robot.segment_length, robot.segment_lengths, rtol=RTOL, atol=ATOL)
+    assert_allclose(robot.length, jnp.sum(robot.segment_length), rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        robot.segment_length, robot.params.link.length, rtol=RTOL, atol=ATOL
+    )
 
-    s_second = robot.segment_lengths[0] + 0.25 * robot.segment_lengths[1]
+    s_second = robot.segment_length[0] + 0.25 * robot.segment_length[1]
     segment_idx, s_local = robot.classify_segment(s_second)
     assert int(segment_idx) == 1
-    assert_allclose(s_local, 0.25 * robot.segment_lengths[1], rtol=RTOL, atol=ATOL)
+    assert_allclose(s_local, 0.25 * robot.segment_length[1], rtol=RTOL, atol=ATOL)
 
-    tag, geom = robot.cross_section_geometry(q, 0.5 * robot.segment_lengths[0])
+    tag, geom = robot.cross_section_geometry(q, 0.5 * robot.segment_length[0])
     expected_radius = robot.radius_params[0, 0] + 0.5 * (
         robot.radius_params[0, 1] - robot.radius_params[0, 0]
     )
@@ -654,9 +797,9 @@ def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
     )
 
     s_third = (
-        robot.segment_lengths[0]
-        + robot.segment_lengths[1]
-        + 0.75 * robot.segment_lengths[2]
+        robot.segment_length[0]
+        + robot.segment_length[1]
+        + 0.75 * robot.segment_length[2]
     )
     tag, geom = robot.cross_section_geometry(q, s_third)
     expected_a = robot.semi_major_params[2, 0] + 0.75 * (
@@ -987,7 +1130,7 @@ def test_jacobian_tips_matches_pointwise_and_gauss(num_segments: int):
                 [jnp.zeros((1, 3), dtype=R.dtype), jnp.ones((1, 1), dtype=R.dtype)],
             ]
         )
-        return lie.Adjoint_g_SE3(g_rot) @ J_i
+        return se3.adjoint(g_rot) @ J_i
 
     J_gauss_tips = jax.vmap(rotate_pair)(g_tips, J_local_gauss_tips)
 
@@ -1431,23 +1574,22 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     )
 
     updated = robot.update_params(
-        {
-            "links": [
-                LinkSpec(
-                    cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-                    E=1.25e6,
-                    nu=0.45,
-                    rho=900.0,
-                    eta=2.0,
-                    L=float(length),
-                    r_i=0.022,
-                    r_f=0.022,
-                )
-                for length in robot.segment_lengths
-            ]
-        }
+        link=robot.params.link.replace(
+            young_modulus=1.25e6 * jnp.ones_like(robot.segment_length),
+            poisson_ratio=0.45 * jnp.ones_like(robot.segment_length),
+            density=900.0 * jnp.ones_like(robot.segment_length),
+            damping_coefficient=2.0 * jnp.ones_like(robot.segment_length),
+            radius_initial=0.022 * jnp.ones_like(robot.segment_length),
+            radius_final=0.022 * jnp.ones_like(robot.segment_length),
+        )
     )
 
+    assert (
+        updated.structure.segments[0].link.cross_section_geometry
+        == robot.structure.segments[0].link.cross_section_geometry
+    )
+    assert not hasattr(updated.structure.segments[0].link, "E")
+    assert not hasattr(updated.structure.segments[0].link, "r_i")
     assert updated.K_full.shape == robot.K_full.shape
     assert updated.D_full.shape == robot.D_full.shape
     assert_allclose(
@@ -1461,7 +1603,7 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     assert_allclose(
         updated.inner_integration_weights,
         updated.integration_weights[:, 1 : updated.max_num_integration_points - 1]
-        * updated.segment_lengths[:, None],
+        * updated.segment_length[:, None],
         rtol=RTOL,
         atol=ATOL,
     )
@@ -1840,7 +1982,7 @@ def test_gvs_autodiff_checks(num_segments: int) -> None:
     n = int(robot.num_dofs)
     q = jnp.linspace(0.01, 0.01 * n, n, dtype=jnp.float64)
     qd = jnp.linspace(0.02, 0.02 * n, n, dtype=jnp.float64)
-    s = jnp.sum(robot.segment_lengths, dtype=jnp.float64) * 0.7
+    s = jnp.sum(robot.length, dtype=jnp.float64) * 0.7
 
     def J_body(q_):
         return robot.jacobian_bodyframe(q_, s)

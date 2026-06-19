@@ -121,17 +121,17 @@ python examples/simulation/pcs/simulate_batched_tendon_actuated_pcs.py
 
 **Key concepts:** Tendon kinematics, actuation space, batch simulation
 
-#### Pneumatic-Actuated Planar PCS
+#### Pressure-Actuated Planar PCS
 ```bash
-python examples/simulation/pcs/simulate_pneumatic_actuated_planar_pcs.py
+python examples/simulation/pcs/simulate_pressure_actuated_planar_pcs.py
 ```
 
 **What you'll learn:**
-- Pneumatic actuation modeling
+- Pressure actuation modeling
 - Pressure-to-strain mapping
-- Pneumatic soft robot dynamics
+- Pressure-driven soft robot dynamics
 
-**Key concepts:** Pneumatic actuation, pressure control
+**Key concepts:** Pressure actuation, pressure control
 
 #### I-SUPPORT Manipulator
 ```bash
@@ -242,7 +242,7 @@ python examples/control/operational_space/control_pcs_with_impedance.py
 
 ### Actuation-Space Controllers
 
-Actuation-space controllers operate directly on the actuator inputs (e.g., tendon tensions, pneumatic pressures).
+Actuation-space controllers operate directly on the actuator inputs (e.g., tendon tensions, chamber pressures).
 
 #### Setpoint Regulation
 ```bash
@@ -363,39 +363,40 @@ Most examples allow easy parameter modification. Understanding parameter structu
 
 ```python
 # Modify physical parameters
-params = {
-    "L": 0.2 * jnp.ones((num_segments,)),  # Change segment lengths
-    "r": 0.01 * jnp.ones((num_segments,)),  # Change radii  
-    "E": 1e6 * jnp.ones((num_segments,)),  # Change Young's modulus
-    "G": 5e5 * jnp.ones((num_segments,)),  # Change shear modulus
-    # ... other parameters
-}
+params = params.replace(
+    length=0.2 * jnp.ones((num_segments,)),
+    radius=0.01 * jnp.ones((num_segments,)),
+    young_modulus=1e6 * jnp.ones((num_segments,)),
+    shear_modulus=5e5 * jnp.ones((num_segments,)),
+)
+robot = robot.with_params(params)
 ```
 
 **For pendulum systems:**
 
 ```python
-params = {
-    "L": jnp.array([0.5, 0.3]),      # Link lengths
-    "m": jnp.array([1.0, 0.5]),      # Masses
-    "I": jnp.array([0.1, 0.05]),     # Moments of inertia
-    # ... other parameters
-}
+params = params.replace(
+    length=jnp.array([0.5, 0.3]),
+    mass=jnp.array([1.0, 0.5]),
+    moment_inertia=jnp.array([0.1, 0.05]),
+)
+robot = robot.with_params(params)
 ```
 
 **For articulated soft robot systems:**
 
 ```python
-params = {
-    "joint_screws": joint_screws,  # Shape (N, 6), screw axes [omega, v]
-    "p_tip": p_tip,                # Shape (N, 3), link tip vectors
-    "p_com": p_com,                # Shape (N, 3), link COM vectors
-    "m": masses,                   # Shape (N,), link masses
-    "I_com": I_com,                # Shape (N, 3, 3), COM inertias
-    "g": jnp.array([0.0, 0.0, -9.81]),
-    "K": jnp.diag(joint_stiffness),  # Optional joint stiffness
-    "D": jnp.diag(joint_damping),    # Optional joint damping
-}
+params = params.replace(
+    joint_screw=joint_screws,
+    tip_position=tip_positions,
+    center_of_mass_position=center_of_mass_positions,
+    mass=masses,
+    center_of_mass_inertia=center_of_mass_inertia,
+    gravity=jnp.array([0.0, 0.0, -9.81]),
+    joint_stiffness=jnp.diag(joint_stiffness),
+    joint_damping=jnp.diag(joint_damping),
+)
+robot = robot.with_params(params)
 ```
 
 ### Output Customization
@@ -509,9 +510,7 @@ from soromox.systems import YourSystem, SystemState
 jax.config.update("jax_enable_x64", True)  # double precision
 
 # Parameters
-params = {
-    # Your parameters here
-}
+params = YourSystemParams(...)
 
 if __name__ == "__main__":
     # Initialize system

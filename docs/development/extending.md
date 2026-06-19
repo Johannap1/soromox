@@ -272,7 +272,7 @@ def actuation_matrix(self, q: jax.Array) -> jax.Array:
     Actuation matrix A(q) mapping control inputs to forces.
 
     For tendon-actuated: based on tendon routing geometry
-    For pneumatic: based on chamber geometry and pressure
+    For pressure chambers: based on chamber geometry and pressure
 
     Returns:
         A: Actuation matrix (num_dofs, num_actuators)
@@ -490,14 +490,18 @@ JVP rules in each system class. For example, a spatial PCS-like system can
 provide closed-form arc-length kinematics and energy gradients:
 
 ```python
-import soromox.utils.lie_algebra as lie
+from soromox.utils.lie_algebra import se3, so3
+
+
+def _angular_cross_matrix(self, xi_i):
+    return so3.skew(xi_i[:3])
 
 
 def _forward_kinematics_arc_length_derivative(self, q, s):
     i_segment, _ = self.classify_segment(s)
     xi_i = self.segment_strain(q, i_segment)
     g = self._forward_kinematics(q, s)
-    return g @ lie.hat_SE3(xi_i)
+    return g @ se3.hat(xi_i)
 
 
 def _jacobian_and_time_derivative(self, q, qd, s):
@@ -643,8 +647,8 @@ class BaseSoftRobotRenderer:
         """Compute backbone points from configuration."""
         ...
 
-    def compute_tendon_curves(self, q):
-        """Compute tendon paths if supported."""
+    def compute_actuator_visual_layers(self, q):
+        """Compute actuator visual layers if supported."""
         ...
 
     # Abstract methods (must implement)
@@ -774,9 +778,14 @@ The base class provides useful helpers:
 backbone = self.compute_backbone_curve(q)
 # Returns: (num_points, 2) for 2D or (num_points, 3) for 3D
 
-# Get tendon curves (if robot supports tendons)
-tendons = self.compute_tendon_curves(q)
-# Returns: list of (num_points, 2/3) arrays
+# Get actuator visual layers (if robot exposes actuator_visual_layers)
+actuator_layers = self.compute_actuator_visual_layers(q)
+# Returns: tuple of ActuatorVisualLayer objects
+
+# Batched and trajectory actuator visual helpers use optional robot fast paths
+# named actuator_visual_layers_batched(...) and
+# actuator_visual_layers_trajectory(...) when available. Otherwise they fall
+# back to repeated calls to the single-configuration actuator_visual_layers(...).
 
 # Resolve colors with hierarchy
 colors = self.resolve_backbone_colors(num_robots=1, color_config=color_config)
@@ -1033,11 +1042,22 @@ def error_based_feedback_term(
 #### 4. Usage Example
 
 ```python
-from soromox.systems import PlanarPCS
+from soromox.systems import PlanarPCS, PlanarPCSParams
 from soromox.control import ReferenceTrajectory
 
 # Create robot
-robot = PlanarPCS(num_segments=3, params=params)
+params = PlanarPCSParams(
+    length=jnp.array([0.1, 0.1, 0.1]),
+    radius=jnp.array([0.01, 0.01, 0.01]),
+    density=jnp.array([1000.0, 1000.0, 1000.0]),
+    young_modulus=jnp.array([1e6, 1e6, 1e6]),
+    shear_modulus=jnp.array([1e5, 1e5, 1e5]),
+    damping_matrix=jnp.eye(9),
+    gravity=jnp.array([0.0, -9.81]),
+    reference_strain=jnp.tile(jnp.array([0.0, 1.0, 0.0]), 3),
+    base_pose=jnp.array([jnp.pi / 2, 0.0, 0.0]),
+)
+robot = PlanarPCS(params=params)
 
 # Create reference trajectory (defines desired motion)
 ref_traj = ReferenceTrajectory(...)  # Your trajectory

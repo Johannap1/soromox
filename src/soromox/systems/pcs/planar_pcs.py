@@ -7,17 +7,20 @@ import equinox as eqx
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 
-import soromox.utils.lie_algebra as lie
+from soromox.systems.pcs.params import PlanarPCSParams
+from soromox.systems.pcs.structures import PlanarPCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.array_math import blk_diag
 from soromox.utils.basic import (
     compute_strain_basis,
 )
+from soromox.utils.geometry import poses
 from soromox.utils.integration import (
     gauss_quadrature,
     scale_gaussian_quadrature,
     scale_interior_gaussian_quadrature,
 )
+from soromox.utils.lie_algebra import constant_strain, se2
 
 
 class PlanarPCS(SoftRobot):
@@ -31,7 +34,7 @@ class PlanarPCS(SoftRobot):
     Attributes:
         num_segments: Number of segments (constant strain sections) along the robot.
         num_actuators: Number of actuators (control inputs) for the robot.
-        th0: Initial orientation angle of the robot in radians.
+        base_pose: Initial planar pose ``[theta, x, y]`` with ``theta`` in radians.
         g: Gravitational acceleration vector (embedded in a 3D vector).
             [0, g_x, g_y]
         L, r, E, G, rho, D: Physical properties of each segment (length, radius, elastic/shear modulus, etc.).
@@ -62,8 +65,9 @@ class PlanarPCS(SoftRobot):
 
     """
 
+    params: PlanarPCSParams
+
     # Robot parameters
-    th0: Array  # Initial orientation angle [rad]
     g: Array  # Gravitational acceleration vector
 
     L: Array  # Length of the segments
@@ -95,61 +99,24 @@ class PlanarPCS(SoftRobot):
 
     def __init__(
         self,
-        num_segments: int,
-        params: dict[str, Array],
-        num_gauss_points: int = 5,
-        strain_selector: Array | None = None,
-        xi_ref: Array | None = None,
-        scale_rotational_basis_by_length: bool | None = False,
+        params: PlanarPCSParams,
+        structure: PlanarPCSStructure | None = None,
         **kwargs: Any,
     ):
-        """
-        Initialize the PlanarPCS class.
-
-        Args:
-            num_segments (int):
-                Number of segments in the robot.
-            params (Dict[str, Array]):
-                Dictionary containing the robot parameters:
-                - "th0": (optional) float
-                    Initial orientation angle [rad]
-                    Default is 90 degrees (1.57 radians).
-                - "L": List/Array of num_segments floats
-                    Length of each segment [m]
-                - "r": List/Array of num_segments floats
-                    Radius of each segment [m]
-                - "rho": List/Array of num_segments floats
-                    Density of each segment [kg/m^3]
-                - "g": List/Array of 2 floats [gx, gy]
-                    Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats
-                    Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats
-                    Shear modulus of each segment [Pa]
-                - "D": List/Array of (num_segments x num_segments) floats
-                    Damping matrix of each segment [Pa*s]
-            num_gauss_points (int, optional):
-                Number of nonzero Gauss-Legendre points per segment.
-                Defaults to 5.
-            strain_selector (Optional[Array], optional):
-                Boolean array of shape (3 * num_segments,) specifying which strain components are active.
-                Defaults to all strains active (i.e. all True).
-            xi_ref (Optional[Array], optional):
-                Reference strain of shape (3 * num_segments,).
-                Defaults to 0.0 for bending and shear strains, and 1.0 for axial strain (along local x-axis).
-            scale_rotational_basis_by_length (bool, optional):
-                If True, divide rotational rows of the active strain basis by
-                the corresponding segment length.
-            **kwargs: Additional keyword arguments for SoftRobot.__init__.
-        """
-        super().__init__(**kwargs)
-        self.scale_rotational_basis_by_length = bool(scale_rotational_basis_by_length)
+        """Initialize the PlanarPCS class from typed dynamic parameters."""
+        if not isinstance(params, PlanarPCSParams):
+            raise TypeError("params must be a PlanarPCSParams instance.")
+        params.validate()
+        super().__init__(base_pose=params.base_pose, **kwargs)
+        if structure is None:
+            structure = PlanarPCSStructure()
+        self.params = params
+        self.scale_rotational_basis_by_length = bool(
+            structure.scale_rotational_basis_by_length
+        )
 
         # Number of segments
-        if not isinstance(num_segments, int):
-            raise TypeError(
-                f"num_segments must be an integer, got {type(num_segments).__name__}"
-            )
+        num_segments = int(params.length.shape[0])
         if num_segments < 1:
             raise ValueError(f"num_segments must be at least 1, got {num_segments}")
         self.num_segments = num_segments
@@ -163,6 +130,7 @@ class PlanarPCS(SoftRobot):
 
         # ================================================================
         # Integration grid
+        num_gauss_points = structure.num_gauss_points
         if not isinstance(num_gauss_points, int):
             raise TypeError(
                 f"num_gauss_points must be an integer, got {type(num_gauss_points).__name__}"
@@ -181,6 +149,7 @@ class PlanarPCS(SoftRobot):
 
         # ================================================================
         # Strain basis matrix
+        strain_selector = structure.strain_selector
         if strain_selector is None:
             strain_selector = jnp.ones(self.num_strains, dtype=bool)
         else:
@@ -204,23 +173,13 @@ class PlanarPCS(SoftRobot):
         self.num_active_strains = jnp.sum(strain_selector)
         self.num_dofs = int(self.num_active_strains.item())
 
-        # Reference configuration strain
-        if xi_ref is None:
-            xi_ref = jnp.tile(
-                jnp.array([0.0, 1.0, 0.0], dtype=jnp.float64), (self.num_segments, 1)
-            ).reshape(self.num_strains)
-        else:
-            if not isinstance(xi_ref, (list, jnp.ndarray)):
-                raise TypeError(
-                    f"xi_ref must be a list or an array, got {type(xi_ref).__name__}"
-                )
-            xi_ref = jnp.asarray(xi_ref)
-            if xi_ref.size != self.num_strains:
-                raise ValueError(
-                    f"xi_ref must have {self.num_strains} elements, got {xi_ref.size}"
-                )
-            xi_ref = xi_ref.reshape(self.num_strains)
-        self.xi_ref = xi_ref
+        reference_strain = jnp.asarray(params.reference_strain, dtype=jnp.float64)
+        if reference_strain.size != self.num_strains:
+            raise ValueError(
+                "reference_strain must have "
+                f"{self.num_strains} elements, got {reference_strain.size}."
+            )
+        self.xi_ref = reference_strain.reshape(self.num_strains)
 
         # Number of actuators
         self.num_actuators = int(self.num_active_strains.item())
@@ -231,11 +190,6 @@ class PlanarPCS(SoftRobot):
     def is_planar(self) -> bool:
         """Planar PCS is a 2D model."""
         return True
-
-    @property
-    def length(self) -> Array:
-        """Total backbone length."""
-        return jnp.sum(self.L)
 
     @property
     def segment_length(self) -> Array:
@@ -261,254 +215,176 @@ class PlanarPCS(SoftRobot):
         tag = jnp.asarray(CrossSectionGeometry.CIRCULAR, dtype=jnp.int32)
         return tag, jnp.array([radius])
 
-    def _set_params(self, params: dict[str, Array]) -> None:
-        """
-        Set the parameters of the PCS model.
-
-        Args:
-            params (Dict[str, Array]):
-                Dictionary containing the robot parameters:
-                - "th0": (optional) float
-                    Initial orientation angle [rad]
-                    Default is 90 degrees (1.57 radians).
-                - "L": List/Array of num_segments floats
-                    Length of each segment [m]
-                - "r": List/Array of num_segments floats
-                    Radius of each segment [m]
-                - "rho": List/Array of num_segments floats
-                    Density of each segment [kg/m^3]
-                - "g": List/Array of 2 floats [gx, gy]
-                    Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats
-                    Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats
-                    Shear modulus of each segment [Pa]
-                - "D": List/Array of (num_segments x num_segments) floats
-                    Damping matrix of each segment [Pa*s]
-        """
-        # Initial orientation angle
-        th0 = params.get("th0", jnp.pi / 2.0)  # Default to 90 degrees
-        if not (isinstance(th0, (float, int, jnp.ndarray))):
-            raise TypeError(
-                f"th0 must be a float, int, or an array, got {type(th0).__name__}"
-            )
-        th0 = jnp.asarray(th0, dtype=jnp.float64)
-        self.th0 = th0
+    def _set_params(self, params: PlanarPCSParams) -> None:
+        """Set cached runtime arrays from typed parameters."""
+        self.base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
 
         # Gravitational acceleration vector
-        try:
-            g = params["g"]
-        except KeyError as err:
-            raise KeyError("Parameter 'g' is required in params dictionary.") from err
-        if not (isinstance(g, (list, jnp.ndarray))):
-            raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
+        g = params.gravity
         g = jnp.asarray(g, dtype=jnp.float64)
         if g.size != 2:
-            raise ValueError(f"g must be a vector of shape (2,), got {g.size}")
+            raise ValueError(f"gravity must be a vector of shape (2,), got {g.size}")
         self.g = jnp.concatenate(
             [jnp.zeros(1), g]
         )  # Add a zero for the orientation angle
 
         # Lengths of the segments
-        try:
-            L = params["L"]
-        except KeyError as err:
-            raise KeyError("Parameter 'L' is required in params dictionary.") from err
-        if not (isinstance(L, (list, jnp.ndarray))):
-            raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
+        L = params.length
         L = jnp.asarray(L, dtype=jnp.float64)
         if L.shape != (self.num_segments,):
-            raise ValueError(f"L must have shape ({self.num_segments},), got {L.shape}")
+            raise ValueError(
+                f"length must have shape ({self.num_segments},), got {L.shape}"
+            )
         self.L = L
 
         L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
         self.L_cum = L_cum
 
         # Radius of the segments
-        try:
-            r = params["r"]
-        except KeyError as err:
-            raise KeyError("Parameter 'r' is required in params dictionary.") from err
-        if not (isinstance(r, (list, jnp.ndarray))):
-            raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
+        r = params.radius
         r = jnp.asarray(r, dtype=jnp.float64)
         if r.shape != (self.num_segments,):
-            raise ValueError(f"r must have shape ({self.num_segments},), got {r.shape}")
+            raise ValueError(
+                f"radius must have shape ({self.num_segments},), got {r.shape}"
+            )
         self.r = r
 
         # Densities of the segments
-        try:
-            rho = params["rho"]
-        except KeyError as err:
-            raise KeyError("Parameter 'rho' is required in params dictionary.") from err
-        if not (isinstance(rho, (list, jnp.ndarray))):
-            raise TypeError(f"rho must be a list or an array, got {type(rho).__name__}")
+        rho = params.density
         rho = jnp.asarray(rho, dtype=jnp.float64)
         if rho.shape != (self.num_segments,):
             raise ValueError(
-                f"rho must have shape ({self.num_segments},), got {rho.shape}"
+                f"density must have shape ({self.num_segments},), got {rho.shape}"
             )
         self.rho = rho
 
         # Elastic modulus of the segments
-        try:
-            E = params["E"]
-        except KeyError as err:
-            raise KeyError("Parameter 'E' is required in params dictionary.") from err
-        if not (isinstance(E, (list, jnp.ndarray))):
-            raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
+        E = params.young_modulus
         E = jnp.asarray(E, dtype=jnp.float64)
         if E.shape != (self.num_segments,):
-            raise ValueError(f"E must have shape ({self.num_segments},), got {E.shape}")
+            raise ValueError(
+                f"young_modulus must have shape ({self.num_segments},), got {E.shape}"
+            )
         self.E = E
 
         # Shear modulus of the segments
-        try:
-            G = params["G"]
-        except KeyError as err:
-            raise KeyError("Parameter 'G' is required in params dictionary.") from err
-        if not (isinstance(G, (list, jnp.ndarray))):
-            raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
+        G = params.shear_modulus
         G = jnp.asarray(G, dtype=jnp.float64)
         if G.shape != (self.num_segments,):
-            raise ValueError(f"G must have shape ({self.num_segments},), got {G.shape}")
+            raise ValueError(
+                f"shear_modulus must have shape ({self.num_segments},), got {G.shape}"
+            )
         self.G = G
 
         # Damping matrix of the robot
-        try:
-            D = params["D"]
-        except KeyError as err:
-            raise KeyError("Parameter 'D' is required in params dictionary.") from err
-        if not (isinstance(D, (list, jnp.ndarray))):
-            raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
+        D = params.damping_matrix
         D = jnp.asarray(D, dtype=jnp.float64)
         expected_D_shape = (self.num_strains, self.num_strains)
         if D.shape != expected_D_shape:
-            raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
+            raise ValueError(
+                f"damping_matrix must have shape {expected_D_shape}, got {D.shape}"
+            )
         self.D = D
 
-    def update_params(self, params: dict[str, Array]) -> "PlanarPCS":
-        """
-        Update the parameters of the PCS model.
+    def _current_body_params(self) -> PlanarPCSParams:
+        """Return the planar PCS body params, including typed actuated wrappers."""
+        if isinstance(self.params, PlanarPCSParams):
+            return self.params
+        body = getattr(self.params, "body", None)
+        if isinstance(body, PlanarPCSParams):
+            return body
+        raise TypeError("model params do not contain PlanarPCSParams body fields.")
 
-        Args:
-            params (Dict[str, Array]):
-                Dictionary that contains the robot parameters to update:
-                - "th0": (optional) float
-                    Initial orientation angle [rad]
-                - "L": List/Array of num_segments floats
-                    Length of each segment [m]
-                - "r": List/Array of num_segments floats
-                    Radius of each segment [m]
-                - "rho": List/Array of num_segments floats
-                    Density of each segment [kg/m^3]
-                - "g": List/Array of 2 floats [gx, gy]
-                    Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats
-                    Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats
-                    Shear modulus of each segment [Pa]
-                - "D": List/Array of (num_segments x num_segments) floats
-                    Damping matrix of each segment [Pa*s]
-
-        Returns:
-            updated_self (PlanarPCS):
-                A new instance of PlanarPCS with updated parameters.
-        """
-        # Apply updates sequentially
-        updated_self = self
-
-        if "th0" in params:
-            th0 = params["th0"]
-            if not (isinstance(th0, (float, int, jnp.ndarray))):
-                raise TypeError(
-                    f"th0 must be a float, int, or an array, got {type(th0).__name__}"
-                )
-            th0 = jnp.asarray(th0, dtype=jnp.float64)
-            updated_self = eqx.tree_at(lambda m: m.th0, updated_self, th0)
-
-        if "g" in params:
-            g = params["g"]
-            if not (isinstance(g, (list, jnp.ndarray))):
-                raise TypeError(f"g must be a list or an array, got {type(g).__name__}")
-            g = jnp.asarray(g, dtype=jnp.float64)
-            if g.size != 2:
-                raise ValueError(f"g must be a vector of shape (2,), got {g.size}")
-            updated_self = eqx.tree_at(
-                lambda m: m.g, updated_self, jnp.concatenate([jnp.zeros(1), g])
+    def _with_planar_pcs_params(
+        self, params: PlanarPCSParams, stored_params: Any | None = None
+    ) -> "PlanarPCS":
+        """Return a copy with planar PCS body caches refreshed."""
+        current_params = self._current_body_params()
+        if not isinstance(params, PlanarPCSParams):
+            raise TypeError("params must be a PlanarPCSParams instance.")
+        params.validate()
+        if params.length.shape != current_params.length.shape:
+            raise ValueError(
+                "length shape changes the model structure; construct a new PlanarPCS."
+            )
+        if params.reference_strain.shape != current_params.reference_strain.shape:
+            raise ValueError(
+                "reference_strain shape changes the model structure; construct a new PlanarPCS."
             )
 
-        if "L" in params:
-            L = params["L"]
-            if not (isinstance(L, (list, jnp.ndarray))):
-                raise TypeError(f"L must be a list or an array, got {type(L).__name__}")
-            L = jnp.asarray(L, dtype=jnp.float64)
-            if L.shape != (self.num_segments,):
-                raise ValueError(
-                    f"L must have shape ({self.num_segments},), got {L.shape}"
-                )
-            L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), L]))
-            updated_self = eqx.tree_at(
-                lambda m: (m.L, m.L_cum), updated_self, (L, L_cum)
+        base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
+        gravity = jnp.asarray(params.gravity, dtype=jnp.float64)
+        segment_lengths = jnp.asarray(params.length, dtype=jnp.float64)
+        radius = jnp.asarray(params.radius, dtype=jnp.float64)
+        density = jnp.asarray(params.density, dtype=jnp.float64)
+        young_modulus = jnp.asarray(params.young_modulus, dtype=jnp.float64)
+        shear_modulus = jnp.asarray(params.shear_modulus, dtype=jnp.float64)
+        damping_matrix = jnp.asarray(params.damping_matrix, dtype=jnp.float64)
+        reference_strain = jnp.asarray(params.reference_strain, dtype=jnp.float64)
+
+        expected_D_shape = (self.num_strains, self.num_strains)
+        if damping_matrix.shape != expected_D_shape:
+            raise ValueError(
+                f"damping_matrix must have shape {expected_D_shape}, got {damping_matrix.shape}"
             )
 
-        if "r" in params:
-            r = params["r"]
-            if not (isinstance(r, (list, jnp.ndarray))):
-                raise TypeError(f"r must be a list or an array, got {type(r).__name__}")
-            r = jnp.asarray(r, dtype=jnp.float64)
-            if r.shape != (self.num_segments,):
-                raise ValueError(
-                    f"r must have shape ({self.num_segments},), got {r.shape}"
-                )
-            updated_self = eqx.tree_at(lambda m: m.r, updated_self, r)
-
-        if "rho" in params:
-            rho = params["rho"]
-            if not (isinstance(rho, (list, jnp.ndarray))):
-                raise TypeError(
-                    f"rho must be a list or an array, got {type(rho).__name__}"
-                )
-            rho = jnp.asarray(rho, dtype=jnp.float64)
-            if rho.shape != (self.num_segments,):
-                raise ValueError(
-                    f"rho must have shape ({self.num_segments},), got {rho.shape}"
-                )
-            updated_self = eqx.tree_at(lambda m: m.rho, updated_self, rho)
-
-        if "E" in params:
-            E = params["E"]
-            if not (isinstance(E, (list, jnp.ndarray))):
-                raise TypeError(f"E must be a list or an array, got {type(E).__name__}")
-            E = jnp.asarray(E, dtype=jnp.float64)
-            if E.shape != (self.num_segments,):
-                raise ValueError(
-                    f"E must have shape ({self.num_segments},), got {E.shape}"
-                )
-            updated_self = eqx.tree_at(lambda m: m.E, updated_self, E)
-
-        if "G" in params:
-            G = params["G"]
-            if not (isinstance(G, (list, jnp.ndarray))):
-                raise TypeError(f"G must be a list or an array, got {type(G).__name__}")
-            G = jnp.asarray(G, dtype=jnp.float64)
-            if G.shape != (self.num_segments,):
-                raise ValueError(
-                    f"G must have shape ({self.num_segments},), got {G.shape}"
-                )
-            updated_self = eqx.tree_at(lambda m: m.G, updated_self, G)
-
-        if "D" in params:
-            D = params["D"]
-            if not (isinstance(D, (list, jnp.ndarray))):
-                raise TypeError(f"D must be a list or an array, got {type(D).__name__}")
-            D = jnp.asarray(D, dtype=jnp.float64)
-            expected_D_shape = (self.num_strains, self.num_strains)
-            if D.shape != expected_D_shape:
-                raise ValueError(f"D must have shape {expected_D_shape}, got {D.shape}")
-            updated_self = eqx.tree_at(lambda m: m.D, updated_self, D)
-
+        updated_self = eqx.tree_at(
+            lambda m: (
+                m.params,
+                m.base_pose,
+                m.g,
+                m.L,
+                m.L_cum,
+                m.r,
+                m.rho,
+                m.E,
+                m.G,
+                m.D,
+                m.xi_ref,
+            ),
+            self,
+            (
+                params if stored_params is None else stored_params,
+                base_pose,
+                jnp.concatenate([jnp.zeros(1, dtype=gravity.dtype), gravity]),
+                segment_lengths,
+                jnp.cumsum(
+                    jnp.concatenate(
+                        [jnp.zeros(1, dtype=segment_lengths.dtype), segment_lengths]
+                    )
+                ),
+                radius,
+                density,
+                young_modulus,
+                shear_modulus,
+                damping_matrix,
+                reference_strain.reshape(self.num_strains),
+            ),
+        )
         return updated_self._with_refreshed_precomputed_matrices()
+
+    def with_params(self, params: PlanarPCSParams) -> "PlanarPCS":
+        """Return an updated copy with a full typed parameter object."""
+        return self._with_planar_pcs_params(params)
+
+    def update_params(self, **updates: Array) -> "PlanarPCS":
+        """Return an updated copy with selected typed parameter fields replaced."""
+        if (
+            "length" in updates
+            and jnp.asarray(updates["length"]).shape != self.params.length.shape
+        ):
+            raise ValueError(
+                "length shape changes the model structure; construct a new PlanarPCS."
+            )
+        if (
+            "reference_strain" in updates
+            and jnp.asarray(updates["reference_strain"]).shape
+            != self.params.reference_strain.shape
+        ):
+            raise ValueError(
+                "reference_strain shape changes the model structure; construct a new PlanarPCS."
+            )
+        return self.with_params(self.params.replace(**updates))
 
     def _precomputed_matrices(self) -> tuple[Array, Array, Array, Array, Array]:
         """Compute state-independent matrices cached by the model."""
@@ -601,9 +477,7 @@ class PlanarPCS(SoftRobot):
 
         segment_idx, s_local = self.classify_segment(s)
 
-        chi_0 = jnp.concatenate(
-            [self.th0[None], jnp.zeros(2)]
-        )  # Initial configuration [theta, x, y]
+        chi_0 = self._base_planar_pose(xi.dtype)
 
         # Iteration function
         def chi_i(chi_prev: Array, i: Array) -> tuple[Array, Array]:
@@ -718,13 +592,7 @@ class PlanarPCS(SoftRobot):
         """
         xi = self.strain(q).reshape(self.num_segments, 3)
 
-        # base configuration [theta, x, y]
-        chi_base = jnp.concatenate(
-            [
-                jnp.asarray(self.th0, dtype=xi.dtype)[None],
-                jnp.zeros(2, dtype=xi.dtype),
-            ]
-        )
+        chi_base = self._base_planar_pose(xi.dtype)
 
         def integrate_segment(chi_prev: Array, i: Array) -> tuple[Array, Array]:
             xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
@@ -789,12 +657,7 @@ class PlanarPCS(SoftRobot):
         xi = self.strain(q).reshape(self.num_segments, 3)
 
         chi_tips = self.forward_kinematics_tips(q)
-        chi_base = jnp.concatenate(
-            [
-                jnp.asarray(self.th0, dtype=xi.dtype)[None],
-                jnp.zeros(2, dtype=xi.dtype),
-            ]
-        )
+        chi_base = self._base_planar_pose(xi.dtype)
         chi_bases = jnp.concatenate([chi_base[None, :], chi_tips[:-1]], axis=0)
 
         segment_indices, s_local_ps = vmap(self.classify_segment)(s_ps)
@@ -856,16 +719,14 @@ class PlanarPCS(SoftRobot):
         Returns:
             chi_rel (Array): relative poses of shape (num_segments, 3) where each row is [delta_theta, delta_x, delta_y]
                             representing the relative pose change from the previous segment tip.
-                            The first segment's relative pose is computed w.r.t. the base at (0, 0, 0).
+                            The first segment's relative pose is computed w.r.t. ``base_pose``.
         """
         # Ensure chi_tips has the correct shape
         chi_tips = chi_tips.reshape(self.num_segments, 3)
 
-        # Base pose at the origin: [theta=self.th0, x=0, y=0]
-        base_pose = jnp.array([self.th0, 0.0, 0.0])
-
         # Create array of previous poses: base + all segment tips except the last
-        prev_poses = jnp.concatenate([base_pose[None, :], chi_tips[:-1]], axis=0)
+        chi_base = self._base_planar_pose(chi_tips.dtype)
+        prev_poses = jnp.concatenate([chi_base[None, :], chi_tips[:-1]], axis=0)
 
         # Compute relative poses vectorized
         # For SE(2), the relative transformation between poses chi_prev and chi_curr is:
@@ -996,8 +857,8 @@ class PlanarPCS(SoftRobot):
             xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
             L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
 
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, L_i, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, L_i, eps=self.tangent_eps)
+            Ad_inv = constant_strain.adjoint_inverse_se2(xi_i, L_i, eps=self.global_eps)
+            T = constant_strain.tangent_se2(xi_i, L_i, eps=self.tangent_eps)
 
             J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
@@ -1043,8 +904,10 @@ class PlanarPCS(SoftRobot):
             arc_len: Array,
             J_base: Array,
         ) -> Array:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.tangent_eps)
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.tangent_eps)
 
             return self._update_body_jacobian_step(J_base, i, Ad_inv, T)
 
@@ -1081,8 +944,10 @@ class PlanarPCS(SoftRobot):
             xi_i: Array,
             arc_len: Array,
         ) -> Array:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.global_eps)
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.global_eps)
 
             return self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
@@ -1138,8 +1003,8 @@ class PlanarPCS(SoftRobot):
             of the local segment transform and ``T`` is the planar tangent
             operator. Both arrays have shape ``(3, 3)``.
         """
-        Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-        T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.global_eps)
+        Ad_inv = constant_strain.adjoint_inverse_se2(xi_i, arc_len, eps=self.global_eps)
+        T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.global_eps)
         return Ad_inv, T
 
     def _pcs_jacobian_arc_length_step_terms(
@@ -1158,8 +1023,8 @@ class PlanarPCS(SoftRobot):
             derivatives.
         """
         Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, arc_len)
-        dAd_inv_ds = -lie.adjoint_se2(xi_i) @ Ad_inv
-        dT_ds = lie.Adjoint_gi_se2(xi_i, arc_len, eps=self.global_eps)
+        dAd_inv_ds = -se2.small_adjoint(xi_i) @ Ad_inv
+        dT_ds = constant_strain.adjoint_se2(xi_i, arc_len, eps=self.global_eps)
         return Ad_inv, T, dAd_inv_ds, dT_ds
 
     def _pcs_relative_pose(self, xi_i: Array, arc_len: Array) -> Array:
@@ -1247,14 +1112,9 @@ class PlanarPCS(SoftRobot):
             dtype: Desired floating-point dtype of the returned array.
 
         Returns:
-            Planar base pose ``[theta0, 0, 0]`` with shape ``(3,)``.
+            Planar base pose ``[theta0, x0, y0]`` with shape ``(3,)``.
         """
-        return jnp.concatenate(
-            [
-                jnp.asarray(self.th0, dtype=dtype)[None],
-                jnp.zeros(2, dtype=dtype),
-            ]
-        )
+        return jnp.asarray(self.base_pose, dtype=dtype)
 
     def _update_body_jacobian_step(
         self, J_prev: Array, i: Array, Ad_inv: Array, T: Array
@@ -1303,7 +1163,7 @@ class PlanarPCS(SoftRobot):
         """
         J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
         eta = lax.dynamic_index_in_dim(J_next, i, axis=0, keepdims=False) @ xid_i
-        Ad_inv_dot = -lie.adjoint_se2(eta) @ Ad_inv
+        Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv
         Jd_rot = jnp.einsum("ij, njk->nik", Ad_inv, Jd_prev) + jnp.einsum(
             "ij, njk->nik", Ad_inv_dot, J_prev
         )
@@ -1408,12 +1268,7 @@ class PlanarPCS(SoftRobot):
         segment_idx, s_local = self.classify_segment(s)
 
         zeros = jnp.zeros((self.num_segments, 3, 3), dtype=xi.dtype)
-        chi0 = jnp.concatenate(
-            [
-                jnp.asarray(self.th0, dtype=xi.dtype)[None],
-                jnp.zeros(2, dtype=xi.dtype),
-            ]
-        )
+        chi0 = self._base_planar_pose(xi.dtype)
 
         def scan_body(
             carry: tuple[Array, Array, Array, Array, Array, Array],
@@ -1483,12 +1338,7 @@ class PlanarPCS(SoftRobot):
         segment_idx, s_local = self.classify_segment(s)
 
         zeros = jnp.zeros((self.num_segments, 3, 3), dtype=xi.dtype)
-        chi0 = jnp.concatenate(
-            [
-                jnp.asarray(self.th0, dtype=xi.dtype)[None],
-                jnp.zeros(2, dtype=xi.dtype),
-            ]
-        )
+        chi0 = self._base_planar_pose(xi.dtype)
 
         def scan_body(
             carry: tuple[Array, Array, Array, Array, Array, Array, Array],
@@ -1505,7 +1355,7 @@ class PlanarPCS(SoftRobot):
                 arc_len = jnp.where(i == segment_idx, s_local, L_i)
 
                 Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, arc_len)
-                Td = lie.Tangent_derivative_gi_se2(
+                Td = constant_strain.tangent_derivative_se2(
                     xi_i, xid_i, arc_len, eps=self.global_eps
                 )
                 chi_next = self._compose_planar_pose(
@@ -1579,8 +1429,10 @@ class PlanarPCS(SoftRobot):
             xi_i: Array,
             arc_len: Array,
         ) -> Array:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.global_eps)
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.global_eps)
 
             return self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
@@ -1590,10 +1442,12 @@ class PlanarPCS(SoftRobot):
             xi_i: Array,
             arc_len: Array,
         ) -> Array:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.global_eps)
-            dAd_inv_ds = -lie.adjoint_se2(xi_i) @ Ad_inv
-            dT_ds = lie.Adjoint_gi_se2(xi_i, arc_len, eps=self.global_eps)
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.global_eps)
+            dAd_inv_ds = -se2.small_adjoint(xi_i) @ Ad_inv
+            dT_ds = constant_strain.adjoint_se2(xi_i, arc_len, eps=self.global_eps)
 
             return self._update_body_jacobian_arc_length_derivative_step(
                 J_base, i, Ad_inv, T, dAd_inv_ds, dT_ds
@@ -1671,8 +1525,8 @@ class PlanarPCS(SoftRobot):
         """Adjoint of the planar pose rotation, with zero translation."""
         theta = chi[0]
         zero = jnp.zeros((), dtype=theta.dtype)
-        g = lie.exp_SE2(jnp.stack([theta, zero, zero]))
-        return lie.Adjoint_g_SE2(g)
+        g = poses.planar_pose_to_transform(jnp.stack([theta, zero, zero]))
+        return se2.adjoint(g)
 
     def _body_jacobian_to_inertial(self, chi: Array, J_local: Array) -> Array:
         """Rotate a PlanarPCS body-frame Jacobian into the inertial frame."""
@@ -1709,7 +1563,7 @@ class PlanarPCS(SoftRobot):
         xi = self.strain(q).reshape(self.num_segments, 3)
         segment_idx, _ = self.classify_segment(s)
         eta_rot_s = jnp.stack([xi[segment_idx, 0], zero, zero])
-        Ad_g_s = Ad_g @ lie.adjoint_se2(eta_rot_s)
+        Ad_g_s = Ad_g @ se2.small_adjoint(eta_rot_s)
 
         J = Ad_g @ J_local
         Js = Ad_g_s @ J_local + Ad_g @ Js_local
@@ -1729,7 +1583,7 @@ class PlanarPCS(SoftRobot):
         xi = self.strain(q).reshape(self.num_segments, 3)
         segment_idx, _ = self.classify_segment(s)
         eta_rot_s = jnp.stack([xi[segment_idx, 0], zero, zero])
-        Ad_g_s = Ad_g @ lie.adjoint_se2(eta_rot_s)
+        Ad_g_s = Ad_g @ se2.small_adjoint(eta_rot_s)
         Js = Ad_g_s @ J_local + Ad_g @ Js_local
         return Js
 
@@ -1752,10 +1606,10 @@ class PlanarPCS(SoftRobot):
 
         def lift_theta(th: Array) -> Array:
             zeros = jnp.zeros((), dtype=th.dtype)
-            return lie.exp_SE2(jnp.stack([th, zeros, zeros]))
+            return poses.planar_pose_to_transform(jnp.stack([th, zeros, zeros]))
 
         g_rot_ps = vmap(lift_theta)(thetas)
-        Ad_g_ps = vmap(lie.Adjoint_g_SE2)(g_rot_ps)
+        Ad_g_ps = vmap(se2.adjoint)(g_rot_ps)
 
         J_global_ps = jnp.einsum("nij, njk->nik", Ad_g_ps, J_local_ps)
 
@@ -1779,8 +1633,8 @@ class PlanarPCS(SoftRobot):
         def rotate_pair(chi_i: Array, J_i: Array) -> Array:
             theta = chi_i[0]
             zeros = jnp.zeros((), dtype=theta.dtype)
-            g_rot = lie.exp_SE2(jnp.stack([theta, zeros, zeros]))
-            return lie.Adjoint_g_SE2(g_rot) @ J_i
+            g_rot = poses.planar_pose_to_transform(jnp.stack([theta, zeros, zeros]))
+            return se2.adjoint(g_rot) @ J_i
 
         return vmap(rotate_pair)(chi_tips, J_local_tips)
 
@@ -1803,13 +1657,17 @@ class PlanarPCS(SoftRobot):
         zeros = jnp.zeros((self.num_segments, 3, 3), dtype=xi.dtype)
 
         Ad_inv_tips = vmap(
-            lambda xi_i, L_i: lie.Adjoint_gi_se2_inv(xi_i, L_i, eps=self.global_eps)
+            lambda xi_i, L_i: constant_strain.adjoint_inverse_se2(
+                xi_i, L_i, eps=self.global_eps
+            )
         )(xi, self.L)
         T_tips = vmap(
-            lambda xi_i, L_i: lie.Tangent_gi_se2(xi_i, L_i, eps=self.tangent_eps)
+            lambda xi_i, L_i: constant_strain.tangent_se2(
+                xi_i, L_i, eps=self.tangent_eps
+            )
         )(xi, self.L)
         Td_tips = vmap(
-            lambda xi_i, xid_i, L_i: lie.Tangent_derivative_gi_se2(
+            lambda xi_i, xid_i, L_i: constant_strain.tangent_derivative_se2(
                 xi_i, xid_i, L_i, eps=self.tangent_eps
             )
         )(xi, xid, self.L)
@@ -1888,9 +1746,11 @@ class PlanarPCS(SoftRobot):
             J_base: Array,
             Jd_base: Array,
         ) -> tuple[Array, Array]:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.tangent_eps)
-            Td = lie.Tangent_derivative_gi_se2(
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.tangent_eps)
+            Td = constant_strain.tangent_derivative_se2(
                 xi_i, xid_i, arc_len, eps=self.tangent_eps
             )
 
@@ -1941,9 +1801,11 @@ class PlanarPCS(SoftRobot):
             xid_i: Array,
             arc_len: Array,
         ) -> tuple[Array, Array]:
-            Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, arc_len, eps=self.global_eps)
-            T = lie.Tangent_gi_se2(xi_i, arc_len, eps=self.global_eps)
-            Td = lie.Tangent_derivative_gi_se2(
+            Ad_inv = constant_strain.adjoint_inverse_se2(
+                xi_i, arc_len, eps=self.global_eps
+            )
+            T = constant_strain.tangent_se2(xi_i, arc_len, eps=self.global_eps)
+            Td = constant_strain.tangent_derivative_se2(
                 xi_i, xid_i, arc_len, eps=self.global_eps
             )
 
@@ -2059,7 +1921,7 @@ class PlanarPCS(SoftRobot):
         eta_body = J_local @ qd
         zero_twist = jnp.zeros((), dtype=eta_body.dtype)
         eta_rot = jnp.stack([eta_body[0], zero_twist, zero_twist])
-        Ad_g_dot = Ad_g @ lie.adjoint_se2(eta_rot)
+        Ad_g_dot = Ad_g @ se2.small_adjoint(eta_rot)
 
         J_global = jnp.einsum("ij, jk->ik", Ad_g, J_local)
         Jd_global = jnp.einsum("ij, jk->ik", Ad_g, Jd_local) + jnp.einsum(
@@ -2092,16 +1954,16 @@ class PlanarPCS(SoftRobot):
 
         def lift_theta(th: Array) -> Array:
             zeros = jnp.zeros((), dtype=th.dtype)
-            return lie.exp_SE2(jnp.stack([th, zeros, zeros]))
+            return poses.planar_pose_to_transform(jnp.stack([th, zeros, zeros]))
 
         g_rot_ps = vmap(lift_theta)(thetas)
-        Ad_g_ps = vmap(lie.Adjoint_g_SE2)(g_rot_ps)
+        Ad_g_ps = vmap(se2.adjoint)(g_rot_ps)
 
         eta_body_ps = jnp.einsum("ijk, k->ij", J_local_ps, qd)
         zeros = jnp.zeros_like(eta_body_ps[:, :1])
         eta_rot_ps = jnp.concatenate([eta_body_ps[:, :1], zeros, zeros], axis=1)
         Ad_g_dot_ps = jnp.einsum(
-            "nij, njk->nik", Ad_g_ps, vmap(lie.adjoint_se2)(eta_rot_ps)
+            "nij, njk->nik", Ad_g_ps, vmap(se2.small_adjoint)(eta_rot_ps)
         )
 
         J_global_ps = jnp.einsum("nij, njk->nik", Ad_g_ps, J_local_ps)
@@ -2315,10 +2177,7 @@ class PlanarPCS(SoftRobot):
 
                 return Ws_ij * (
                     J_ij.T
-                    @ (
-                        M_i @ Jd_ij
-                        + lie.coadjoint_se2(J_ij @ self.B_xi @ qd) @ M_i @ J_ij
-                    )
+                    @ (M_i @ Jd_ij + se2.coadjoint(J_ij @ self.B_xi @ qd) @ M_i @ J_ij)
                 )
 
             C_blocks_i = vmap(C_ij)(jnp.arange(1, self.num_integration_points - 1))
@@ -2370,7 +2229,7 @@ class PlanarPCS(SoftRobot):
         )
 
         chi_ps = self.forward_kinematics_batched(q, Xs_scaled.flatten())
-        g_ps = vmap(lie.exp_SE2)(chi_ps.reshape(-1, 3))
+        g_ps = vmap(poses.planar_pose_to_transform)(chi_ps.reshape(-1, 3))
         g_ps = g_ps.reshape(self.num_segments, self.num_integration_points, 3, 3)
 
         J_ps = self._J_local_batched(q, Xs_scaled.flatten())
@@ -2386,7 +2245,7 @@ class PlanarPCS(SoftRobot):
                 g_ij = g_ps[i, j]
                 J_ij = J_ps[i, j]
 
-                Ad_g_inv_ij = lie.Adjoint_g_inv_SE2(g_ij)
+                Ad_g_inv_ij = se2.adjoint_inverse(g_ij)
 
                 return -Ws_ij * J_ij.T @ M_i @ Ad_g_inv_ij @ self.g
 
@@ -2592,13 +2451,17 @@ class PlanarPCS(SoftRobot):
     ) -> tuple[Array, Array]:
         """Compute active-coordinate local Jacobians at all segment tips."""
         Ad_inv_tips = vmap(
-            lambda xi_i, L_i: lie.Adjoint_gi_se2_inv(xi_i, L_i, eps=self.global_eps)
+            lambda xi_i, L_i: constant_strain.adjoint_inverse_se2(
+                xi_i, L_i, eps=self.global_eps
+            )
         )(xi, self.L)
         T_tips = vmap(
-            lambda xi_i, L_i: lie.Tangent_gi_se2(xi_i, L_i, eps=self.tangent_eps)
+            lambda xi_i, L_i: constant_strain.tangent_se2(
+                xi_i, L_i, eps=self.tangent_eps
+            )
         )(xi, self.L)
         Td_tips = vmap(
-            lambda xi_i, xid_i, L_i: lie.Tangent_derivative_gi_se2(
+            lambda xi_i, xid_i, L_i: constant_strain.tangent_derivative_se2(
                 xi_i, xid_i, L_i, eps=self.tangent_eps
             )
         )(xi, xid, self.L)
@@ -2621,7 +2484,7 @@ class PlanarPCS(SoftRobot):
             J_next = Ad_inv_i @ J_prev + J_segment
 
             eta = Ad_inv_T_i @ xid_i
-            Ad_inv_dot = -lie.adjoint_se2(eta) @ Ad_inv_i
+            Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv_i
 
             if convective_only_jd:
                 Jd_segment = (Ad_inv_i @ Td_i) @ B_i
@@ -2694,21 +2557,12 @@ class PlanarPCS(SoftRobot):
         )
         s_local = Xs_scaled - self.L_cum[:-1, None]
 
-        th0 = jnp.asarray(self.th0, dtype=xi.dtype)
-        g0 = lie.exp_SE2(
-            jnp.stack(
-                [
-                    th0,
-                    jnp.zeros((), dtype=xi.dtype),
-                    jnp.zeros((), dtype=xi.dtype),
-                ]
-            )
-        )
+        g0 = poses.planar_pose_to_transform(jnp.asarray(self.base_pose, dtype=xi.dtype))
 
         def scan_fk(g_base: Array, i: Array) -> tuple[Array, Array]:
             xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
             L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
-            g_tip = g_base @ lie.exp_gn_SE2(L_i * xi_i, eps=self.global_eps)
+            g_tip = g_base @ se2.exp(L_i * xi_i, eps=self.global_eps)
             return g_tip, g_base
 
         indices = jnp.arange(self.num_segments, dtype=jnp.int32)
@@ -2716,7 +2570,7 @@ class PlanarPCS(SoftRobot):
 
         def segment_poses(g_base_i: Array, xi_i: Array, s_local_i: Array) -> Array:
             def pose_at_s(s_local_ij: Array) -> Array:
-                g_rel = lie.exp_gn_SE2(s_local_ij * xi_i, eps=self.global_eps)
+                g_rel = se2.exp(s_local_ij * xi_i, eps=self.global_eps)
                 return g_base_i @ g_rel
 
             return vmap(pose_at_s)(s_local_i)
@@ -2739,9 +2593,11 @@ class PlanarPCS(SoftRobot):
             s_local_i: Array,
         ) -> tuple[Array, Array]:
             def jacobian_at_s(s_local_ij: Array) -> tuple[Array, Array]:
-                Ad_inv = lie.Adjoint_gi_se2_inv(xi_i, s_local_ij, eps=self.global_eps)
-                T = lie.Tangent_gi_se2(xi_i, s_local_ij, eps=self.tangent_eps)
-                Td = lie.Tangent_derivative_gi_se2(
+                Ad_inv = constant_strain.adjoint_inverse_se2(
+                    xi_i, s_local_ij, eps=self.global_eps
+                )
+                T = constant_strain.tangent_se2(xi_i, s_local_ij, eps=self.tangent_eps)
+                Td = constant_strain.tangent_derivative_se2(
                     xi_i, xid_i, s_local_ij, eps=self.tangent_eps
                 )
 
@@ -2750,7 +2606,7 @@ class PlanarPCS(SoftRobot):
                 J_next = Ad_inv @ J_base_i + J_segment
 
                 eta = Ad_inv_T @ xid_i
-                Ad_inv_dot = -lie.adjoint_se2(eta) @ Ad_inv
+                Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv
 
                 if convective_only_jd:
                     Jd_segment = (Ad_inv @ Td) @ B_i
@@ -2801,13 +2657,12 @@ class PlanarPCS(SoftRobot):
                 J_ij = J_ps[i, j]
                 Jd_ij = Jd_ps[i, j]
 
-                Ad_g_inv_ij = lie.Adjoint_g_inv_SE2(g_ij)
+                Ad_g_inv_ij = se2.adjoint_inverse(g_ij)
                 eta_ij = J_ij @ qd
 
                 B_ij = Ws_ij * J_ij.T @ M_i @ J_ij
                 Cqd_ij = Ws_ij * (
-                    J_ij.T
-                    @ (M_i @ (Jd_ij @ qd) + lie.coadjoint_se2(eta_ij) @ M_i @ eta_ij)
+                    J_ij.T @ (M_i @ (Jd_ij @ qd) + se2.coadjoint(eta_ij) @ M_i @ eta_ij)
                 )
                 G_ij = -Ws_ij * J_ij.T @ M_i @ Ad_g_inv_ij @ self.g
 
