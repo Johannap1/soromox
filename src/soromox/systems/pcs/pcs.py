@@ -2691,7 +2691,6 @@ class PCS(SoftRobot):
         etad = J_local @ qdd + Jd_local @ qd
 
         return eta, etad, J_local, Jd_local
-    
 
     @eqx.filter_jit
     def _pcs_soft_joint_differential_kinematics(
@@ -2732,13 +2731,9 @@ class PCS(SoftRobot):
             Omega, Z, g_step, T, S, Sd, f, fd, adjOmegap,
             dS_dq_qd, dS_dq_qdd, dSd_dq_qd.
         """
-        Phi_i = lax.dynamic_slice_in_dim(
-            self.B_xi, 6 * i, 6, axis=0
-        )
+        Phi_i = lax.dynamic_slice_in_dim(self.B_xi, 6 * i, 6, axis=0)
 
-        xi_star_i = lax.dynamic_slice_in_dim(
-            self.xi_ref, 6 * i, 6, axis=0
-        )
+        xi_star_i = lax.dynamic_slice_in_dim(self.xi_ref, 6 * i, 6, axis=0)
 
         (
             Omega,
@@ -2779,6 +2774,124 @@ class PCS(SoftRobot):
         )
 
     @eqx.filter_jit
+    def _pcs_R_L_Q_Y_step_terms(
+        self,
+        g_prev: Array,
+        eta_prev: Array,
+        etad_prev: Array,
+        i: Array,
+        H: Array,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array]:
+        """
+        Return the local PCS interval terms used by the forward and backward passes.
+
+        ``eta_plus`` and ``etad_plus`` are expressed in the frame before the step,
+        matching the MATLAB recursion immediately before multiplying by
+        ``Adgstepinv``.
+        """
+        zero_H = jnp.abs(H) <= self.global_eps
+
+        zeros_6n = jnp.zeros((6, self.num_dofs), dtype=q.dtype)
+
+        def zero_step(
+            _: None,
+        ) -> tuple[
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+        ]:
+            return (
+                jnp.eye(4, dtype=q.dtype),
+                jnp.eye(6, dtype=q.dtype),
+                zeros_6n,
+                zeros_6n,
+                zeros_6n,
+                zeros_6n,
+                zeros_6n,
+                zeros_6n,
+                eta_prev,
+                etad_prev,
+            )
+
+        def finite_step(
+            _: None,
+        ) -> tuple[
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+            Array,
+        ]:
+            (
+                _,
+                _,
+                g_step,
+                _,
+                S,
+                Sd,
+                _,
+                _,
+                _,
+                dS_dq_qd,
+                dS_dq_qdd,
+                dSd_dq_qd,
+            ) = self._pcs_soft_joint_differential_kinematics(i, H, q, qd, qdd)
+
+            Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
+            adj_eta_prev = lie.adjoint_se3(eta_prev)
+
+            eta_plus = eta_prev + S @ qd
+            etad_plus = etad_prev + S @ qdd + adj_eta_prev @ (S @ qd) + Sd @ qd
+
+            R = lie.adjoint_se3(eta_plus) @ S + dS_dq_qd
+            L = (
+                lie.adjoint_se3(etad_plus) @ S
+                + lie.adjoint_se3(eta_plus) @ R
+                + adj_eta_prev @ dS_dq_qd
+                + dSd_dq_qd
+                + dS_dq_qdd
+            )
+
+            g_body = lie.Adjoint_g_inv_SE3(g_prev) @ self.g
+            Q = L - lie.adjoint_se3(g_body) @ S
+            Y = R + Sd + adj_eta_prev @ S
+
+            return (
+                g_step,
+                Ad_step_inv,
+                S,
+                Sd,
+                R,
+                L,
+                Q,
+                Y,
+                eta_plus,
+                etad_plus,
+            )
+
+        return lax.cond(
+            zero_H,
+            zero_step,
+            finite_step,
+            operand=None,
+        )
+
+    @eqx.filter_jit
     def _integrate_R_L_Q_Y_step(
         self,
         g_prev: Array,
@@ -2808,9 +2921,9 @@ class PCS(SoftRobot):
 
         zero_H = jnp.abs(H) <= self.global_eps
 
-        def zero_step(_: None) -> tuple[
-            Array, Array, Array, Array, Array, Array, Array, Array, Array
-        ]:
+        def zero_step(
+            _: None,
+        ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array]:
             Y_B_prev = R_B_prev + Jd_prev
             return (
                 g_prev,
@@ -2824,55 +2937,30 @@ class PCS(SoftRobot):
                 Y_B_prev,
             )
 
-        def finite_step(_: None) -> tuple[
-            Array, Array, Array, Array, Array, Array, Array, Array, Array
-        ]:
+        def finite_step(
+            _: None,
+        ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array]:
             (
-                _,
-                _,
                 g_step,
-                _,
+                Ad_step_inv,
                 S,
                 Sd,
+                R,
+                L,
+                Q,
                 _,
-                _,
-                _,
-                dS_dq_qd,
-                dS_dq_qdd,
-                dSd_dq_qd,
-            ) = self._pcs_soft_joint_differential_kinematics(
-                i, H, q, qd, qdd
+                eta_plus,
+                etad_plus,
+            ) = self._pcs_R_L_Q_Y_step_terms(
+                g_prev,
+                eta_prev,
+                etad_prev,
+                i,
+                H,
+                q,
+                qd,
+                qdd,
             )
-
-            Ad_step_inv = lie.Adjoint_g_inv_SE3(g_step)
-
-            adj_eta_prev = lie.adjoint_se3(eta_prev)
-
-            # eta_plus and etad_plus are expressed in the frame before the step.
-            eta_plus = eta_prev + S @ qd
-
-            etad_plus = (
-                etad_prev
-                + S @ qdd
-                + adj_eta_prev @ (S @ qd)
-                + Sd @ qd
-            )
-
-            # Local differential terms before transporting through g_step.
-            R = lie.adjoint_se3(eta_plus) @ S + dS_dq_qd
-
-            L = (
-                lie.adjoint_se3(etad_plus) @ S
-                + lie.adjoint_se3(eta_plus) @ R
-                + adj_eta_prev @ dS_dq_qd
-                + dSd_dq_qd
-                + dS_dq_qdd
-            )
-
-            # Gravity expressed in the current body frame, before the step.
-            g_body = lie.Adjoint_g_inv_SE3(g_prev) @ self.g
-
-            Q = L - lie.adjoint_se3(g_body) @ S
 
             # Propagate pose.
             g_next = g_prev @ g_step
@@ -2880,9 +2968,8 @@ class PCS(SoftRobot):
             # Propagate body-frame Jacobian terms.
             J_next = Ad_step_inv @ (J_prev + S)
 
-            Jd_next = Ad_step_inv @ (
-                Jd_prev + Sd + adj_eta_prev @ S
-            )
+            adj_eta_prev = lie.adjoint_se3(eta_prev)
+            Jd_next = Ad_step_inv @ (Jd_prev + Sd + adj_eta_prev @ S)
 
             eta_next = Ad_step_inv @ eta_plus
             etad_next = Ad_step_inv @ etad_plus
@@ -2994,9 +3081,7 @@ class PCS(SoftRobot):
             R_target, L_target, Q_target, Y_target = target_prev
 
             def compute_branch(_: None):
-                L_i = lax.dynamic_index_in_dim(
-                    self.L, i, axis=0, keepdims=False
-                )
+                L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
                 H_i = jnp.where(i == segment_idx, s_local, L_i)
 
                 (
@@ -3141,9 +3226,7 @@ class PCS(SoftRobot):
                 Q_B_prev,
             ) = state_prev
 
-            H_i = lax.dynamic_index_in_dim(
-                self.L, i, axis=0, keepdims=False
-            )
+            H_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
 
             (
                 g_next,
@@ -3366,3 +3449,705 @@ class PCS(SoftRobot):
         )
 
         return R_B_ps, L_B_ps, Q_B_ps, Y_B_ps
+
+    @eqx.filter_jit
+    def _dSTdq_FC_pcs_step(self, i: Array, H: Array, q: Array, F_C: Array) -> Array:
+        """
+        Compute ``d(S(q)^T F_C) / dq``.
+        """
+        qd_basis = jnp.eye(self.num_dofs, dtype=q.dtype)
+        qdd_zero = jnp.zeros_like(q)
+
+        def projected_wrench_row(qd_unit: Array) -> Array:
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                dS_dq_qd,
+                _,
+                _,
+            ) = self._pcs_soft_joint_differential_kinematics(
+                i,
+                H,
+                q,
+                qd_unit,
+                qdd_zero,
+            )
+            return F_C @ dS_dq_qd
+
+        return vmap(projected_wrench_row)(qd_basis)
+
+    @eqx.filter_jit
+    def _backward_pass_interval_kinematics(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+        Array,
+    ]:
+        Xs_nodes, Ws_nodes = vmap(
+            scale_gaussian_quadrature, in_axes=(None, None, 0, 0)
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
+        s_local_nodes = Xs_nodes - self.L_cum[:-1, None]
+
+        zeros_6n = jnp.zeros((6, self.num_dofs), dtype=q.dtype)
+        zeros_6 = jnp.zeros((6,), dtype=q.dtype)
+
+        state_init = (
+            self.g0,
+            zeros_6n,
+            zeros_6n,
+            zeros_6,
+            zeros_6,
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+        )
+
+        def scan_segment(
+            state_prev: tuple[
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+            ],
+            i: Array,
+        ) -> tuple[
+            tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+            tuple[
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+                Array,
+            ],
+        ]:
+            s_local_i = lax.dynamic_index_in_dim(
+                s_local_nodes, i, axis=0, keepdims=False
+            )
+
+            def scan_interval(
+                state_here: tuple[
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                ],
+                k: Array,
+            ) -> tuple[
+                tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+                tuple[
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                ],
+            ]:
+                (
+                    g_prev,
+                    J_prev,
+                    Jd_prev,
+                    eta_prev,
+                    etad_prev,
+                    R_B_prev,
+                    L_B_prev,
+                    Q_B_prev,
+                ) = state_here
+
+                s0 = lax.dynamic_index_in_dim(s_local_i, k, axis=0, keepdims=False)
+                s1 = lax.dynamic_index_in_dim(s_local_i, k + 1, axis=0, keepdims=False)
+                H = s1 - s0
+
+                (
+                    g_step,
+                    Ad_step_inv,
+                    S,
+                    Sd,
+                    R,
+                    L,
+                    Q,
+                    Y,
+                    eta_plus,
+                    etad_plus,
+                ) = self._pcs_R_L_Q_Y_step_terms(
+                    g_prev,
+                    eta_prev,
+                    etad_prev,
+                    i,
+                    H,
+                    q,
+                    qd,
+                    qdd,
+                )
+
+                adj_eta_prev = lie.adjoint_se3(eta_prev)
+
+                g_next = g_prev @ g_step
+                J_next = Ad_step_inv @ (J_prev + S)
+                Jd_next = Ad_step_inv @ (Jd_prev + Sd + adj_eta_prev @ S)
+                eta_next = Ad_step_inv @ eta_plus
+                etad_next = Ad_step_inv @ etad_plus
+                R_B_next = Ad_step_inv @ (R_B_prev + R)
+                L_B_next = Ad_step_inv @ (L_B_prev + L)
+                Q_B_next = Ad_step_inv @ (Q_B_prev + Q)
+
+                Y_B_prev = R_B_prev + Jd_prev
+                Y_B_next = R_B_next + Jd_next
+
+                state_next = (
+                    g_next,
+                    J_next,
+                    Jd_next,
+                    eta_next,
+                    etad_next,
+                    R_B_next,
+                    L_B_next,
+                    Q_B_next,
+                )
+
+                output = (
+                    H,
+                    g_prev,
+                    J_prev,
+                    R_B_prev,
+                    Q_B_prev,
+                    Y_B_prev,
+                    g_next,
+                    J_next,
+                    Jd_next,
+                    eta_next,
+                    etad_next,
+                    R_B_next,
+                    Q_B_next,
+                    Y_B_next,
+                    Ad_step_inv,
+                    S,
+                    R,
+                    Q,
+                    Y,
+                )
+
+                return state_next, output
+
+            step_indices = jnp.arange(self.num_integration_points - 1, dtype=jnp.int32)
+            state_next, interval_outputs = lax.scan(
+                scan_interval,
+                state_prev,
+                step_indices,
+            )
+            return state_next, interval_outputs
+
+        segment_indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+        _, outputs = lax.scan(scan_segment, state_init, segment_indices)
+
+        (
+            H_steps,
+            g_alpha,
+            J_alpha,
+            R_B_alpha,
+            Q_B_alpha,
+            Y_B_alpha,
+            g_ap1,
+            J_ap1,
+            Jd_ap1,
+            eta_ap1,
+            etad_ap1,
+            R_B_ap1,
+            Q_B_ap1,
+            Y_B_ap1,
+            Ad_step_inv,
+            S,
+            R,
+            Q,
+            Y,
+        ) = outputs
+
+        return (
+            Ws_nodes,
+            H_steps,
+            g_alpha,
+            J_alpha,
+            R_B_alpha,
+            Q_B_alpha,
+            Y_B_alpha,
+            g_ap1,
+            J_ap1,
+            Jd_ap1,
+            eta_ap1,
+            etad_ap1,
+            R_B_ap1,
+            Q_B_ap1,
+            Y_B_ap1,
+            Ad_step_inv,
+            S,
+            R,
+            Q,
+            Y,
+        )
+
+    @eqx.filter_jit
+    def inverse_dynamics_force(self, q: Array, qd: Array, qdd: Array) -> Array:
+        """
+        Compute the active-coordinate inverse-dynamics force ``ID``.
+
+        ``ID = B(q) qdd + C(q, qd) qd + G(q)``. Elastic, damping, actuation,
+        and externally supplied generalized forces are intentionally excluded.
+        """
+        B, Cqd, G = self.dynamics_terms(q, qd)
+        return B @ qdd + Cqd + G
+
+    @eqx.filter_jit
+    def inverse_dynamics_backward_pass(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
+        """
+        Serial PCS backward pass for inverse-dynamics derivatives.
+
+        Returns:
+            ``dID_dq, dID_dqd, M_C, N_C, F_C, P_S, U_S, V_S`` where the
+            composite matrices are stored for each interval in forward order
+            with shape ``(num_segments, num_integration_points - 1, ...)``.
+        """
+        (
+            Ws_nodes,
+            H_steps,
+            _,
+            J_alpha,
+            R_B_alpha,
+            Q_B_alpha,
+            Y_B_alpha,
+            g_ap1,
+            _,
+            _,
+            eta_ap1,
+            etad_ap1,
+            _,
+            _,
+            _,
+            Ad_step_inv,
+            S,
+            R,
+            Q,
+            Y,
+        ) = self._backward_pass_interval_kinematics(q, qd, qdd)
+
+        n_steps = self.num_integration_points - 1
+
+        zeros_66 = jnp.zeros((6, 6), dtype=q.dtype)
+        zeros_6 = jnp.zeros((6,), dtype=q.dtype)
+        zeros_6n = jnp.zeros((6, self.num_dofs), dtype=q.dtype)
+        zeros_nn = jnp.zeros((self.num_dofs, self.num_dofs), dtype=q.dtype)
+
+        carry_init = (
+            zeros_66,
+            zeros_66,
+            zeros_6,
+            zeros_6n,
+            zeros_6n,
+            zeros_6n,
+            zeros_nn,
+            zeros_nn,
+        )
+
+        def scan_segment_backward(
+            carry: tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+            segment_idx: Array,
+        ) -> tuple[
+            tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+            tuple[Array, Array, Array, Array, Array, Array],
+        ]:
+            M_i = self.M_segments[segment_idx]
+
+            def scan_interval_backward(
+                interval_carry: tuple[
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                    Array,
+                ],
+                step_idx: Array,
+            ) -> tuple[
+                tuple[Array, Array, Array, Array, Array, Array, Array, Array],
+                tuple[Array, Array, Array, Array, Array, Array],
+            ]:
+                (
+                    M_C_prev,
+                    N_C_prev,
+                    F_C_prev,
+                    P_S_prev,
+                    U_S_prev,
+                    V_S_prev,
+                    dID_dq_prev,
+                    dID_dqd_prev,
+                ) = interval_carry
+
+                M_ap1 = Ws_nodes[segment_idx, step_idx + 1] * M_i
+                eta_here = eta_ap1[segment_idx, step_idx]
+                etad_here = etad_ap1[segment_idx, step_idx]
+                g_here = g_ap1[segment_idx, step_idx]
+                Ad_inv = Ad_step_inv[segment_idx, step_idx]
+                coAd = Ad_inv.T
+
+                gravity_here = lie.Adjoint_g_inv_SE3(g_here) @ self.g
+                F_ap1 = (
+                    M_ap1 @ etad_here
+                    + lie.coadjoint_se3(eta_here) @ M_ap1 @ eta_here
+                    - M_ap1 @ gravity_here
+                )
+                N_ap1 = (
+                    lie.coadjointbar_se3(M_ap1 @ eta_here)
+                    + lie.coadjoint_se3(eta_here) @ M_ap1
+                    - M_ap1 @ lie.adjoint_se3(eta_here)
+                )
+
+                M_C = coAd @ (M_ap1 + M_C_prev) @ Ad_inv
+                N_C = coAd @ (N_ap1 + N_C_prev) @ Ad_inv
+                F_C = coAd @ (F_ap1 + F_C_prev)
+
+                P_S = coAd @ P_S_prev
+                U_S = coAd @ U_S_prev
+                V_S = coAd @ V_S_prev
+
+                S_here = S[segment_idx, step_idx]
+                R_here = R[segment_idx, step_idx]
+                Q_here = Q[segment_idx, step_idx]
+                Y_here = Y[segment_idx, step_idx]
+
+                P_S = P_S + lie.coadjointbar_se3(F_C) @ S_here
+                U_S = U_S + N_C @ R_here + M_C @ Q_here
+                V_S = V_S + N_C @ S_here + M_C @ Y_here
+
+                dSTdq_FC = self._dSTdq_FC_pcs_step(
+                    segment_idx,
+                    H_steps[segment_idx, step_idx],
+                    q,
+                    F_C,
+                )
+
+                dID_dq_step = dSTdq_FC + S_here.T @ (
+                    N_C @ R_B_alpha[segment_idx, step_idx]
+                    + M_C @ Q_B_alpha[segment_idx, step_idx]
+                    + U_S
+                    + P_S
+                )
+                dID_dqd_step = S_here.T @ (
+                    N_C @ J_alpha[segment_idx, step_idx]
+                    + M_C @ Y_B_alpha[segment_idx, step_idx]
+                    + V_S
+                )
+
+                dID_dq = dID_dq_prev + dID_dq_step
+                dID_dqd = dID_dqd_prev + dID_dqd_step
+
+                interval_carry_next = (
+                    M_C,
+                    N_C,
+                    F_C,
+                    P_S,
+                    U_S,
+                    V_S,
+                    dID_dq,
+                    dID_dqd,
+                )
+                output = (M_C, N_C, F_C, P_S, U_S, V_S)
+
+                return interval_carry_next, output
+
+            reverse_step_indices = jnp.arange(n_steps - 1, -1, -1, dtype=jnp.int32)
+            carry_next, reverse_step_outputs = lax.scan(
+                scan_interval_backward,
+                carry,
+                reverse_step_indices,
+            )
+            step_outputs = tuple(jnp.flip(x, axis=0) for x in reverse_step_outputs)
+
+            return carry_next, step_outputs
+
+        reverse_segment_indices = jnp.arange(
+            self.num_segments - 1,
+            -1,
+            -1,
+            dtype=jnp.int32,
+        )
+        (
+            (
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                dID_dq,
+                dID_dqd,
+            ),
+            reverse_segment_outputs,
+        ) = lax.scan(
+            scan_segment_backward,
+            carry_init,
+            reverse_segment_indices,
+        )
+
+        M_C_steps, N_C_steps, F_C_steps, P_S_steps, U_S_steps, V_S_steps = (
+            jnp.flip(x, axis=0) for x in reverse_segment_outputs
+        )
+
+        return (
+            dID_dq,
+            dID_dqd,
+            M_C_steps,
+            N_C_steps,
+            F_C_steps,
+            P_S_steps,
+            U_S_steps,
+            V_S_steps,
+        )
+
+    @eqx.filter_jit
+    def inverse_dynamics_derivatives(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+    ) -> tuple[Array, Array]:
+        """Return ``dID/dq`` and ``dID/dqd`` from the PCS backward pass."""
+        dID_dq, dID_dqd, _, _, _, _, _, _ = self.inverse_dynamics_backward_pass(
+            q,
+            qd,
+            qdd,
+        )
+        return dID_dq, dID_dqd
+
+    @eqx.filter_jit
+    def elastic_force_derivative_q(self, q: Array) -> Array:
+        """Return the analytical derivative ``d(tau_el) / dq``."""
+        del q
+        return self.stiffness_matrix()
+
+    @eqx.filter_jit
+    def damping_force_derivatives(
+        self,
+        q: Array,
+        qd: Array,
+    ) -> tuple[Array, Array]:
+        """Return analytical derivatives of ``damping_matrix(q) @ qd``."""
+        return (
+            jnp.zeros((q.shape[0], q.shape[0]), dtype=q.dtype),
+            self.damping_matrix(q),
+        )
+
+    @eqx.filter_jit
+    def actuation_force_derivative_q(self, q: Array, u: Array) -> Array:
+        """Return the analytical derivative ``d(tau_u) / dq``."""
+        del u
+        return jnp.zeros((q.shape[0], q.shape[0]), dtype=q.dtype)
+
+    @eqx.filter_jit
+    def actuation_force_derivative_u(self, q: Array) -> Array:
+        """Return the analytical derivative ``d(tau_u) / du``."""
+        return self.actuation_matrix(q)
+
+    @eqx.filter_jit
+    def forward_dynamics_derivatives(
+        self,
+        q: Array,
+        qd: Array,
+        qdd: Array,
+        u: Array | None = None,
+    ) -> tuple[Array, Array]:
+        """
+        Return analytical ``dqdd/dq`` and ``dqdd/dqd``.
+
+        This is the unconstrained PCS equivalent of the MATLAB ``ODEJacobian``
+        solve:
+
+        ``dqdd_dq = M \\ (dtau_dq - dID_dq)``
+        ``dqdd_dqd = M \\ (dtau_dqd - dID_dqd)``
+
+        For base PCS, ``dtau_dq = -K`` and ``dtau_dqd = -D`` because the
+        actuation matrix, stiffness, and damping are configuration independent.
+        """
+        if u is None:
+            u = jnp.zeros((self.num_actuators,), dtype=q.dtype)
+
+        mass_matrix = self.inertia_matrix(q)
+        dID_dq, dID_dqd = self.inverse_dynamics_derivatives(q, qd, qdd)
+
+        d_elastic_dq = self.elastic_force_derivative_q(q)
+        d_damping_dq, d_damping_dqd = self.damping_force_derivatives(q, qd)
+        d_actuation_dq = self.actuation_force_derivative_q(q, u)
+
+        dtau_dq = d_actuation_dq - d_elastic_dq - d_damping_dq
+        dtau_dqd = -d_damping_dqd
+
+        dqdd_dq = jnp.linalg.solve(mass_matrix, dtau_dq - dID_dq)
+        dqdd_dqd = jnp.linalg.solve(mass_matrix, dtau_dqd - dID_dqd)
+
+        return dqdd_dq, dqdd_dqd
+
+    @eqx.filter_jit
+    def forward_dynamics_input_derivatives(
+        self,
+        q: Array,
+    ) -> tuple[Array, Array]:
+        """
+        Return analytical ``dqdd/du`` and ``dqdd/dtau_ext``.
+
+        ``tau_ext`` is the direct generalized-force input used by
+        ``forward_dynamics``. Its derivative is therefore ``M(q)^{-1}``.
+        """
+        mass_matrix = self.inertia_matrix(q)
+        dqdd_du = jnp.linalg.solve(mass_matrix, self.actuation_force_derivative_u(q))
+        dqdd_dtau_ext = jnp.linalg.solve(
+            mass_matrix,
+            jnp.eye(q.shape[0], dtype=q.dtype),
+        )
+
+        return dqdd_du, dqdd_dtau_ext
+
+    @eqx.filter_jit
+    def forward_dynamics_state_jacobian(
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None = None,
+    ) -> Array:
+        """
+        Return the analytical state Jacobian ``d([qd, qdd]) / d([q, qd])``.
+
+        This mirrors the output of the MATLAB ``ODEJacobian`` function for the
+        unconstrained PCS model.
+        """
+        q, qd = jnp.split(y, 2)
+
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u = actuation_args[0]
+            tau_ext = None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+
+        if u is None:
+            u = jnp.zeros((self.num_actuators,), dtype=q.dtype)
+        if tau_ext is None:
+            tau_ext = jnp.zeros((q.shape[0],), dtype=q.dtype)
+
+        yd = self.forward_dynamics(t, y, (u, tau_ext))
+        _, qdd = jnp.split(yd, 2)
+        dqdd_dq, dqdd_dqd = self.forward_dynamics_derivatives(q, qd, qdd, u)
+
+        eye = jnp.eye(q.shape[0], dtype=q.dtype)
+        zeros = jnp.zeros_like(eye)
+        return jnp.block([[zeros, eye], [dqdd_dq, dqdd_dqd]])
+
+    @eqx.filter_jit
+    def forward_dynamics_jacobians(
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None = None,
+    ) -> tuple[Array, Array, Array]:
+        """
+        Return state, actuation-input, and external-force Jacobians.
+
+        The returned tuple is ``(dyd_dy, dyd_du, dyd_dtau_ext)`` where
+        ``yd = forward_dynamics(t, y, actuation_args)``.
+        """
+        q, _ = jnp.split(y, 2)
+
+        if actuation_args is None:
+            u = None
+        elif len(actuation_args) == 1 or len(actuation_args) == 2:
+            u = actuation_args[0]
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+
+        if u is None:
+            u = jnp.zeros((self.num_actuators,), dtype=q.dtype)
+
+        dyd_dy = self.forward_dynamics_state_jacobian(t, y, actuation_args)
+        dqdd_du, dqdd_dtau_ext = self.forward_dynamics_input_derivatives(q)
+
+        zeros_du = jnp.zeros((q.shape[0], u.shape[0]), dtype=q.dtype)
+        zeros_tau = jnp.zeros((q.shape[0], q.shape[0]), dtype=q.dtype)
+        dyd_du = jnp.concatenate([zeros_du, dqdd_du], axis=0)
+        dyd_dtau_ext = jnp.concatenate([zeros_tau, dqdd_dtau_ext], axis=0)
+
+        return dyd_dy, dyd_du, dyd_dtau_ext
