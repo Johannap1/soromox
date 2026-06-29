@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 # # Test adaptive/implicit integration
 # from diffrax import Tsit5, PIDController
 # from diffrax import ImplicitEuler, PIDController
-# from diffrax import Kvaerno5, PIDController
+from diffrax import Tsit5, ImplicitEuler, Kvaerno5, PIDController
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.rendering import MatplotlibRenderer
@@ -71,7 +71,7 @@ class RecordedInput(eqx.Module):
         Permute the rows here if your ROS node uses a different chamber order.
         """
         t = state.t
-        
+
         # Debug for track simulation status
         jax.debug.print("t = {t}", t=t)
 
@@ -177,9 +177,10 @@ if __name__ == "__main__":
         solver_dt=solver_dt,
         save_dt=save_dt,
         save_ts=save_ts,
-        # solver=Tsit5(),
-        # solver=ImplicitEuler(),
-        # stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),
+        solver=Tsit5(),                                             # Default but with fixed-time steps
+        # solver=ImplicitEuler(),                                   # Crash :(
+        # solver=Kvaerno5(),
+        stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),    # adaptive time-steps
         max_steps=None,
     )
 
@@ -249,6 +250,55 @@ if __name__ == "__main__":
     ax.set_zlabel("Z [m]")
     ax.set_title("End-effector trajectory (3D)")
     fig.colorbar(p, ax=ax, label="Time [s]")
+    plt.show()
+
+    # =====================================================
+    # Overlay recorded Vicon tip position on simulated EE
+    # =====================================================
+    # Vicon tip = last cross-section; positions are rows 0:3 of the 7-pose
+    tip_idx_cs = N - 1
+    vicon_tip_pos = np.asarray(poses_data[0:3, tip_idx_cs, :])   # (3, M)
+    vicon_time = act_time                                        # same merged_time clock, zeroed
+
+    print("recording covers t =", float(vicon_time.min()), "to", float(vicon_time.max()), "s")
+    print("sim window: t0 =", t0, " t1 =", t1)
+
+    # Interpolate each axis onto the simulation save times, skipping NaNs
+    ts_np = np.asarray(ts)
+    vicon_interp = np.full((3, ts_np.shape[0]), np.nan)
+    for ax_i in range(3):
+        series = vicon_tip_pos[ax_i, :]
+        good = np.isfinite(series)
+        if good.sum() >= 2:
+            vicon_interp[ax_i, :] = np.interp(
+                ts_np, vicon_time[good], series[good],
+                left=np.nan, right=np.nan,      # don't extrapolate outside recording
+            )
+
+    g_ee_np = np.asarray(g_ee_ts)
+    sim_pos = g_ee_np[:, 0:3, 3]                 # (T, 3)
+
+    fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+    axis_names = ["x", "y", "z"]
+    for ax_i in range(3):
+        axes[ax_i].plot(ts_np, sim_pos[:, ax_i], label="Sim EE", linewidth=2)
+        axes[ax_i].plot(ts_np, vicon_interp[ax_i, :], "--", label="Vicon tip", linewidth=2)
+        axes[ax_i].set_ylabel(f"{axis_names[ax_i]} [m]")
+        axes[ax_i].grid(True)
+        axes[ax_i].legend(loc="upper right")
+    axes[-1].set_xlabel("Time [s]")
+    axes[0].set_title("Simulated EE vs recorded Vicon tip (per axis)")
+    plt.tight_layout()
+    plt.show()
+
+    # 3D overlay
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(sim_pos[:, 0], sim_pos[:, 1], sim_pos[:, 2], label="Sim EE", linewidth=2)
+    ax.plot(vicon_interp[0, :], vicon_interp[1, :], vicon_interp[2, :], "--", label="Vicon tip", linewidth=2)
+    ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
+    ax.axis("equal"); ax.legend(); ax.set_title("Trajectory overlay")
+    plt.tight_layout()
     plt.show()
 
     # =====================================================
