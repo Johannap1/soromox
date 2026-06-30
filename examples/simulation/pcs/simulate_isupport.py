@@ -11,20 +11,19 @@ IEEE Access 11 (2023): 37840-37853.
 https://ieeexplore.ieee.org/abstract/document/10098800
 """
 
-from functools import partial
-
 ## Disable warning for memory preallocation
 import os
+from functools import partial
+
 # execute this command here: export XLA_PYTHON_CLIENT_PREALLOCATE=false
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-import scipy.io as sio
-import numpy as np
-
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import matplotlib.pyplot as plt
+import numpy as np
+import scipy.io as sio
 
 # # Test adaptive/implicit integration
 # from diffrax import Tsit5, PIDController
@@ -39,31 +38,35 @@ from soromox.systems import ISupport, ISupportParams, SystemState
 data = sio.loadmat("amisupport_dataset/2026-06-08-11-59-18_py.mat", squeeze_me=True)
 
 ## Extract Data
-poses_data  = data["poses_data"]      # (7, N, M)
-markers     = data["markers"]         # (3*num_markers, M)
+poses_data = data["poses_data"]  # (7, N, M)
+markers = data["markers"]  # (3*num_markers, M)
 merged_time = np.asarray(data["merged_time"]).squeeze()
-N           = int(data["N"])
-M           = int(data["M"])
+N = int(data["N"])
+M = int(data["M"])
 
 # Input samples
 act_values = np.asarray(data["actuation_input"], dtype=np.float64)  # (6, M)
 assert act_values.shape[0] == 6, act_values.shape
-assert act_values.shape[1] == merged_time.shape[0], (act_values.shape, merged_time.shape)
+assert act_values.shape[1] == merged_time.shape[0], (
+    act_values.shape,
+    merged_time.shape,
+)
 
 # bar2Pa
-PRESSURE_SCALE = 1.0e5
+PRESSURE_SCALE = 1.0e4
 act_values = act_values * PRESSURE_SCALE
 
-act_time     = merged_time - merged_time[0]   # zero the clock
-act_time_j   = jnp.asarray(act_time)
-act_values_j = jnp.asarray(act_values)        # (6, M)
+act_time = merged_time - merged_time[0]  # zero the clock
+act_time_j = jnp.asarray(act_time)
+act_values_j = jnp.asarray(act_values)  # (6, M)
 
 # =====================================================
 # Recorded-input "controller": ignores state, returns interp(t)
 # =====================================================
 class RecordedInput(eqx.Module):
-    act_time: jax.Array        # (M,)
-    act_values: jax.Array      # (6, M)
+    act_time: jax.Array     # (M,)
+    act_values: jax.Array   # (6, M)
+    perm: jax.Array         # (6, 6) permutation matrix
 
     def __call__(self, state: SystemState):
         """Interpolate the 6 recorded chamber pressures at the live solver time.
@@ -75,13 +78,37 @@ class RecordedInput(eqx.Module):
         # Debug for track simulation status
         jax.debug.print("t = {t}", t=t)
 
-        u_t = jnp.stack([
-            jnp.interp(t, self.act_time, self.act_values[k, :])
-            for k in range(self.act_values.shape[0])
-        ])
-        return u_t, None       # no control_state derivative
+        u_t = jnp.stack(
+            [
+                jnp.interp(t, self.act_time, self.act_values[k, :])
+                for k in range(self.act_values.shape[0])
+            ]
+        )
 
-recorded_input = RecordedInput(act_time=act_time_j, act_values=act_values_j)
+        u_t = self.perm @ u_t
+        return u_t, None  # no control_state derivative
+
+def permutation_matrix(perm_idx):
+    P = jnp.zeros((len(perm_idx), len(perm_idx)))
+    P = P.at[jnp.arange(len(perm_idx)), jnp.array(perm_idx)].set(1.0)
+    return P
+
+# # identity (no swap)
+# perm_idx = [0, 1, 2, 3, 4, 5]
+# perm_idx = [0, 2, 1, 3, 5, 4]
+# perm_idx = [1, 0, 2, 4, 3, 5]
+perm_idx = [1, 2, 0, 4, 5, 3]
+# perm_idx = [2, 0, 1, 5, 3, 4]
+# perm_idx = [2, 1, 0, 5, 4, 3]
+
+P = permutation_matrix(perm_idx)
+
+# Define Input
+recorded_input = RecordedInput(
+    act_time=act_time_j,
+    act_values=act_values_j,
+    perm=P,
+)
 
 if __name__ == "__main__":
     num_segments = 2
@@ -116,11 +143,13 @@ if __name__ == "__main__":
         ).flatten()
     )
     params = ISupportParams(
-        base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
+        # base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
+        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         length=segment_lengths,
         radius=35.6 * 1e-3 * jnp.ones((num_segments,)),
         density=1104 * jnp.ones((num_segments,)),
-        gravity=jnp.array([0.0, 0.0, 9.81]),
+        # gravity=jnp.array([0.0, 0.0, 9.81]),
+        gravity=jnp.array([9.81, 0.0, 0.0]),
         young_modulus=E * jnp.ones((num_segments,)),
         shear_modulus=G * jnp.ones((num_segments,)),
         damping_matrix=damping_matrix,
@@ -146,22 +175,22 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.0
-    t1 = 16.0
+    t1 = 25.0
 
     initial_state = SystemState(
-        t=t0,                                 # plain float (NOT jnp.array): keeps the save grid static
+        t=t0,  # plain float (NOT jnp.array): keeps the save grid static
         y=jnp.concatenate([q0, qd0]),
-        u=jnp.zeros((robot.num_actuators,)),   # base_u = 0; all input via controller
-        control_state=None,                    # no control state to track
+        u=jnp.zeros((robot.num_actuators,)),  # base_u = 0; all input via controller
+        control_state=None,  # no control state to track
     )
 
     # =====================================================
     # Single closed-loop call = time-varying open-loop input
     # =====================================================
-    solver_dt = 1e-4
-    save_dt = 1e-4
+    solver_dt = 1e-3
+    save_dt = 1e-3
 
-    # fixing bug for float accumulation: [0, t1] issue
+    # # fixing bug for float accumulation: [t0, t1] issue
     save_ts = jnp.arange(t0, t1 + save_dt, save_dt)
     save_ts = save_ts[save_ts <= t1]
 
@@ -177,16 +206,16 @@ if __name__ == "__main__":
         solver_dt=solver_dt,
         save_dt=save_dt,
         save_ts=save_ts,
-        solver=Tsit5(),                                             # Default but with fixed-time steps
-        # solver=ImplicitEuler(),                                   # Crash :(
-        # solver=Kvaerno5(),
-        stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),    # adaptive time-steps
+        solver=Tsit5(),                                               # Default but with fixed-time steps
+        # solver=ImplicitEuler(),                                       # Crash :(
+        # solver=Kvaerno5(),  # Slow but accurate
+        stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),  # adaptive time-steps
         max_steps=None,
     )
 
     ts = trajectory.t
     q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
-    u_ts = trajectory.u       # actuation actually applied at each save step
+    u_ts = trajectory.u  # actuation actually applied at each save step
 
     # =====================================================
     # Configuration q and velocity qd upon time
@@ -194,7 +223,9 @@ if __name__ == "__main__":
     # DOF labels per segment: [kappa_x, kappa_y, kappa_z, sigma_x, sigma_y, sigma_z]
     dof_names = ["kx", "ky", "kz", "sx", "sy", "sz"]
     n_dof = q_ts.shape[1]
-    labels = [f"seg{j}_{dof_names[i]}" for j in range(num_segments) for i in range(6)][:n_dof]
+    labels = [f"seg{j}_{dof_names[i]}" for j in range(num_segments) for i in range(6)][
+        :n_dof
+    ]
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -257,10 +288,16 @@ if __name__ == "__main__":
     # =====================================================
     # Vicon tip = last cross-section; positions are rows 0:3 of the 7-pose
     tip_idx_cs = N - 1
-    vicon_tip_pos = np.asarray(poses_data[0:3, tip_idx_cs, :])   # (3, M)
-    vicon_time = act_time                                        # same merged_time clock, zeroed
+    vicon_tip_pos = np.asarray(poses_data[0:3, tip_idx_cs, :])  # (3, M)
+    vicon_time = act_time  # same merged_time clock, zeroed
 
-    print("recording covers t =", float(vicon_time.min()), "to", float(vicon_time.max()), "s")
+    print(
+        "recording covers t =",
+        float(vicon_time.min()),
+        "to",
+        float(vicon_time.max()),
+        "s",
+    )
     print("sim window: t0 =", t0, " t1 =", t1)
 
     # Interpolate each axis onto the simulation save times, skipping NaNs
@@ -271,18 +308,23 @@ if __name__ == "__main__":
         good = np.isfinite(series)
         if good.sum() >= 2:
             vicon_interp[ax_i, :] = np.interp(
-                ts_np, vicon_time[good], series[good],
-                left=np.nan, right=np.nan,      # don't extrapolate outside recording
+                ts_np,
+                vicon_time[good],
+                series[good],
+                left=np.nan,
+                right=np.nan,  # don't extrapolate outside recording
             )
 
     g_ee_np = np.asarray(g_ee_ts)
-    sim_pos = g_ee_np[:, 0:3, 3]                 # (T, 3)
+    sim_pos = g_ee_np[:, 0:3, 3]  # (T, 3)
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     axis_names = ["x", "y", "z"]
     for ax_i in range(3):
         axes[ax_i].plot(ts_np, sim_pos[:, ax_i], label="Sim EE", linewidth=2)
-        axes[ax_i].plot(ts_np, vicon_interp[ax_i, :], "--", label="Vicon tip", linewidth=2)
+        axes[ax_i].plot(
+            ts_np, vicon_interp[ax_i, :], "--", label="Vicon tip", linewidth=2
+        )
         axes[ax_i].set_ylabel(f"{axis_names[ax_i]} [m]")
         axes[ax_i].grid(True)
         axes[ax_i].legend(loc="upper right")
@@ -295,9 +337,20 @@ if __name__ == "__main__":
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
     ax.plot(sim_pos[:, 0], sim_pos[:, 1], sim_pos[:, 2], label="Sim EE", linewidth=2)
-    ax.plot(vicon_interp[0, :], vicon_interp[1, :], vicon_interp[2, :], "--", label="Vicon tip", linewidth=2)
-    ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]"); ax.set_zlabel("Z [m]")
-    ax.axis("equal"); ax.legend(); ax.set_title("Trajectory overlay")
+    ax.plot(
+        vicon_interp[0, :],
+        vicon_interp[1, :],
+        vicon_interp[2, :],
+        "--",
+        label="Vicon tip",
+        linewidth=2,
+    )
+    ax.set_xlabel("X [m]")
+    ax.set_ylabel("Y [m]")
+    ax.set_zlabel("Z [m]")
+    ax.axis("equal")
+    ax.legend()
+    ax.set_title("Trajectory overlay")
     plt.tight_layout()
     plt.show()
 
