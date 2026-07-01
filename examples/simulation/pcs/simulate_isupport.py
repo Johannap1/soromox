@@ -52,6 +52,9 @@ assert act_values.shape[1] == merged_time.shape[0], (
     merged_time.shape,
 )
 
+# Air Leaks reading at 3 bar
+p_real = [2.33, 2.35, 2.26, 2.09, 2.63, 2.32]
+
 # bar2Pa
 PRESSURE_SCALE = 1.0e4
 act_values = act_values * PRESSURE_SCALE
@@ -67,6 +70,7 @@ class RecordedInput(eqx.Module):
     act_time: jax.Array     # (M,)
     act_values: jax.Array   # (6, M)
     perm: jax.Array         # (6, 6) permutation matrix
+    air_leaks: jax.Array    # (6, 6) Scale matrix for Air Leaks
 
     def __call__(self, state: SystemState):
         """Interpolate the 6 recorded chamber pressures at the live solver time.
@@ -75,17 +79,20 @@ class RecordedInput(eqx.Module):
         """
         t = state.t
 
-        # Debug for track simulation status
-        jax.debug.print("t = {t}", t=t)
+        # # Debug for track simulation status
+        # jax.debug.print("t = {t}", t=t)
 
-        u_t = jnp.stack(
-            [
-                jnp.interp(t, self.act_time, self.act_values[k, :])
-                for k in range(self.act_values.shape[0])
-            ]
-        )
+        # u_t = jnp.stack(
+        #     [
+        #         jnp.interp(t, self.act_time, self.act_values[k, :])
+        #         for k in range(self.act_values.shape[0])
+        #     ]
+        # )
 
-        u_t = self.perm @ u_t
+        # Improve computational efficiency
+        u_t = jax.vmap(lambda row: jnp.interp(t, self.act_time, row))(self.act_values)
+
+        u_t = self.air_leaks @ self.perm @ u_t
         return u_t, None  # no control_state derivative
 
 def permutation_matrix(perm_idx):
@@ -93,21 +100,22 @@ def permutation_matrix(perm_idx):
     P = P.at[jnp.arange(len(perm_idx)), jnp.array(perm_idx)].set(1.0)
     return P
 
-# # identity (no swap)
-# perm_idx = [0, 1, 2, 3, 4, 5]
-# perm_idx = [0, 2, 1, 3, 5, 4]
-# perm_idx = [1, 0, 2, 4, 3, 5]
-perm_idx = [1, 2, 0, 4, 5, 3]
-# perm_idx = [2, 0, 1, 5, 3, 4]
-# perm_idx = [2, 1, 0, 5, 4, 3]
+def gain_air_leaks(p_real):
+    return jnp.diag(jnp.asarray(p_real)) / 3.0
+
+# # Permutation for matching the experiment setup
+# perm_idx = [1, 2, 0, 4, 5, 3] # this should be the best
+perm_idx = [2, 1, 0, 5, 4, 3]
 
 P = permutation_matrix(perm_idx)
+air_leaks = gain_air_leaks(p_real)
 
 # Define Input
 recorded_input = RecordedInput(
     act_time=act_time_j,
     act_values=act_values_j,
     perm=P,
+    air_leaks=air_leaks
 )
 
 if __name__ == "__main__":
@@ -178,7 +186,7 @@ if __name__ == "__main__":
     t1 = 30.3
 
     initial_state = SystemState(
-        t=t0,  # plain float (NOT jnp.array): keeps the save grid static
+        t=t0,
         y=jnp.concatenate([q0, qd0]),
         u=jnp.zeros((robot.num_actuators,)),  # base_u = 0; all input via controller
         control_state=None,  # no control state to track
