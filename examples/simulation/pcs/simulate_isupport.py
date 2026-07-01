@@ -34,6 +34,10 @@ jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.rendering import MatplotlibRenderer
 from soromox.systems import ISupport, ISupportParams, SystemState
 
+# Figure path
+RESULTS_DIR = "amisupport_dataset/results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
 # ---- Load real actuation ----
 data = sio.loadmat("amisupport_dataset/2026-06-08-11-59-18_py.mat", squeeze_me=True)
 
@@ -79,8 +83,8 @@ class RecordedInput(eqx.Module):
         """
         t = state.t
 
-        # # Debug for track simulation status
-        # jax.debug.print("t = {t}", t=t)
+        # Debug for track simulation status
+        jax.debug.print("t = {t}", t=t)
 
         # u_t = jnp.stack(
         #     [
@@ -103,8 +107,7 @@ def permutation_matrix(perm_idx):
 def gain_air_leaks(p_real):
     return jnp.diag(jnp.asarray(p_real)) / 3.0
 
-# # Permutation for matching the experiment setup
-# perm_idx = [1, 2, 0, 4, 5, 3] # this should be the best
+# Permutation for matching the experiment setup
 perm_idx = [2, 1, 0, 5, 4, 3]
 
 P = permutation_matrix(perm_idx)
@@ -183,7 +186,7 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.3
-    t1 = 30.3
+    t1 = 45.3
 
     initial_state = SystemState(
         t=t0,
@@ -253,7 +256,7 @@ if __name__ == "__main__":
     axes[1].legend(ncol=4, fontsize=8)
 
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     # =====================================================
     # End-effector position upon time
@@ -266,30 +269,30 @@ if __name__ == "__main__":
     )
     g_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
 
-    plt.figure()
-    plt.plot(ts, g_ee_ts[:, 0, 3], label="End-effector x [m]")
-    plt.plot(ts, g_ee_ts[:, 1, 3], label="End-effector y [m]")
-    plt.plot(ts, g_ee_ts[:, 2, 3], label="End-effector z [m]")
-    plt.xlabel("Time [s]")
-    plt.ylabel("End-effector position [m]")
-    plt.legend()
-    plt.grid(True)
-    plt.box(True)
-    plt.tight_layout()
-    plt.show()
+    # plt.figure()
+    # plt.plot(ts, g_ee_ts[:, 0, 3], label="End-effector x [m]")
+    # plt.plot(ts, g_ee_ts[:, 1, 3], label="End-effector y [m]")
+    # plt.plot(ts, g_ee_ts[:, 2, 3], label="End-effector z [m]")
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("End-effector position [m]")
+    # plt.legend()
+    # plt.grid(True)
+    # plt.box(True)
+    # plt.tight_layout()
+    # plt.show()
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-    p = ax.scatter(
-        g_ee_ts[:, 0, 3], g_ee_ts[:, 1, 3], g_ee_ts[:, 2, 3], c=ts, cmap="viridis"
-    )
-    ax.axis("equal")
-    ax.set_xlabel("X [m]")
-    ax.set_ylabel("Y [m]")
-    ax.set_zlabel("Z [m]")
-    ax.set_title("End-effector trajectory (3D)")
-    fig.colorbar(p, ax=ax, label="Time [s]")
-    plt.show()
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection="3d")
+    # p = ax.scatter(
+    #     g_ee_ts[:, 0, 3], g_ee_ts[:, 1, 3], g_ee_ts[:, 2, 3], c=ts, cmap="viridis"
+    # )
+    # ax.axis("equal")
+    # ax.set_xlabel("X [m]")
+    # ax.set_ylabel("Y [m]")
+    # ax.set_zlabel("Z [m]")
+    # ax.set_title("End-effector trajectory (3D)")
+    # fig.colorbar(p, ax=ax, label="Time [s]")
+    # plt.show()
 
     # =====================================================
     # Overlay recorded Vicon tip position on simulated EE
@@ -339,7 +342,7 @@ if __name__ == "__main__":
     axes[-1].set_xlabel("Time [s]")
     axes[0].set_title("Simulated EE vs recorded Vicon tip (per axis)")
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     # 3D overlay
     fig = plt.figure()
@@ -360,7 +363,7 @@ if __name__ == "__main__":
     ax.legend()
     ax.set_title("Trajectory overlay")
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     # =====================================================
     # Applied actuation (sanity check vs recorded data)
@@ -374,7 +377,7 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.title("Applied actuation")
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
     # # =====================================================
     # # Energy computation upon time
@@ -393,6 +396,11 @@ if __name__ == "__main__":
     # plt.box(True)
     # plt.tight_layout()
     # plt.show()
+
+    ## Save Figures
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        fig.savefig(os.path.join(RESULTS_DIR, f"figure_{num}.png"), dpi=200, bbox_inches="tight")
 
     # # =====================================================
     # # Plot the robot configuration upon time
