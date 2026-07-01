@@ -149,12 +149,12 @@ if __name__ == "__main__":
         radius=35.6 * 1e-3 * jnp.ones((num_segments,)),
         density=1104 * jnp.ones((num_segments,)),
         # gravity=jnp.array([0.0, 0.0, 9.81]),
-        gravity=jnp.array([9.81, 0.0, 0.0]),
+        gravity=jnp.array([-9.81, 0.0, 0.0]),
         young_modulus=E * jnp.ones((num_segments,)),
         shear_modulus=G * jnp.ones((num_segments,)),
         damping_matrix=damping_matrix,
         reference_strain=jnp.tile(
-            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
+            jnp.array([0.0, 0.0, 0.0, -1.0, 0.0, 0.0]), num_segments
         ),
         chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_segments,)),
         chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_segments,)),
@@ -174,8 +174,8 @@ if __name__ == "__main__":
     qd0 = jnp.zeros_like(q0)
 
     # Start and End time of the simulation
-    t0 = 15.0
-    t1 = 25.0
+    t0 = 15.3
+    t1 = 30.3
 
     initial_state = SystemState(
         t=t0,  # plain float (NOT jnp.array): keeps the save grid static
