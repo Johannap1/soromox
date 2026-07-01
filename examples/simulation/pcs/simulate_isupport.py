@@ -25,9 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io as sio
 
-# # Test adaptive/implicit integration
-# from diffrax import Tsit5, PIDController
-# from diffrax import ImplicitEuler, PIDController
+# Test adaptive/implicit integration
 from diffrax import Tsit5, ImplicitEuler, Kvaerno5, PIDController
 
 jax.config.update("jax_enable_x64", True)  # double precision
