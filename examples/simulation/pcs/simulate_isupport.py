@@ -81,8 +81,8 @@ class RecordedInput(eqx.Module):
         """
         t = state.t
 
-        # Debug for track simulation status
-        jax.debug.print("t = {t}", t=t)
+        # # Debug for track simulation status
+        # jax.debug.print("t = {t}", t=t)
 
         # u_t = jnp.stack(
         #     [
@@ -183,8 +183,8 @@ if __name__ == "__main__":
     qd0 = jnp.zeros_like(q0)
 
     # Start and End time of the simulation
-    t0 = 15.3
-    t1 = 45.3
+    t0 = 15.22
+    t1 = 45.22
 
     initial_state = SystemState(
         t=t0,
