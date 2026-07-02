@@ -61,6 +61,8 @@ p_real = [2.33, 2.35, 2.26, 2.09, 2.63, 2.32]
 PRESSURE_SCALE = 1.0e4
 act_values = act_values * PRESSURE_SCALE
 
+INPUT_DELAY = 0.0  # control-box delay [s], tune to your hardware
+
 act_time = merged_time - merged_time[0]  # zero the clock
 act_time_j = jnp.asarray(act_time)
 act_values_j = jnp.asarray(act_values)  # (6, M)
@@ -73,26 +75,23 @@ class RecordedInput(eqx.Module):
     act_values: jax.Array   # (6, M)
     perm: jax.Array         # (6, 6) permutation matrix
     air_leaks: jax.Array    # (6, 6) Scale matrix for Air Leaks
+    delay: float            # input-box delay [s]
 
     def __call__(self, state: SystemState):
-        """Interpolate the 6 recorded chamber pressures at the live solver time.
+        """Interpolate the 6 recorded chamber pressures at the live solver time,
+        shifted back by `delay` to emulate the control-box latency.
         Returns flat (6,) ordered [seg0_ch0, seg0_ch1, seg0_ch2, seg1_ch0, seg1_ch1, seg1_ch2].
         Permute the rows here if your ROS node uses a different chamber order.
         """
         t = state.t
 
-        # # Debug for track simulation status
-        # jax.debug.print("t = {t}", t=t)
-
-        # u_t = jnp.stack(
-        #     [
-        #         jnp.interp(t, self.act_time, self.act_values[k, :])
-        #         for k in range(self.act_values.shape[0])
-        #     ]
-        # )
+        # Apply control-box delay: the pressure applied at time t is the
+        # command that was issued at t - delay. Before the first sample the
+        # signal is held at act_values[:, 0] (jnp.interp clamps at endpoints).
+        t_delayed = t - self.delay
 
         # Improve computational efficiency
-        u_t = jax.vmap(lambda row: jnp.interp(t, self.act_time, row))(self.act_values)
+        u_t = jax.vmap(lambda row: jnp.interp(t_delayed, self.act_time, row))(self.act_values)
 
         u_t = self.air_leaks @ self.perm @ u_t
         return u_t, None  # no control_state derivative
@@ -116,7 +115,8 @@ recorded_input = RecordedInput(
     act_time=act_time_j,
     act_values=act_values_j,
     perm=P,
-    air_leaks=air_leaks
+    air_leaks=air_leaks,
+    delay=INPUT_DELAY
 )
 
 if __name__ == "__main__":
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     )
     params = ISupportParams(
         # base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
-        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, -0.033, 0.0, 0.0]),    # offset of the experimental platform
         length=segment_lengths,
         radius=35.6 * 1e-3 * jnp.ones((num_segments,)),
         density=1104 * jnp.ones((num_segments,)),
@@ -184,7 +184,7 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.22
-    t1 = 45.22
+    t1 = 182.22
 
     initial_state = SystemState(
         t=t0,
@@ -326,6 +326,22 @@ if __name__ == "__main__":
 
     g_ee_np = np.asarray(g_ee_ts)
     sim_pos = g_ee_np[:, 0:3, 3]  # (T, 3)
+
+    ### Save CSV ####
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "time": ts_np,
+        "sim_x": sim_pos[:, 0],
+        "sim_y": sim_pos[:, 1],
+        "sim_z": sim_pos[:, 2],
+        "vicon_x": vicon_interp[0, :],
+        "vicon_y": vicon_interp[1, :],
+        "vicon_z": vicon_interp[2, :],
+    })
+    df.to_csv(os.path.join(RESULTS_DIR, "tip_positions.csv"), index=False)
+    print("Tip position saved in the csv file.")
+    #################
 
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     axis_names = ["x", "y", "z"]
