@@ -11,13 +11,26 @@ Key Advancements:
 
 ### Results
 **State:**
-![state](examples/simulation/pcs/amisupport_dataset/results/figure_1.png)
+![state](examples/simulation/pcs/amisupport_dataset/results/total_sim/figure_1.png)
 
 **Tip Position Comparison:**
-![tip position](examples/simulation/pcs/amisupport_dataset/results/figure_2.png)
+![tip position](examples/simulation/pcs/amisupport_dataset/results/total_sim/figure_2.png)
 
 **3D Trajectory Comparison:**
-![3D trajectory](examples/simulation/pcs/amisupport_dataset/results/figure_3.png)
+![3D trajectory](examples/simulation/pcs/amisupport_dataset/results/total_sim/figure_3.png)
 
 **Input Law:**
-![input law](examples/simulation/pcs/amisupport_dataset/results/figure_4.png)
+![input law](examples/simulation/pcs/amisupport_dataset/results/total_sim/figure_4.png)
+
+## VICON and MATLAB
+**Rest Configuration:**
+![3D trajectory](examples/simulation/pcs/amisupport_dataset/results/matlab/rest_configuration.png)
+
+**State:**
+![state](examples/simulation/pcs/amisupport_dataset/results/matlab/q.png)
+
+**Tip Position Comparison:**
+![tip position](examples/simulation/pcs/amisupport_dataset/results/matlab/tip_position.png)
+
+**3D Trajectory Comparison:**
+![3D trajectory](examples/simulation/pcs/amisupport_dataset/results/matlab/3d_comparison.png)
