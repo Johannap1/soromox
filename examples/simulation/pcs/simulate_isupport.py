@@ -152,18 +152,16 @@ if __name__ == "__main__":
         ).flatten()
     )
     params = ISupportParams(
-        # base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
-        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, -0.033, 0.0, 0.0]),    # offset of the experimental platform
+        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.029, 0.0, 0.0]),    # offset of the experimental platform
         length=segment_lengths,
-        radius=35.6 * 1e-3 * jnp.ones((num_segments,)),
+        radius= 28.6* 1e-3 * jnp.ones((num_segments,)),
         density=1104 * jnp.ones((num_segments,)),
-        # gravity=jnp.array([0.0, 0.0, 9.81]),
-        gravity=jnp.array([-9.81, 0.0, 0.0]),
+        gravity=jnp.array([9.81, 0.0, 0.0]),
         young_modulus=E * jnp.ones((num_segments,)),
         shear_modulus=G * jnp.ones((num_segments,)),
         damping_matrix=damping_matrix,
         reference_strain=jnp.tile(
-            jnp.array([0.0, 0.0, 0.0, -1.0, 0.0, 0.0]), num_segments
+            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
         ),
         chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_segments,)),
         chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_segments,)),
@@ -184,7 +182,7 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.22
-    t1 = 182.22
+    t1 = 30.22
 
     initial_state = SystemState(
         t=t0,
