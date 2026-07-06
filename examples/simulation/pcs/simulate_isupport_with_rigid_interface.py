@@ -1,9 +1,20 @@
 """
-Simulates an Additive Manufacturing (AM) I-SUPPORT manipulator. The system parameters are adapted from
+Simulates a three-segment Additive Manufacturing (AM) I-SUPPORT manipulator.
 
-Alessi, Carlo, Egidio Falotico, and Alessandro Lucantonio.
-"Ablation study of a dynamic model for a 3d-printed pneumatic soft robotic arm." IEEE Access 11 (2023): 37840-37853.
-https://ieeexplore.ieee.org/abstract/document/10098800
+This is a variation of ``simulate_isupport.py`` where the first and third
+segments are pneumatic soft segments, while the middle segment is an
+unactuated rigid interface represented by a straight reference strain with all
+strain coordinates deactivated.
+
+The calibrated segment lengths are taken from Elektron97/am_isupportGVS:
+- soft link length: identification.m lines 42-44
+  https://github.com/Elektron97/am_isupportGVS/blob/a98ed8a3c41e37723ce5c30e86fd0a0c9d653f41/identification.m#L42-L44
+- adjusted short interface length: identification.m lines 49-50
+  https://github.com/Elektron97/am_isupportGVS/blob/a98ed8a3c41e37723ce5c30e86fd0a0c9d653f41/identification.m#L49-L50
+
+The same repository documents nominal rigid interface alternatives of 5 mm and
+20 mm in robot_params.md lines 7-10:
+https://github.com/Elektron97/am_isupportGVS/blob/a98ed8a3c41e37723ce5c30e86fd0a0c9d653f41/robot_params.md#L7-L10
 """
 
 from functools import partial
@@ -14,10 +25,10 @@ import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.rendering import MatplotlibRenderer, ViserRenderer
-from soromox.systems import ISupport, ISupportParams, SystemState
+from soromox.systems import ISupport, ISupportParams, PCSStructure, SystemState
 
 if __name__ == "__main__":
-    num_segments = 2
+    num_segments = 3
 
     # Elastic modulus and poisson ratio
     E = 1.6464 * 1e6  # Elastic modulus [Pa]
@@ -26,7 +37,19 @@ if __name__ == "__main__":
         2 * (1 + poisson_ratio)
     )  # Shear modulus from elastic modulus and poisson ratio
 
-    segment_lengths = 190 * 1e-3 * jnp.ones((num_segments,))
+    segment_lengths = jnp.array([180e-3, 11e-3, 180e-3])
+
+    # The middle segment is an unactuated rigid interface. It remains straight
+    # through the reference strain and contributes no generalized coordinates.
+    segment_strain_selector = jnp.array(
+        [
+            [True, True, True, True, True, True],
+            [False, False, False, False, False, False],
+            [True, True, True, True, True, True],
+        ],
+        dtype=bool,
+    )
+    strain_selector = segment_strain_selector.flatten()
 
     # damping coefficient
     # these values are from the paper but they seem way too large
@@ -36,8 +59,8 @@ if __name__ == "__main__":
     gamma_r = 1.0 * 1e-3  # rotational damping constant [m^2/s]
     # Damping is specified per unit backbone length and must be integrated over
     # each segment, matching the strain-space stiffness assembly. Without this
-    # length scaling the velocity term makes the two-segment fixed-step rollout
-    # unnecessarily stiff and can drive the explicit solver to NaNs.
+    # length scaling the velocity term makes the fixed-step rollout unnecessarily
+    # stiff and can drive the explicit solver to NaNs.
     damping_matrix = jnp.diag(
         (
             jnp.repeat(
@@ -69,17 +92,21 @@ if __name__ == "__main__":
     # ======================================================
     # Robot initialization
     # ======================================================
-    robot = ISupport(params=params)
+    robot = ISupport(
+        params=params,
+        structure=PCSStructure(strain_selector=strain_selector),
+    )
 
     # =====================================================
     # Simulation upon time
     # =====================================================
     # Initial configuration
-    q0 = jnp.repeat(
+    q0_full = jnp.repeat(
         jnp.array([0.0, 0.0, -1.0 * jnp.pi, 0.1, 0.2, 0.0])[None, :],
         num_segments,
         axis=0,
     ).flatten()
+    q0 = q0_full[strain_selector]
     # Initial velocities
     qd0 = jnp.zeros_like(q0)
 
@@ -87,9 +114,16 @@ if __name__ == "__main__":
     # A = robot.actuation_matrix(q0)
     # print("A:\n", A)
 
-    # Actuation pressures
+    # Actuation pressures. The middle segment keeps zero-valued dummy inputs
+    # because ISupport exposes three chamber inputs per segment.
     u = (
-        jnp.repeat(jnp.array([2e-1, 0.0, 0.0])[None, :], num_segments, axis=0).flatten()
+        jnp.array(
+            [
+                [2e-1, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [2e-1, 0.0, 0.0],
+            ]
+        ).flatten()
         * 1e5
     )
 
@@ -193,5 +227,5 @@ if __name__ == "__main__":
             loop=True,
             render_actuators=True,
             plot_configurations=True,
-            robot_name="I-SUPPORT",
+            robot_name="I-SUPPORT with rigid interface",
         )
