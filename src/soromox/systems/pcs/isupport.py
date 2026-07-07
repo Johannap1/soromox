@@ -21,7 +21,13 @@ class ISupport(PCS):
         g0: Initial pose of the robot base as an SE(3) transformation matrix.
         g: Gravitational acceleration vector (embedded in a 6D vector).
             [0, 0, 0, g_x, g_y, g_z]
-        L, r, E, G, rho, D: Physical properties of each segment (length, radius, elastic/shear modulus, etc.).
+        length: Length of each segment [m], cached as ``L``.
+        radius: Radius of each segment [m], cached as ``r``.
+        young_modulus: Elastic modulus of each segment [Pa], cached as ``E``.
+        shear_modulus: Shear modulus of each segment [Pa], cached as ``G``.
+        density: Density of each segment [kg/m^3], cached as ``rho``.
+        damping_matrix: Damping matrix of the flattened strain coordinates
+            [Pa*s], cached as ``D``.
         num_active_strains: Number of active strain components (based on strain_selector).
         num_strains: Total number of strain components (6 * num_segments).
         B_xi: Basis matrix for projecting active strains (6 * num_segments, num_active_strains).
@@ -29,10 +35,14 @@ class ISupport(PCS):
         num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
         num_integration_points: Stored integration nodes, including zero-weight endpoints.
         integration_points, integration_weights: Quadrature nodes and weights.
-        r_chamber_in: Inner radius of each segment's actuator [m].
-        r_chamber_out: Outer radius of each segment's actuator [m].
-        d_chamber: Radial distance of the center of the actuators from the centerline of the backbone [m].
-        varphi_chamber_off: Angular offset of the first actuator from the local segment frame [rad].
+        chamber_inner_radius: Inner radius of each segment's actuator [m],
+            cached as ``r_chamber_in``.
+        chamber_outer_radius: Outer radius of each segment's actuator [m],
+            cached as ``r_chamber_out``.
+        chamber_distance: Radial distance of the center of the actuators from
+            the centerline of the backbone [m], cached as ``d_chamber``.
+        chamber_angle_offset: Angular offset of the first actuator from the
+            local segment frame [rad], cached as ``varphi_chamber_off``.
 
     References:
         Arleo, L., Stano, G., Percoco, G., & Cianchetti, M. (2021). I-support soft
@@ -94,40 +104,48 @@ class ISupport(PCS):
 
     def _set_params(self, params: ISupportParams):
         """
-        Set the parameters of the ISupport class.
+        Set cached runtime arrays from typed I-SUPPORT parameters.
 
         Args:
-            params (Dict[str, Array]): Dictionary containing the parameters of the robot.
-                Dictionary containing the robot parameters:
-                - "base_pose": (optional) List/Array of shape (7,)
-                    Scalar-first quaternion pose ``[qw, qx, qy, qz, x0, y0, z0]``
-                    in the inertial frame. The quaternion represents the base
-                    orientation and the translation is inserted directly into
-                    the homogeneous transform. Defaults to identity rotation
-                    and zero translation.
-                - "L": List/Array of num_segments floats
-                    Length of each segment [m]
-                - "r": List/Array of num_segments floats
-                    Radius of each segment [m]
-                - "rho": List/Array of num_segments floats
-                    Density of each segment [kg/m^3]
-                - "g": List/Array of 2 floats [gx, gy]
-                    Gravitational acceleration vector [m/s^2]
-                - "E": List/Array of num_segments floats
-                    Elastic modulus of each segment [Pa]
-                - "G": List/Array of num_segments floats
-                    Shear modulus of each segment [Pa]
-                - "D": List/Array of (num_segments, num_segments) floats
-                    Damping matrix of each segment [Pa*s]
-                - "r_chamber_in" : Array of num_segments floats
-                    Inner radius of each segment's pneumatic chamber [m]
-                - "r_chamber_out" : Array of num_segments floats
-                    Outer radius of each segment's pneumatic chamber [m]
-                - "d_chamber" : Array of num_segments floats
-                    Radial distance of the center of the chambers from the centerline of the backbone [m]
-                - "varphi_chamber_off" : Array of num_segments floats
-                    Angular offset of the first actuator from the local z-axis [rad]
-
+            params: Dynamic parameters for the spatial I-SUPPORT PCS model.
+                Expected fields:
+                - ``base_pose``: Array of shape ``(7,)``.
+                    Scalar-first quaternion pose
+                    ``[qw, qx, qy, qz, x0, y0, z0]`` in the inertial frame.
+                    The quaternion represents the base orientation and the
+                    translation is inserted directly into the homogeneous
+                    transform.
+                - ``length``: Array of shape ``(num_segments,)``.
+                    Length of each segment [m].
+                - ``radius``: Array of shape ``(num_segments,)``.
+                    Radius of each segment [m].
+                - ``density``: Array of shape ``(num_segments,)``.
+                    Density of each segment [kg/m^3].
+                - ``gravity``: Array of shape ``(3,)``.
+                    Gravitational acceleration vector ``[gx, gy, gz]``
+                    [m/s^2]. It is cached as the 6D vector
+                    ``[0, 0, 0, gx, gy, gz]``.
+                - ``young_modulus``: Array of shape ``(num_segments,)``.
+                    Elastic modulus of each segment [Pa].
+                - ``shear_modulus``: Array of shape ``(num_segments,)``.
+                    Shear modulus of each segment [Pa].
+                - ``damping_matrix``: Array of shape
+                    ``(6 * num_segments, 6 * num_segments)``.
+                    Damping matrix of the flattened strain coordinates [Pa*s].
+                - ``reference_strain``: Array with ``6 * num_segments``
+                    entries. Reference strain of the robot.
+                - ``chamber_inner_radius``: Array of shape
+                    ``(num_segments,)``. Inner radius of each segment's
+                    pneumatic chamber [m].
+                - ``chamber_outer_radius``: Array of shape
+                    ``(num_segments,)``. Outer radius of each segment's
+                    pneumatic chamber [m].
+                - ``chamber_distance``: Array of shape ``(num_segments,)``.
+                    Radial distance of the center of the chambers from the
+                    centerline of the backbone [m].
+                - ``chamber_angle_offset``: Array of shape
+                    ``(num_segments,)``. Angular offset of the first actuator
+                    from the local z-axis [rad].
         """
         super()._set_params(params)
 
@@ -349,9 +367,12 @@ class ISupport(PCS):
         Compute the actuation matrix of the robot.
         We assume that each segment contains self.num_chambers_per_segment identical and symmetric pneumatic chambers that are pressurized to p1=u1, p2=u2, p3=u3, etc.
         Furthermore, we consider the following geometrical arrangement:
-            - The 1st chamber with pressure p1 is located at an angular offset of self.varphi_chamber_off
-            - The 2nd chamber with pressure p2 is located at an angular offset of self.varphi_chamber_off + 1 * 2 * jnp.pi / self.num_chambers_per_segment
-            - The 3rd chamber with pressure p3 is located at an angular offset of self.varphi_chamber_off + 2 * 2 * jnp.pi / self.num_chambers_per_segment
+            - The 1st chamber with pressure p1 is located at the
+              chamber_angle_offset value for its segment.
+            - The 2nd chamber with pressure p2 is located at
+              chamber_angle_offset + 1 * 2 * jnp.pi / self.num_chambers_per_segment.
+            - The 3rd chamber with pressure p3 is located at
+              chamber_angle_offset + 2 * 2 * jnp.pi / self.num_chambers_per_segment.
             - etc.
 
         Args:
