@@ -343,6 +343,71 @@ class FakeViserActuatorServer:
         self.scene = FakeViserScene()
 
 
+class FakeViserGuiHandle:
+    def __init__(self, *, value=None, icon=None):
+        self.value = value
+        self.icon = icon
+        self.update_callback = None
+        self.click_callback = None
+
+    def on_update(self, callback):
+        self.update_callback = callback
+        return callback
+
+    def on_click(self, callback):
+        self.click_callback = callback
+        return callback
+
+    def trigger_update(self, value):
+        self.value = value
+        event = type("FakeViserGuiEvent", (), {"target": self})()
+        self.update_callback(event)
+
+
+class FakeViserGuiFolder:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+class FakeViserGui:
+    def __init__(self):
+        self.handles = {}
+
+    def add_folder(self, name):
+        del name
+        return FakeViserGuiFolder()
+
+    def add_button(self, name, *, icon):
+        handle = FakeViserGuiHandle(icon=icon)
+        self.handles[name] = handle
+        return handle
+
+    def add_slider(self, name, *, min, max, step, initial_value):
+        del min, max, step
+        handle = FakeViserGuiHandle(value=initial_value)
+        self.handles[name] = handle
+        return handle
+
+    def add_checkbox(self, name, *, initial_value):
+        handle = FakeViserGuiHandle(value=initial_value)
+        self.handles[name] = handle
+        return handle
+
+    def add_text(self, name, *, initial_value, disabled):
+        del disabled
+        handle = FakeViserGuiHandle(value=initial_value)
+        self.handles[name] = handle
+        return handle
+
+
+class FakeViserPlaybackServer:
+    def __init__(self):
+        self.gui = FakeViserGui()
+
+
 def test_renderer_exposes_base_pose_transform_and_axis():
     robot = DummyPlanarRobot(jnp.array([jnp.pi / 2, 1.0, 2.0]))
     renderer = DummyRenderer(robot)
@@ -584,6 +649,29 @@ def test_viser_actuator_geometry_updates_existing_line_handles():
     assert len(renderer._server.scene.line_segments) == 3
     assert all(handle.remove_count == 0 for handle in first_handles)
     assert_allclose(first_handles[0].points[0, 0], np.array([1.0, 0.1, 0.0]))
+
+
+def test_viser_paused_frame_slider_seeks_rendered_frame():
+    pytest.importorskip("viser")
+    from soromox.rendering.viser_renderer import AnimationState, ViserRenderer
+
+    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    renderer = ViserRenderer(robot, auto_start=False)
+    renderer._server = FakeViserPlaybackServer()
+    renderer._animation_state = AnimationState(
+        frame_idx=0,
+        playing=False,
+        num_frames=4,
+        ts=np.array([0.0, 0.1, 0.2, 0.3]),
+    )
+    sought_frames = []
+
+    renderer._setup_playback_gui(on_frame_seek=sought_frames.append)
+    renderer._gui_handles["frame_slider"].trigger_update(2)
+
+    assert renderer._animation_state.frame_idx == 2
+    assert sought_frames == [2]
+    assert renderer._gui_handles["time_text"].value == "t = 0.20 s"
 
 
 def test_renderer_normalizes_base_offsets_to_curve_dimension():

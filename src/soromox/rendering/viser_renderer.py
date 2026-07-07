@@ -1405,8 +1405,25 @@ class ViserRenderer(BaseSoftRobotRenderer):
             ts=ts,
         )
 
+        def seek_frame(frame_idx: int) -> None:
+            self._update_frame(
+                frame_idx,
+                q_ts,
+                base_offsets,
+                resolved_colors.per_robot_point_rgba,
+                base_plate_color=cfg.base_plate_color,
+                render_actuators=render_actuators,
+                actuator_inputs=self._actuator_inputs_for_timestep(
+                    actuator_inputs,
+                    num_robots=int(num_robots),
+                    num_steps=int(num_frames),
+                    frame_idx=frame_idx,
+                ),
+                color_config=cfg,
+            )
+
         # Setup GUI controls
-        self._setup_playback_gui()
+        self._setup_playback_gui(on_frame_seek=seek_frame)
 
         # Add plots after playback controls (so they appear at the end)
         if plot_configurations or plot_actuator_positions or custom_plots:
@@ -1477,21 +1494,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
                             if next_idx != state.frame_idx:
                                 state.frame_idx = next_idx
-                                self._update_frame(
-                                    next_idx,
-                                    q_ts,
-                                    base_offsets,
-                                    resolved_colors.per_robot_point_rgba,
-                                    base_plate_color=cfg.base_plate_color,
-                                    render_actuators=render_actuators,
-                                    actuator_inputs=self._actuator_inputs_for_timestep(
-                                        actuator_inputs,
-                                        num_robots=int(num_robots),
-                                        num_steps=int(num_frames),
-                                        frame_idx=next_idx,
-                                    ),
-                                    color_config=cfg,
-                                )
+                                seek_frame(next_idx)
 
                                 # Record frame
                                 if (
@@ -1576,7 +1579,10 @@ class ViserRenderer(BaseSoftRobotRenderer):
         # Update dynamic spheres
         self._update_dynamic_spheres(frame_idx)
 
-    def _setup_playback_gui(self) -> None:
+    def _setup_playback_gui(
+        self,
+        on_frame_seek: Callable[[int], None] | None = None,
+    ) -> None:
         """Setup playback control GUI elements."""
         if self._server is None:
             return
@@ -1620,7 +1626,14 @@ class ViserRenderer(BaseSoftRobotRenderer):
         @self._gui_handles["frame_slider"].on_update
         def _(event):
             if self._animation_state is not None and not self._animation_state.playing:
-                self._animation_state.frame_idx = int(event.target.value)
+                max_frame_idx = max(0, self._animation_state.num_frames - 1)
+                frame_idx = min(max(int(event.target.value), 0), max_frame_idx)
+                if frame_idx != self._animation_state.frame_idx:
+                    self._animation_state.frame_idx = frame_idx
+                    self._animation_state.last_tick = time.time()
+                    if on_frame_seek is not None:
+                        on_frame_seek(frame_idx)
+                    self._update_playback_gui(self._animation_state)
 
         @self._gui_handles["speed_slider"].on_update
         def _(event):
