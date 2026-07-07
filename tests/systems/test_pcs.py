@@ -386,6 +386,51 @@ def test_inverse_kinematics_with_deactivated_strains(num_segments: int):
         assert_allclose(q_recovered, q, rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.parametrize(
+    "strain_selector",
+    [
+        jnp.array(
+            [
+                False,
+                False,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                True,
+                False,
+                True,
+                False,
+                False,
+            ],
+            dtype=bool,
+        ),
+        jnp.zeros((12,), dtype=bool),
+    ],
+    ids=["segment-specific-inactive-strains", "all-strains-inactive"],
+)
+def test_inverse_kinematics_with_inactive_strain_segments(strain_selector: Array):
+    num_segments = int(strain_selector.size // 6)
+    model, _ = make_pcs(num_segments=num_segments, strain_selector=strain_selector)
+
+    q = random_q(model, jax.random.PRNGKey(789), scale=0.05)
+    g_tips = segment_tip_transforms(model, q)
+    q_recovered = model.inverse_kinematics(g_tips)
+
+    assert q_recovered.shape == q.shape
+    assert_allclose(q_recovered, q, rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        segment_tip_transforms(model, q_recovered), g_tips, rtol=RTOL, atol=ATOL
+    )
+
+
 @pytest.mark.parametrize("num_segments", [1, 2])
 def test_J_local_tips_matches_pointwise_evaluation(num_segments: int):
     model, _ = make_pcs(num_segments=num_segments, total_length=PCS_TOTAL_LENGTH)
