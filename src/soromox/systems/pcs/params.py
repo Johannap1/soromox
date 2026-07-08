@@ -8,6 +8,7 @@ __all__ = [
 ]
 
 import equinox as eqx
+import jax.numpy as jnp
 from jax import Array
 
 from soromox.systems.params import (
@@ -189,14 +190,31 @@ class PressureActuatedPlanarPCSParams(PlanarPCSParams):
 class ISupportParams(PCSParams):
     """Dynamic parameters for the I-SUPPORT spatial pneumatic PCS model.
 
-    The PCS body parameters are inherited. Chamber fields describe per-segment
-    pneumatic chamber geometry and angular offsets.
+    The leading axis indexes physical pneumatic segments. ``ISupport`` expands
+    these fields into the internal PCS segment layout using ``ISupportStructure``.
+    Chamber fields describe per-pneumatic-segment chamber geometry and angular
+    offsets. ``damping_matrix`` is expressed in flattened pneumatic-segment
+    strain coordinates and must be block diagonal by pneumatic segment when the
+    model is constructed.
+
+    ``pcs_segment_lengths`` optionally stores flattened PCS segment lengths in
+    the order defined by ``ISupportStructure.pcs_segment_counts``. If omitted,
+    each pneumatic segment is split into equal-length PCS segments. The entries
+    assigned to each pneumatic segment must sum to the corresponding
+    ``length`` entry when the model is constructed.
+
+    ``rigid_connector_lengths`` optionally stores connector lengths in the
+    canonical I-SUPPORT order: base connector, interfaces between pneumatic
+    segments, and tip connector. ``ISupportStructure.rigid_connector_selector``
+    determines which connector slots are part of the fixed model topology.
     """
 
     chamber_inner_radius: Array
     chamber_outer_radius: Array
     chamber_distance: Array
     chamber_angle_offset: Array
+    pcs_segment_lengths: Array | None = None
+    rigid_connector_lengths: Array | None = None
 
     def validate(self) -> None:
         super().validate()
@@ -208,3 +226,19 @@ class ISupportParams(PCSParams):
             "chamber_angle_offset",
         ):
             _require_shape(name, getattr(self, name), (n_segments,))
+
+        if self.pcs_segment_lengths is not None:
+            pcs_segment_lengths = jnp.asarray(self.pcs_segment_lengths)
+            if pcs_segment_lengths.ndim != 1:
+                raise ValueError(
+                    "pcs_segment_lengths must be one-dimensional with shape "
+                    "(num_pcs_segments,)."
+                )
+
+        if self.rigid_connector_lengths is not None:
+            rigid_connector_lengths = jnp.asarray(self.rigid_connector_lengths)
+            _require_shape(
+                "rigid_connector_lengths",
+                rigid_connector_lengths,
+                (n_segments + 1,),
+            )
