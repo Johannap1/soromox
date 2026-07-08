@@ -659,6 +659,44 @@ def test_inverse_kinematics_strain_selector_edge_cases():
     )
 
 
+@pytest.mark.parametrize(
+    "strain_selector",
+    [
+        jnp.array(
+            [
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                True,
+                False,
+                True,
+            ],
+            dtype=bool,
+        ),
+        jnp.zeros((6,), dtype=bool),
+    ],
+    ids=["segment-specific-inactive-strains", "all-strains-inactive"],
+)
+def test_inverse_kinematics_with_inactive_strain_segments(strain_selector: Array):
+    num_segments = int(strain_selector.size // 3)
+    model, _ = make_planar_pcs(
+        num_segments=num_segments, th0=0.0, strain_selector=strain_selector
+    )
+
+    q = random_q(model, key=jax.random.PRNGKey(333), scale=0.08)
+    chi_tips = segment_tip_poses(model, q)
+    q_recovered = model.inverse_kinematics(chi_tips)
+
+    assert q_recovered.shape == q.shape
+    assert_allclose(q_recovered, q, rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        segment_tip_poses(model, q_recovered), chi_tips, rtol=RTOL, atol=ATOL
+    )
+
+
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
 def test_J_local_tips_matches_pointwise_evaluation(num_segments):
     model, _ = make_planar_pcs(num_segments=num_segments)
