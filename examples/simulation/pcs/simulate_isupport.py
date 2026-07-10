@@ -213,7 +213,6 @@ if __name__ == "__main__":
         viser_renderer = ViserRenderer(
             robot,
             num_points=50,
-            backbone_style="discrete",
         )
         viser_renderer.render_sequence(
             ts=ts,

@@ -163,28 +163,6 @@ def _direction_to_quaternion(
     return (float(w), float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
 
-def _fallback_material_frames(curve: np.ndarray) -> np.ndarray:
-    """Construct tangent frames only for legacy private-method callers."""
-    curve = np.asarray(curve, dtype=np.float64)
-    tangents = np.gradient(curve, axis=0)
-    frames = np.empty((curve.shape[0], 3, 3), dtype=np.float64)
-    previous_x = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-    for idx, tangent in enumerate(tangents):
-        norm = np.linalg.norm(tangent)
-        x_axis = tangent / norm if norm > 1e-9 else previous_x
-        reference = (
-            np.array([0.0, 0.0, 1.0])
-            if abs(x_axis[2]) < 0.9
-            else np.array([0.0, 1.0, 0.0])
-        )
-        y_axis = np.cross(reference, x_axis)
-        y_axis /= np.linalg.norm(y_axis)
-        z_axis = np.cross(x_axis, y_axis)
-        frames[idx] = np.column_stack((x_axis, y_axis, z_axis))
-        previous_x = x_axis
-    return frames
-
-
 def _oriented_tube_segment_mesh(
     p0: np.ndarray,
     p1: np.ndarray,
@@ -498,7 +476,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
         curves: np.ndarray,
         point_colors: np.ndarray,
         *,
-        material_frames: np.ndarray | None = None,
+        material_frames: np.ndarray,
         base_plate_color: tuple[float, float, float],
     ) -> None:
         """Build robot backbone geometry in the scene.
@@ -519,11 +497,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
         for robot_idx in range(num_robots):
             curve = curves[robot_idx]  # (num_points, 3)
-            robot_frames = (
-                material_frames[robot_idx]
-                if material_frames is not None
-                else _fallback_material_frames(curve)
-            )
+            robot_frames = material_frames[robot_idx]
 
             # Create backbone geometry
             robot_points = []
@@ -795,7 +769,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
     def _update_robot_geometry(
         self,
         curves: np.ndarray,
-        material_frames: np.ndarray | None = None,
+        material_frames: np.ndarray,
     ) -> None:
         """Atomically update all robot geometry for one animation frame."""
         if self._scene_handles is None or self._server is None:
@@ -807,11 +781,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
             for robot_idx in range(num_robots):
                 curve = curves[robot_idx]  # (num_points, 3)
-                robot_frames = (
-                    material_frames[robot_idx]
-                    if material_frames is not None
-                    else _fallback_material_frames(curve)
-                )
+                robot_frames = material_frames[robot_idx]
                 if robot_idx < len(self._scene_handles.base_plates):
                     base_handle = self._scene_handles.base_plates[robot_idx]
                     base_pos, base_wxyz = self._base_plate_pose(curve[0])

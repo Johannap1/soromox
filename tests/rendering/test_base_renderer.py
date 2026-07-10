@@ -610,11 +610,13 @@ def test_viser_discrete_backbone_spheres_use_robot_radius():
     renderer._server = server
     renderer._scene_handles = SceneHandles()
     curves = np.array([[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]])
+    material_frames = np.broadcast_to(np.eye(3), (1, 2, 3, 3)).copy()
     point_colors = np.ones((1, 2, 4), dtype=np.float64)
 
     renderer._build_robot_geometry(
         curves,
         point_colors,
+        material_frames=material_frames,
         base_plate_color=(0.15, 0.15, 0.15),
     )
 
