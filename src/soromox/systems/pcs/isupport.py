@@ -170,6 +170,33 @@ def _resolve_rigid_connector_lengths(
             )
     return rigid_connector_lengths
 
+def _resolve_rigid_connector_overrides(
+    values: Array | None,
+    rigid_connector_selector: tuple[bool, ...],
+    field_name: str,
+) -> Array | None:
+    """Resolve an optional per-slot rigid-connector override (density/radius).
+
+    Returns None when no override is supplied (inherit from the source
+    pneumatic segment). Otherwise returns an array of shape
+    (num_rigid_connectors,) where selected slots carry positive values.
+    """
+    if values is None:
+        return None
+    num_rigid_connectors = len(rigid_connector_selector)
+    values = jnp.asarray(values, dtype=jnp.float64)
+    if values.shape != (num_rigid_connectors,):
+        raise ValueError(
+            f"{field_name} must contain one entry per canonical connector slot; "
+            f"expected {num_rigid_connectors}, got {values.shape}."
+        )
+    for connector_index, is_selected in enumerate(rigid_connector_selector):
+        if is_selected and float(values[connector_index]) <= 0.0:
+            raise ValueError(
+                f"Selected rigid connectors must have positive {field_name}; "
+                f"{field_name}[{connector_index}] is {float(values[connector_index])}."
+            )
+    return values
 
 def _expand_isupport_layout(
     params: ISupportParams,
@@ -186,6 +213,17 @@ def _expand_isupport_layout(
     )
     rigid_connector_lengths = _resolve_rigid_connector_lengths(
         params, structure.rigid_connector_selector
+    )
+    ## New: Added rigid connector Density and Radius
+    rigid_connector_density = _resolve_rigid_connector_overrides(
+        params.rigid_connector_density,
+        structure.rigid_connector_selector,
+        "rigid_connector_density",
+    )
+    rigid_connector_radius = _resolve_rigid_connector_overrides(
+        params.rigid_connector_radius,
+        structure.rigid_connector_selector,
+        "rigid_connector_radius",
     )
     radius = jnp.asarray(params.radius, dtype=jnp.float64)
     density = jnp.asarray(params.density, dtype=jnp.float64)
@@ -250,10 +288,24 @@ def _expand_isupport_layout(
         source_index: int,
         pneumatic_index: int,
         is_rigid: bool,
+        density_override: Array | None = None,
+        radius_override: Array | None = None,
     ) -> None:
         expanded_lengths.append(jnp.asarray(length, dtype=jnp.float64))
-        expanded_radius.append(radius[source_index])
-        expanded_density.append(density[source_index])
+        # expanded_radius.append(radius[source_index])
+        # expanded_density.append(density[source_index])
+
+        ### New: Block to manage density and radius of rigid links ###
+        if radius_override is not None:
+            expanded_radius.append(jnp.asarray(radius_override, dtype=jnp.float64))
+        else:
+            expanded_radius.append(radius[source_index])
+        if density_override is not None:
+            expanded_density.append(jnp.asarray(density_override, dtype=jnp.float64))
+        else:
+            expanded_density.append(density[source_index])
+        ##############################################################
+
         expanded_young_modulus.append(young_modulus[source_index])
         expanded_shear_modulus.append(shear_modulus[source_index])
         expanded_chamber_inner_radius.append(r_chamber_in[source_index])
@@ -299,6 +351,17 @@ def _expand_isupport_layout(
                 ),
                 pneumatic_index=_RIGID_CONNECTOR_PARENT,
                 is_rigid=True,
+                ### New: Managing density and radius ###
+                density_override=(
+                    None
+                    if rigid_connector_density is None
+                    else rigid_connector_density[connector_index]
+                ),
+                radius_override=(
+                    None
+                    if rigid_connector_radius is None
+                    else rigid_connector_radius[connector_index]
+                ),
             )
 
         if connector_index < num_pneumatic_segments:

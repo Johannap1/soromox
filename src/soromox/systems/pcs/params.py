@@ -260,6 +260,15 @@ class ISupportParams(PCSParams):
     canonical I-SUPPORT order: base connector, interfaces between pneumatic
     segments, and tip connector. ``ISupportStructure.rigid_connector_selector``
     determines which connector slots are part of the fixed model topology.
+
+    ``rigid_connector_density`` and ``rigid_connector_radius`` optionally
+    override the density and radius of the rigid connector PCS segments, in the
+    same canonical connector order as ``rigid_connector_lengths`` (base,
+    interfaces, tip). Each has shape ``(num_pneumatic_segments + 1,)``. Entries
+    are only used for connector slots selected by
+    ``ISupportStructure.rigid_connector_selector``; unselected slots are
+    ignored. If omitted, each rigid connector inherits the density and radius of
+    its nearest pneumatic segment.
     """
 
     chamber_inner_radius: Array
@@ -268,6 +277,10 @@ class ISupportParams(PCSParams):
     chamber_azimuth_angles: Array | None = None
     pcs_segment_lengths: Array | None = None
     rigid_connector_lengths: Array | None = None
+    ### New Params
+    rigid_connector_density: Array | None = None
+    rigid_connector_radius: Array | None = None
+    ###
 
     def validate(self) -> None:
         super().validate()
@@ -317,3 +330,13 @@ class ISupportParams(PCSParams):
                 rigid_connector_lengths,
                 (n_segments + 1,),
             )
+
+        for name in ("rigid_connector_density", "rigid_connector_radius"):
+            value = getattr(self, name)
+            if value is not None:
+                value = jnp.asarray(value)
+                _require_shape(name, value, (n_segments + 1,))
+                if not bool(jnp.all(jnp.isfinite(value))):
+                    raise ValueError(f"{name} entries must be finite.")
+                if not bool(jnp.all(value >= 0.0)):
+                    raise ValueError(f"{name} entries must be nonnegative.")

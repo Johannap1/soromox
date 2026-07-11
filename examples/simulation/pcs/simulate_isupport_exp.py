@@ -143,6 +143,8 @@ if __name__ == "__main__":
     # Parameters: connector lengths (only used for selected slots).
     # rigid_connector_lengths = jnp.array([41e-3, 27e-3, 6e-3])
     rigid_connector_lengths = jnp.array([6e-3, 27e-3, 6e-3])
+    rigid_connector_density = jnp.array([1.21e3, 1.21e3, 1.21e3])
+    rigid_connector_radius  = jnp.array([30e-3, 30e-3, 30e-3])
 
     # Material Damping Coefficient for Damping Tensor
     material_damping_coefficient = 1.356440907178834e+05    # \eta [Pa s]
@@ -176,6 +178,8 @@ if __name__ == "__main__":
         ),
         pcs_segment_lengths=pcs_segment_lengths,
         rigid_connector_lengths=rigid_connector_lengths,
+        rigid_connector_radius=rigid_connector_radius,
+        rigid_connector_density=rigid_connector_density,
     )
 
     # ======================================================
