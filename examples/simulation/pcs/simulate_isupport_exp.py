@@ -29,8 +29,18 @@ import scipy.io as sio
 from diffrax import Tsit5, ImplicitEuler, Kvaerno5, PIDController
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.rendering import MatplotlibRenderer
-from soromox.systems import ISupport, ISupportParams, SystemState
+from soromox.rendering import ISupportViserRenderer, MatplotlibRenderer
+from soromox.systems import ISupport, ISupportParams, ISupportStructure, SystemState
+
+####################### IDENTIFIED PARAMETERS #######################
+#                   E   = 1.955596117275246e+06                     #
+#                   eta = 1.356440907178834e+05                     #
+#                   rho = 1.015625845884526e+04                     #
+#                   poisson = 0.5                                   #
+#                                                                   #
+# More details here:                                                #
+# https://github.com/Elektron97/am_isupportGVS/blob/main/README.md  #
+#####################################################################
 
 # Figure path
 RESULTS_DIR = "amisupport_dataset/results"
@@ -58,10 +68,8 @@ assert act_values.shape[1] == merged_time.shape[0], (
 p_real = [2.33, 2.35, 2.26, 2.09, 2.63, 2.32]
 
 # bar2Pa
-PRESSURE_SCALE = 1.0e4
+PRESSURE_SCALE = 1.0e5
 act_values = act_values * PRESSURE_SCALE
-
-INPUT_DELAY = 0.0  # control-box delay [s], tune to your hardware
 
 act_time = merged_time - merged_time[0]  # zero the clock
 act_time_j = jnp.asarray(act_time)
@@ -75,7 +83,6 @@ class RecordedInput(eqx.Module):
     act_values: jax.Array   # (6, M)
     perm: jax.Array         # (6, 6) permutation matrix
     air_leaks: jax.Array    # (6, 6) Scale matrix for Air Leaks
-    delay: float            # input-box delay [s]
 
     def __call__(self, state: SystemState):
         """Interpolate the 6 recorded chamber pressures at the live solver time,
@@ -85,13 +92,8 @@ class RecordedInput(eqx.Module):
         """
         t = state.t
 
-        # Apply control-box delay: the pressure applied at time t is the
-        # command that was issued at t - delay. Before the first sample the
-        # signal is held at act_values[:, 0] (jnp.interp clamps at endpoints).
-        t_delayed = t - self.delay
-
         # Improve computational efficiency
-        u_t = jax.vmap(lambda row: jnp.interp(t_delayed, self.act_time, row))(self.act_values)
+        u_t = jax.vmap(lambda row: jnp.interp(t, self.act_time, row))(self.act_values)
 
         u_t = self.air_leaks @ self.perm @ u_t
         return u_t, None  # no control_state derivative
@@ -116,73 +118,96 @@ recorded_input = RecordedInput(
     act_values=act_values_j,
     perm=P,
     air_leaks=air_leaks,
-    delay=INPUT_DELAY
 )
 
 if __name__ == "__main__":
-    num_segments = 2
+    num_pneumatic_segments = 2
 
     # Elastic modulus and poisson ratio
-    E = 1.6464 * 1e6  # Elastic modulus [Pa]
+    E = 1.955596117275246e+06  # Elastic modulus [Pa]
     poisson_ratio = 0.5
     G = E / (
         2 * (1 + poisson_ratio)
     )  # Shear modulus from elastic modulus and poisson ratio
 
-    segment_lengths = 190 * 1e-3 * jnp.ones((num_segments,))
+    pneumatic_segment_lengths = 190 * 1e-3 * jnp.ones((num_pneumatic_segments,))
 
-    # damping coefficient
-    # these values are from the paper but they seem way too large
-    # gamma_t = 806  # translational damping constant [1/s]
-    # gamma_r = 1.9416 * 10**(-4)  # rotational damping constant [m^2/s]
-    gamma_t = 806 * 1e-3  # translational damping constant [1/s]
-    gamma_r = 1.0 * 1e-3  # rotational damping constant [m^2/s]
-    # Damping is specified per unit backbone length and must be integrated over
-    # each segment, matching the strain-space stiffness assembly. Without this
-    # length scaling the velocity term makes the two-segment fixed-step rollout
-    # unnecessarily stiff and can drive the explicit solver to NaNs.
-    damping_matrix = jnp.diag(
-        (
-            jnp.repeat(
-                jnp.array([[gamma_r, gamma_r, gamma_r, gamma_t, gamma_t, gamma_t]]),
-                num_segments,
-                axis=0,
-            )
-            * segment_lengths[:, None]
-        ).flatten()
-    )
+    # Topology: how many PCS segments approximate each pneumatic segment.
+    pcs_segment_counts = (1, 1)
+    # Parameters: metric PCS segment lengths, flattened by pneumatic segment.
+    # Set this to None to divide each pneumatic segment equally according to
+    # pcs_segment_counts.
+    pcs_segment_lengths = None
+    # Topology: base, interface, and tip connector slots are present.
+    rigid_connector_selector = (True, True, True)
+    # Parameters: connector lengths (only used for selected slots).
+    # rigid_connector_lengths = jnp.array([41e-3, 27e-3, 6e-3])
+    rigid_connector_lengths = jnp.array([6e-3, 27e-3, 6e-3])
+
+    # Material Damping Coefficient for Damping Tensor
+    material_damping_coefficient = 1.356440907178834e+05    # \eta [Pa s]
+
+    # Experimental Offset
+    theta = -jnp.pi/6.0     # - 30 deg
+
     params = ISupportParams(
-        base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.029, 0.0, 0.0]),    # offset of the experimental platform
-        length=segment_lengths,
-        radius= 28.6* 1e-3 * jnp.ones((num_segments,)),
-        density=1104 * jnp.ones((num_segments,)),
+        base_pose=jnp.array([
+                jnp.cos(theta / 2), jnp.sin(theta / 2), 0.0, 0.0,   # quaternion [w, x, y, z]
+                21e-3, 0.0, 0.0,                                       # position [x, y, z]
+        ]),
+        length=pneumatic_segment_lengths,
+        radius=28.6 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        density=1.015625845884526e+04 * jnp.ones((num_pneumatic_segments,)),
         gravity=jnp.array([9.81, 0.0, 0.0]),
-        young_modulus=E * jnp.ones((num_segments,)),
-        shear_modulus=G * jnp.ones((num_segments,)),
-        damping_matrix=damping_matrix,
+        young_modulus=E * jnp.ones((num_pneumatic_segments,)),
+        shear_modulus=G * jnp.ones((num_pneumatic_segments,)),
+        material_damping_coefficient=material_damping_coefficient,
         reference_strain=jnp.tile(
-            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
+            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_pneumatic_segments
         ),
-        chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_distance=20 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_angle_offset=jnp.zeros((num_segments,)),
+        chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        chamber_distance=20 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        # Explicit [0, 2*pi/3, 4*pi/3] = [0, 120, 240] degrees for each
+        # pneumatic segment. Array index is the corresponding pressure channel.
+        chamber_azimuth_angles=jnp.tile(
+            2.0 * jnp.pi * jnp.arange(3) / 3 + jnp.pi/2,        # From Alessi paper, the phases are [90°, 210°, 330°]
+            (num_pneumatic_segments, 1),
+        ),
+        pcs_segment_lengths=pcs_segment_lengths,
+        rigid_connector_lengths=rigid_connector_lengths,
     )
 
     # ======================================================
     # Robot initialization
     # ======================================================
-    robot = ISupport(params=params)
+    robot = ISupport(
+        params=params,
+        structure=ISupportStructure(
+            pcs_segment_counts=pcs_segment_counts,
+            rigid_connector_selector=rigid_connector_selector,
+        ),
+    )
 
     # =====================================================
     # Initial state: undeformed reference strain, base_u = zeros
     # =====================================================
-    q0 = jnp.tile(jnp.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), num_segments)
+    q0_pneumatic = jnp.repeat(
+        jnp.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])[None, :],
+        num_pneumatic_segments,
+        axis=0,
+    )
+    q0 = jnp.concatenate(
+        [
+            jnp.tile(q0_pneumatic[i], pcs_segment_counts[i])
+            for i in range(num_pneumatic_segments)
+        ]
+    )
     qd0 = jnp.zeros_like(q0)
 
     # Start and End time of the simulation
     t0 = 15.22
-    t1 = 30.22
+    t1 = 60.22
 
     initial_state = SystemState(
         t=t0,
@@ -194,8 +219,8 @@ if __name__ == "__main__":
     # =====================================================
     # Single closed-loop call = time-varying open-loop input
     # =====================================================
-    solver_dt = 1e-3
-    save_dt = 1e-3
+    solver_dt = 1e-3        # With adaptive-step we can use higher dt
+    save_dt = 1e-3          # Clean plot
 
     # # fixing bug for float accumulation: [t0, t1] issue
     save_ts = jnp.arange(t0, t1 + save_dt, save_dt)
@@ -213,8 +238,8 @@ if __name__ == "__main__":
         solver_dt=solver_dt,
         save_dt=save_dt,
         save_ts=save_ts,
-        solver=Tsit5(),                                               # Default but with fixed-time steps
-        # solver=ImplicitEuler(),                                       # Crash :(
+        solver=Tsit5(),                                               # Default but with adaptive-time steps
+        # solver=ImplicitEuler(),                                     # Crash :(
         # solver=Kvaerno5(),  # Slow but accurate
         stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),  # adaptive time-steps
         max_steps=None,
@@ -230,9 +255,10 @@ if __name__ == "__main__":
     # DOF labels per segment: [kappa_x, kappa_y, kappa_z, sigma_x, sigma_y, sigma_z]
     dof_names = ["kx", "ky", "kz", "sx", "sy", "sz"]
     n_dof = q_ts.shape[1]
-    labels = [f"seg{j}_{dof_names[i]}" for j in range(num_segments) for i in range(6)][
-        :n_dof
-    ]
+    n_pcs_total = sum(pcs_segment_counts)
+    labels = [
+        f"pcs{j}_{dof_names[i]}" for j in range(n_pcs_total) for i in range(6)
+    ][:n_dof]
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -252,7 +278,7 @@ if __name__ == "__main__":
     axes[1].legend(ncol=4, fontsize=8)
 
     plt.tight_layout()
-    # plt.show()
+    plt.show()
 
     # =====================================================
     # End-effector position upon time
@@ -264,31 +290,6 @@ if __name__ == "__main__":
         )
     )
     g_ee_ts = jax.vmap(forward_kinematics_end_effector)(q_ts)
-
-    # plt.figure()
-    # plt.plot(ts, g_ee_ts[:, 0, 3], label="End-effector x [m]")
-    # plt.plot(ts, g_ee_ts[:, 1, 3], label="End-effector y [m]")
-    # plt.plot(ts, g_ee_ts[:, 2, 3], label="End-effector z [m]")
-    # plt.xlabel("Time [s]")
-    # plt.ylabel("End-effector position [m]")
-    # plt.legend()
-    # plt.grid(True)
-    # plt.box(True)
-    # plt.tight_layout()
-    # plt.show()
-
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111, projection="3d")
-    # p = ax.scatter(
-    #     g_ee_ts[:, 0, 3], g_ee_ts[:, 1, 3], g_ee_ts[:, 2, 3], c=ts, cmap="viridis"
-    # )
-    # ax.axis("equal")
-    # ax.set_xlabel("X [m]")
-    # ax.set_ylabel("Y [m]")
-    # ax.set_zlabel("Z [m]")
-    # ax.set_title("End-effector trajectory (3D)")
-    # fig.colorbar(p, ax=ax, label="Time [s]")
-    # plt.show()
 
     # =====================================================
     # Overlay recorded Vicon tip position on simulated EE
@@ -354,7 +355,7 @@ if __name__ == "__main__":
     axes[-1].set_xlabel("Time [s]")
     axes[0].set_title("Simulated EE vs recorded Vicon tip (per axis)")
     plt.tight_layout()
-    # plt.show()
+    plt.show()
 
     # 3D overlay
     fig = plt.figure()
@@ -375,7 +376,7 @@ if __name__ == "__main__":
     ax.legend()
     ax.set_title("Trajectory overlay")
     plt.tight_layout()
-    # plt.show()
+    plt.show()
 
     # =====================================================
     # Applied actuation (sanity check vs recorded data)
@@ -389,25 +390,7 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.title("Applied actuation")
     plt.tight_layout()
-    # plt.show()
-
-    # # =====================================================
-    # # Energy computation upon time
-    # # =====================================================
-    # U_ts = jax.vmap(jax.jit(partial(robot.potential_energy)))(q_ts)
-    # T_ts = jax.vmap(jax.jit(partial(robot.kinetic_energy)))(q_ts, qd_ts)
-
-    # plt.figure()
-    # plt.plot(ts, U_ts, label="Potential Energy")
-    # plt.plot(ts, T_ts, label="Kinetic Energy")
-    # plt.xlabel("Time (s)")
-    # plt.ylabel("Energy (J)")
-    # plt.legend()
-    # plt.title("Energy over Time")
-    # plt.grid(True)
-    # plt.box(True)
-    # plt.tight_layout()
-    # plt.show()
+    plt.show()
 
     ## Save Figures
     for num in plt.get_fignums():
@@ -419,3 +402,24 @@ if __name__ == "__main__":
     # # =====================================================
     # renderer = MatplotlibRenderer(robot, num_points=50)
     # renderer.animate(ts=ts, q_ts=q_ts, interval=100, mode="slider")
+
+    # # =====================================================
+    # # Viser web-based visualization
+    # # =====================================================
+    # if ISupportViserRenderer is None:
+    #     print("ISupportViserRenderer is unavailable. Install with `pip install viser`.")
+    # else:
+    #     viser_renderer = ISupportViserRenderer(
+    #         robot,
+    #         num_points=50,
+    #     )
+    #     viser_renderer.render_sequence(
+    #         ts=ts,
+    #         q_ts=q_ts,
+    #         playback_speed=1.0,
+    #         autoplay=True,
+    #         loop=True,
+    #         render_actuators=True,
+    #         plot_configurations=True,
+    #         robot_name="I-SUPPORT",
+    #     )
