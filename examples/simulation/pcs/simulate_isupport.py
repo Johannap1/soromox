@@ -13,11 +13,11 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)  # double precision
-from soromox.rendering import MatplotlibRenderer, ViserRenderer
-from soromox.systems import ISupport, ISupportParams, SystemState
+from soromox.rendering import ISupportViserRenderer, MatplotlibRenderer
+from soromox.systems import ISupport, ISupportParams, ISupportStructure, SystemState
 
 if __name__ == "__main__":
-    num_segments = 2
+    num_pneumatic_segments = 2
 
     # Elastic modulus and poisson ratio
     E = 1.6464 * 1e6  # Elastic modulus [Pa]
@@ -26,60 +26,77 @@ if __name__ == "__main__":
         2 * (1 + poisson_ratio)
     )  # Shear modulus from elastic modulus and poisson ratio
 
-    segment_lengths = 190 * 1e-3 * jnp.ones((num_segments,))
+    pneumatic_segment_lengths = jnp.array([190e-3, 180e-3])
+    # Topology: how many PCS segments approximate each pneumatic segment.
+    pcs_segment_counts = (2, 3)
+    # Parameters: metric PCS segment lengths, flattened by pneumatic segment.
+    # The first two entries sum to 190 mm; the last three sum to 180 mm.
+    # Set this to None to divide each pneumatic segment equally according to
+    # pcs_segment_counts.
+    pcs_segment_lengths = jnp.array([95e-3, 95e-3, 60e-3, 60e-3, 60e-3])
+    # Topology: base, interface, and tip connector slots are present.
+    rigid_connector_selector = (True, True, True)
+    # Parameters: base connector, interface connector, and tip connector lengths.
+    rigid_connector_lengths = jnp.array([41e-3, 27e-3, 6e-3])
 
-    # damping coefficient
-    # these values are from the paper but they seem way too large
-    # gamma_t = 806  # translational damping constant [1/s]
-    # gamma_r = 1.9416 * 10**(-4)  # rotational damping constant [m^2/s]
-    gamma_t = 806 * 1e-3  # translational damping constant [1/s]
-    gamma_r = 1.0 * 1e-3  # rotational damping constant [m^2/s]
-    # Damping is specified per unit backbone length and must be integrated over
-    # each segment, matching the strain-space stiffness assembly. Without this
-    # length scaling the velocity term makes the two-segment fixed-step rollout
-    # unnecessarily stiff and can drive the explicit solver to NaNs.
-    damping_matrix = jnp.diag(
-        (
-            jnp.repeat(
-                jnp.array([[gamma_r, gamma_r, gamma_r, gamma_t, gamma_t, gamma_t]]),
-                num_segments,
-                axis=0,
-            )
-            * segment_lengths[:, None]
-        ).flatten()
-    )
+    # Previous explicit damping used gamma_t = 806e-3 and gamma_r = 1.0e-3:
+    # D_i = L_i * diag([gamma_r, gamma_r, gamma_r, gamma_t, gamma_t, gamma_t]).
+    # The material damping coefficient below is the least-squares scalar c for
+    # D_i(c) = L_i * c * diag([Ix, 3Iy, 3Iz, 3A, A, A]), evaluated with
+    # I-SUPPORT's actuator cross-section geometry. Equivalently,
+    # c = <D_old, D_material(1)>_F / <D_material(1), D_material(1)>_F.
+    material_damping_coefficient = 1.96e3
     params = ISupportParams(
-        base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
-        length=segment_lengths,
-        radius=35.6 * 1e-3 * jnp.ones((num_segments,)),
-        density=1104 * jnp.ones((num_segments,)),
-        gravity=jnp.array([0.0, 0.0, 9.81]),
-        young_modulus=E * jnp.ones((num_segments,)),
-        shear_modulus=G * jnp.ones((num_segments,)),
-        damping_matrix=damping_matrix,
+        base_pose=jnp.array([0.5, 0.5, 0.5, -0.5, 0.0, 0.0, 0.0]),
+        length=pneumatic_segment_lengths,
+        radius=35.6 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        density=1104 * jnp.ones((num_pneumatic_segments,)),
+        gravity=jnp.array([0.0, 0.0, -9.81]),
+        young_modulus=E * jnp.ones((num_pneumatic_segments,)),
+        shear_modulus=G * jnp.ones((num_pneumatic_segments,)),
+        material_damping_coefficient=material_damping_coefficient,
         reference_strain=jnp.tile(
-            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
+            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_pneumatic_segments
         ),
-        chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_distance=20 * 1e-3 * jnp.ones((num_segments,)),
-        chamber_angle_offset=jnp.zeros((num_segments,)),
+        chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        chamber_distance=20 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        # Explicit [0, 2*pi/3, 4*pi/3] = [0, 120, 240] degrees for each
+        # pneumatic segment. Array index is the corresponding pressure channel.
+        chamber_azimuth_angles=jnp.tile(
+            2.0 * jnp.pi * jnp.arange(3) / 3,
+            (num_pneumatic_segments, 1),
+        ),
+        pcs_segment_lengths=pcs_segment_lengths,
+        rigid_connector_lengths=rigid_connector_lengths,
     )
 
     # ======================================================
     # Robot initialization
     # ======================================================
-    robot = ISupport(params=params)
+    robot = ISupport(
+        params=params,
+        structure=ISupportStructure(
+            pcs_segment_counts=pcs_segment_counts,
+            rigid_connector_selector=rigid_connector_selector,
+        ),
+    )
 
     # =====================================================
     # Simulation upon time
     # =====================================================
     # Initial configuration
-    q0 = jnp.repeat(
+    q0_pneumatic = jnp.repeat(
         jnp.array([0.0, 0.0, -1.0 * jnp.pi, 0.1, 0.2, 0.0])[None, :],
-        num_segments,
+        num_pneumatic_segments,
         axis=0,
-    ).flatten()
+    )
+    q0 = jnp.concatenate(
+        [
+            jnp.tile(q0_pneumatic[i], pcs_segment_counts[i])
+            for i in range(num_pneumatic_segments)
+        ]
+    )
     # Initial velocities
     qd0 = jnp.zeros_like(q0)
 
@@ -89,14 +106,18 @@ if __name__ == "__main__":
 
     # Actuation pressures
     u = (
-        jnp.repeat(jnp.array([2e-1, 0.0, 0.0])[None, :], num_segments, axis=0).flatten()
+        jnp.repeat(
+            jnp.array([2e-1, 0.0, 0.0])[None, :],
+            num_pneumatic_segments,
+            axis=0,
+        ).flatten()
         * 1e5
     )
 
     # Simulation time parameters
     t0 = 0.0
     t1 = 2.0
-    solver_dt = 5e-5
+    solver_dt = 2e-5
     save_dt = 0.01
 
     initial_state = SystemState(t=t0, y=jnp.concatenate([q0, qd0]))
@@ -177,13 +198,12 @@ if __name__ == "__main__":
     # =====================================================
     # Viser web-based visualization
     # =====================================================
-    if ViserRenderer is None:
-        print("ViserRenderer is unavailable. Install with `pip install viser`.")
+    if ISupportViserRenderer is None:
+        print("ISupportViserRenderer is unavailable. Install with `pip install viser`.")
     else:
-        viser_renderer = ViserRenderer(
+        viser_renderer = ISupportViserRenderer(
             robot,
             num_points=50,
-            backbone_style="discrete",
         )
         viser_renderer.render_sequence(
             ts=ts,

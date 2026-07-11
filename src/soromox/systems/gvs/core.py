@@ -91,7 +91,11 @@ class GVS(SoftRobot):
       to be expressed in arbitrary basis functions (monomials, Fourier, Gaussian, etc.),
       rather than assuming it to be constant.
     - The strain vector per segment is composed of 6 components:
-      [kappa_x, kappa_y, kappa_z, sigma_x, sigma_y, sigma_z].
+      [kappa_x, kappa_y, kappa_z, sigma_x, sigma_y, sigma_z]. The material-frame
+      local x-axis is the longitudinal backbone direction, independent of the
+      base pose's orientation in the inertial frame. Consequently, sigma_x = 1
+      represents a straight, unstretched link along local x, while sigma_y and
+      sigma_z represent transverse shear.
     - The joint and link strain contributions are treated separately, with their DOFs
       padded or truncated to `max_dof` for consistent computation.
     - Link cross-section geometry can vary along the length and supports circular,
@@ -229,7 +233,7 @@ class GVS(SoftRobot):
     def params_from_segments(
         segments: list[GVSSegment] | tuple[GVSSegment, ...],
         *,
-        gravity: Array,
+        gravity: Array | None = None,
         base_pose: Array | None = None,
         max_dof: int | None = None,
         max_num_gauss_points: int | None = None,
@@ -243,6 +247,8 @@ class GVS(SoftRobot):
         family, basis family, quadrature count, and cross-section family remain
         static in ``GVSStructure``. Numeric link, joint, and reference-strain
         values are copied into ``GVSParams``.
+        Omitted ``base_pose`` and ``gravity`` use the standard upright spatial
+        mounting and negative-z Earth gravity.
         """
         return params_and_structure_from_segments(
             segments,
@@ -258,14 +264,18 @@ class GVS(SoftRobot):
         cls,
         segments: list[GVSSegment] | tuple[GVSSegment, ...],
         *,
-        gravity: Array,
+        gravity: Array | None = None,
         base_pose: Array | None = None,
         max_dof: int | None = None,
         max_num_gauss_points: int | None = None,
         scale_rotational_basis_by_length: bool = False,
         **kwargs: Any,
     ) -> "GVS":
-        """Construct a GVS model directly from user-facing segment specs."""
+        """Construct a GVS model directly from user-facing segment specs.
+
+        Omitted ``base_pose`` and ``gravity`` use the standard upright spatial
+        mounting and negative-z Earth gravity.
+        """
         params, structure = cls.params_from_segments(
             segments,
             gravity=gravity,
@@ -287,7 +297,7 @@ class GVS(SoftRobot):
         return jnp.asarray(self.segment_lengths)
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
-        """Cross-section geometry evaluated from stored link parameters."""
+        """Evaluate the configured circular, rectangular, or elliptical section."""
         segment_idx, s_local = self.classify_segment(s)
         length_i = self.segment_lengths[segment_idx]
         x = jnp.where(length_i > self.global_eps, s_local / length_i, 0.0)
