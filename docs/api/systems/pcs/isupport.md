@@ -42,21 +42,25 @@ from soromox.systems import ISupport, ISupportParams, ISupportStructure
 
 params = ISupportParams(
     length=jnp.array([0.18]),
-    radius=jnp.array([0.03]),
+    radius=jnp.array([35.6e-3]),
     density=jnp.array([1104.0]),
     young_modulus=jnp.array([1.6464e6]),
     shear_modulus=jnp.array([0.5488e6]),
-    damping_matrix=1e-3 * jnp.eye(6),
+    material_damping_coefficient=1.96e3,
     reference_strain=jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
-    chamber_inner_radius=jnp.array([0.00639]),
-    chamber_outer_radius=jnp.array([0.00779]),
-    chamber_distance=jnp.array([0.020]),
+    chamber_inner_radius=jnp.array([6.39e-3]),
+    chamber_outer_radius=jnp.array([7.79e-3]),
+    chamber_distance=jnp.array([20e-3]),
     chamber_azimuth_angles=(2.0 * jnp.pi * jnp.arange(3) / 3)[None, :],
 )
 robot = ISupport(params, structure=ISupportStructure(num_gauss_points=3))
 
 q = jnp.zeros(robot.num_dofs)
+
+# Pressure actuation (3 chambers per pneumatic segment)
 u = jnp.array([2.0e4, 0.0, 0.0])
+
+# Forward kinematics
 g_tip = robot.forward_kinematics(q, s=jnp.sum(robot.L))
 ```
 

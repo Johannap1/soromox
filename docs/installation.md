@@ -178,7 +178,7 @@ Test your installation with this quick verification script:
         density=jnp.array([1000.0]),
         young_modulus=jnp.array([1e6]),
         shear_modulus=jnp.array([1e5]),
-        damping_matrix=jnp.eye(3),
+        material_damping_coefficient=jnp.array([318.0]),
         reference_strain=jnp.array([0.0, 1.0, 0.0]),
     )
     robot = PlanarPCS(params=params)
@@ -200,7 +200,7 @@ Test your installation with this quick verification script:
         density=jnp.array([1000.0, 1000.0]),
         young_modulus=jnp.array([1e6, 1e6]),
         shear_modulus=jnp.array([1e5, 1e5]),
-        damping_matrix=jnp.eye(6),
+        material_damping_coefficient=jnp.array([318.0, 318.0]),
         reference_strain=jnp.tile(jnp.array([0.0, 1.0, 0.0]), 2),
     )
     robot = PlanarPCS(params=params)

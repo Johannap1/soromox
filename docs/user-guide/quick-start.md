@@ -201,7 +201,7 @@ params = PCSParams(
     reference_strain=reference_strain,
     young_modulus=young_modulus,
     shear_modulus=shear_modulus,
-    damping_matrix=damping_matrix,
+    material_damping_coefficient=material_damping_coefficient,
 )
 robot = PCS(params=params)
 robot = robot.update_params(length=new_lengths)
@@ -250,13 +250,7 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
     # Create a 3-segment soft robot
     num_segments = 3
     segment_lengths = 0.1 * jnp.ones((num_segments,))
-    # Damping matrix (optional but recommended for stability)
-    # Structure: diagonal matrix with damping coefficients for each strain component
-    # [bending, shear_x, shear_y] per segment, scaled by segment length
-    damping_matrix = 1e-3 * jnp.diag(
-        jnp.repeat(jnp.array([[1e0, 1e3, 1e3]]), num_segments, axis=0).flatten()
-        * segment_lengths[:, None].flatten()
-    )
+    material_damping_coefficient = 318.0
     params = PlanarPCSParams(
         length=segment_lengths,
         radius=0.02 * jnp.ones((num_segments,)),
@@ -264,10 +258,9 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
         reference_strain=jnp.tile(jnp.array([0.0, 1.0, 0.0]), num_segments),
         young_modulus=2e3 * jnp.ones((num_segments,)),
         shear_modulus=1e3 * jnp.ones((num_segments,)),
-        damping_matrix=damping_matrix,
+        material_damping_coefficient=material_damping_coefficient,
     )
     # Note: Damping helps stabilize simulations and represents material dissipation.
-    # For static analysis, you can omit this or set to zero.
 
     # Initialize the PCS robot
     robot = PlanarPCS(params=params)

@@ -29,6 +29,39 @@ def _require_shape(name: str, value: Array, expected_shape: tuple[int, ...]) -> 
         raise ValueError(f"{name} must have shape {expected_shape}, got {value.shape}.")
 
 
+def _validate_damping_input(
+    params: "PCSParams | PlanarPCSParams",
+    *,
+    strain_dim: int,
+    n_segments: int,
+) -> None:
+    has_damping_matrix = params.damping_matrix is not None
+    has_material_damping = params.material_damping_coefficient is not None
+    if has_damping_matrix == has_material_damping:
+        raise ValueError(
+            "Exactly one of damping_matrix or material_damping_coefficient "
+            "must be provided."
+        )
+
+    if has_damping_matrix:
+        damping_matrix = jnp.asarray(params.damping_matrix)
+        _require_shape(
+            "damping_matrix",
+            damping_matrix,
+            (strain_dim * n_segments, strain_dim * n_segments),
+        )
+        return
+
+    material_damping_coefficient = jnp.asarray(params.material_damping_coefficient)
+    if material_damping_coefficient.ndim == 0:
+        return
+    _require_shape(
+        "material_damping_coefficient",
+        material_damping_coefficient,
+        (n_segments,),
+    )
+
+
 def _validate_continuum_base(
     params: BaseContinuumSoftRobotParams,
     *,
@@ -55,7 +88,12 @@ class PCSParams(BaseContinuumSoftRobotParams):
     """Dynamic parameters for the spatial PCS model.
 
     ``length``, ``radius``, material parameters, and density use a leading
-    segment axis. ``damping_matrix`` is the full flattened strain damping matrix.
+    segment axis. Damping can be supplied either as the preferred
+    ``material_damping_coefficient`` or as a full flattened strain
+    ``damping_matrix``. ``material_damping_coefficient`` is a viscosity-like
+    modulus in Pa*s (N*s/m^2); it may be scalar or have one value per segment.
+    The assembled matrix includes geometry and length factors, so its entries
+    have generalized-coordinate-dependent units rather than a single Pa*s unit.
     ``base_pose`` is the scalar-first quaternion SE(3) base pose vector
     ``[qw, qx, qy, qz, x, y, z]`` used to initialize the base transform. The
     quaternion is normalized before use and must have nonzero finite norm.
@@ -68,16 +106,15 @@ class PCSParams(BaseContinuumSoftRobotParams):
     radius: Array
     young_modulus: Array
     shear_modulus: Array
-    damping_matrix: Array
+    material_damping_coefficient: Array | None = eqx.field(default=None, kw_only=True)
+    damping_matrix: Array | None = eqx.field(default=None, kw_only=True)
 
     def validate(self) -> None:
         n_segments = _validate_continuum_base(self, strain_dim=6, gravity_dim=3)
         _require_shape("radius", self.radius, (n_segments,))
         _require_shape("young_modulus", self.young_modulus, (n_segments,))
         _require_shape("shear_modulus", self.shear_modulus, (n_segments,))
-        _require_shape(
-            "damping_matrix", self.damping_matrix, (6 * n_segments, 6 * n_segments)
-        )
+        _validate_damping_input(self, strain_dim=6, n_segments=n_segments)
         validate_quaternion_base_pose("base_pose", self.base_pose, (7,))
 
 
@@ -88,7 +125,11 @@ class PlanarPCSParams(BaseContinuumSoftRobotParams):
     segments. ``base_pose`` stores the planar pose ``[theta, x, y]`` with shape
     ``(3,)``. ``theta`` is a right-handed angle in radians about the
     out-of-plane z-axis, and ``x``/``y`` are direct translations in the parent
-    frame. Omitting ``base_pose`` and ``gravity`` selects upright planar
+    frame. ``material_damping_coefficient`` is a viscosity-like modulus in Pa*s
+    (N*s/m^2); it may be scalar or have one value per segment. The assembled
+    matrix includes geometry and length factors and therefore has
+    generalized-coordinate-dependent entry units.
+    Omitting ``base_pose`` and ``gravity`` selects upright planar
     mounting and negative-y Earth gravity.
     """
 
@@ -97,16 +138,15 @@ class PlanarPCSParams(BaseContinuumSoftRobotParams):
     radius: Array
     young_modulus: Array
     shear_modulus: Array
-    damping_matrix: Array
+    material_damping_coefficient: Array | None = eqx.field(default=None, kw_only=True)
+    damping_matrix: Array | None = eqx.field(default=None, kw_only=True)
 
     def validate(self) -> None:
         n_segments = _validate_continuum_base(self, strain_dim=3, gravity_dim=2)
         _require_shape("radius", self.radius, (n_segments,))
         _require_shape("young_modulus", self.young_modulus, (n_segments,))
         _require_shape("shear_modulus", self.shear_modulus, (n_segments,))
-        _require_shape(
-            "damping_matrix", self.damping_matrix, (3 * n_segments, 3 * n_segments)
-        )
+        _validate_damping_input(self, strain_dim=3, n_segments=n_segments)
         validate_planar_base_pose("base_pose", self.base_pose)
 
 
@@ -205,9 +245,10 @@ class ISupportParams(PCSParams):
     azimuth is right-handed about local +X, measured from +Y toward +Z; array
     index ``j`` is pressure channel ``j``. If ``chamber_azimuth_angles`` is
     omitted, ``ISupport`` uses 0, 120, and 240 degrees for every pneumatic
-    segment. ``damping_matrix`` is expressed in flattened pneumatic-segment
-    strain coordinates and must be block diagonal by pneumatic segment when the
-    model is constructed.
+    segment. Damping can be supplied as ``material_damping_coefficient`` or as a
+    full ``damping_matrix``. A custom ``damping_matrix`` is expressed in flattened
+    pneumatic-segment strain coordinates and must be block diagonal by pneumatic
+    segment when the model is constructed.
 
     ``pcs_segment_lengths`` optionally stores flattened PCS segment lengths in
     the order defined by ``ISupportStructure.pcs_segment_counts``. If omitted,

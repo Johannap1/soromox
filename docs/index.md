@@ -120,7 +120,7 @@ Get up and running in minutes:
         reference_strain=jnp.tile(jnp.array([0.0, 1.0, 0.0]), num_segments),
         young_modulus=2e3 * jnp.ones((num_segments,)),
         shear_modulus=1e3 * jnp.ones((num_segments,)),
-        damping_matrix=1e-3 * jnp.eye(3 * num_segments),
+        material_damping_coefficient=318.0,
     )
     robot = PlanarPCS(params=params)
 
