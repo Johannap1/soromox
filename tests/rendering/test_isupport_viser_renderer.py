@@ -33,16 +33,53 @@ class _FakeHandle:
 class _FakeScene:
     def __init__(self):
         self.simple_meshes = []
+        self.labels = []
 
     def add_mesh_simple(self, **kwargs):
         handle = _FakeHandle(**kwargs)
         self.simple_meshes.append(handle)
         return handle
 
+    def add_label(self, **kwargs):
+        handle = _FakeHandle(**kwargs)
+        self.labels.append(handle)
+        return handle
+
+
+class _FakeGuiHandle(_FakeHandle):
+    def on_update(self, callback):
+        self.update_callback = callback
+        return callback
+
+    def update(self, value):
+        self.value = value
+        self.update_callback(type("Event", (), {"target": self})())
+
+
+class _FakeGui:
+    def __init__(self):
+        self.images = []
+
+    @contextmanager
+    def add_folder(self, _name):
+        yield
+
+    def add_checkbox(self, _name, *, initial_value):
+        return _FakeGuiHandle(value=initial_value)
+
+    def add_text(self, _name, *, initial_value, disabled):
+        return _FakeGuiHandle(value=initial_value, disabled=disabled)
+
+    def add_image(self, image, *, format):
+        handle = _FakeGuiHandle(image=image, format=format)
+        self.images.append(handle)
+        return handle
+
 
 class _FakeServer:
     def __init__(self):
         self.scene = _FakeScene()
+        self.gui = _FakeGui()
         self.atomic_calls = 0
 
     @contextmanager
@@ -52,17 +89,30 @@ class _FakeServer:
 
 
 def _make_robot(*, connectors: bool = True) -> ISupport:
-    lengths = jnp.array([0.10, 0.12])
+    if connectors:
+        lengths = jnp.array([0.01, 0.10, 0.02, 0.12, 0.03])
+        rigid_segment_selector = (True, False, True, False, True)
+        radii = jnp.array([0.025, 0.03, 0.026, 0.035, 0.027])
+        densities = jnp.array([1200.0, 1000.0, 1250.0, 1000.0, 1300.0])
+    else:
+        lengths = jnp.array([0.10, 0.12])
+        rigid_segment_selector = (False, False)
+        radii = jnp.array([0.03, 0.03])
+        densities = jnp.array([1000.0, 1000.0])
+    num_physical_segments = len(rigid_segment_selector)
     params = ISupportParams(
         base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         length=lengths,
-        radius=jnp.array([0.03, 0.03]),
-        density=jnp.array([1000.0, 1000.0]),
+        radius=radii,
+        density=densities,
         gravity=jnp.array([0.0, 0.0, -9.81]),
-        young_modulus=jnp.array([2.0e3, 2.0e3]),
-        shear_modulus=jnp.array([1.0e3, 1.0e3]),
-        damping_matrix=1.0e-3 * jnp.eye(12),
-        reference_strain=jnp.tile(jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), 2),
+        young_modulus=2.0e3 * jnp.ones((num_physical_segments,)),
+        shear_modulus=1.0e3 * jnp.ones((num_physical_segments,)),
+        damping_matrix=1.0e-3 * jnp.eye(6 * num_physical_segments),
+        reference_strain=jnp.tile(
+            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            num_physical_segments,
+        ),
         chamber_inner_radius=jnp.array([0.005, 0.005]),
         chamber_outer_radius=jnp.array([0.00779, 0.00779]),
         chamber_distance=jnp.array([0.020, 0.020]),
@@ -70,16 +120,13 @@ def _make_robot(*, connectors: bool = True) -> ISupport:
             [2 * jnp.pi * jnp.arange(3) / 3, 0.15 + 2 * jnp.pi * jnp.arange(3) / 3]
         ),
         pcs_segment_lengths=jnp.array([0.04, 0.06, 0.12]),
-        rigid_connector_lengths=(
-            jnp.array([0.01, 0.02, 0.03]) if connectors else jnp.zeros((3,))
-        ),
     )
     return ISupport(
         params=params,
         structure=ISupportStructure(
             num_gauss_points=1,
             pcs_segment_counts=(2, 1),
-            rigid_connector_selector=(connectors, connectors, connectors),
+            rigid_segment_selector=rigid_segment_selector,
         ),
     )
 
@@ -111,7 +158,10 @@ def _curves_and_frames(renderer, q, offsets=None):
         ({"chamber_sections": 5}, "chamber_sections"),
         ({"samples_per_fold": 1}, "samples_per_fold"),
         ({"spacer_opacity": 1.1}, "spacer_opacity"),
-        ({"interface_radius": 0.0}, "interface_radius"),
+        ({"pressure_range": (1.0, 1.0)}, "pressure_range"),
+        ({"pressure_colormap_start": 1.0}, "pressure_colormap_start"),
+        ({"pressure_label_offset": -0.01}, "pressure_label_offset"),
+        ({"pressure_colormap": "not-a-colormap"}, "colormap"),
     ],
 )
 def test_visual_config_validation(updates, message):
@@ -151,8 +201,14 @@ def test_layout_tracks_split_pneumatic_segments_and_connectors():
         [(0.01, 0.11), (0.13, 0.25)],
         atol=1e-12,
     )
+    assert [spec.radius for spec in renderer._pneumatic_specs] == pytest.approx(
+        [0.03, 0.035]
+    )
     assert [spec.thickness for spec in renderer._interface_specs] == pytest.approx(
         [0.01, 0.02, 0.03]
+    )
+    assert [spec.radius for spec in renderer._interface_specs] == pytest.approx(
+        [0.025, 0.026, 0.027]
     )
     assert all(spec.modeled for spec in renderer._interface_specs)
 
@@ -164,18 +220,9 @@ def test_layout_tracks_split_pneumatic_segments_and_connectors():
     )
 
 
-def test_layout_adds_visual_only_interfaces_without_connectors():
-    config = ISupportVisualConfig(fallback_interface_thickness=0.004)
-    renderer = _renderer(
-        _make_robot(connectors=False),
-        visual_config=config,
-    )
-
-    assert len(renderer._interface_specs) == 3
-    assert not any(spec.modeled for spec in renderer._interface_specs)
-    assert [spec.thickness for spec in renderer._interface_specs] == pytest.approx(
-        [0.004, 0.004, 0.004]
-    )
+def test_layout_has_no_visual_only_interfaces_without_rigid_segments():
+    renderer = _renderer(_make_robot(connectors=False))
+    assert renderer._interface_specs == ()
 
 
 def test_chambers_follow_model_angles_ellipse_and_bellows():
@@ -218,6 +265,51 @@ def test_chambers_follow_model_angles_ellipse_and_bellows():
     assert bulge_radius > 1.2 * waist_radius
 
 
+def test_pressure_colormap_clamps_and_handles_missing_values():
+    renderer = _renderer(_make_robot(connectors=True))
+    config = renderer.visual_config
+
+    from matplotlib import colormaps
+
+    cmap = colormaps[config.pressure_colormap]
+    expected_low = tuple(
+        int(round(255.0 * component))
+        for component in cmap(config.pressure_colormap_start)[:3]
+    )
+    expected_mid = tuple(
+        int(round(255.0 * component))
+        for component in cmap(
+            config.pressure_colormap_start
+            + (1.0 - config.pressure_colormap_start) * 0.5
+        )[:3]
+    )
+    expected_high = tuple(int(round(255.0 * component)) for component in cmap(1.0)[:3])
+
+    assert renderer._pressure_color(-1.0e5) == expected_low
+    assert renderer._pressure_color(0.0) == expected_low
+    assert renderer._pressure_color(1.5e5) == expected_mid
+    assert renderer._pressure_color(3.0e5) == expected_high
+    assert renderer._pressure_color(5.0e5) == expected_high
+    assert renderer._pressure_color(np.nan) == (145, 145, 145)
+
+
+def test_pressure_shape_normalization():
+    renderer = _renderer(_make_robot(connectors=True))
+    pressures = np.arange(renderer.robot.num_actuators, dtype=float)
+
+    static = renderer._static_pressures(pressures, num_robots=2)
+    assert static.shape == (2, renderer.robot.num_actuators)
+    assert_allclose(static[0], pressures)
+    sequence = renderer._sequence_pressures(pressures, num_robots=2, num_frames=4)
+    assert sequence.shape == (2, 4, renderer.robot.num_actuators)
+    assert_allclose(sequence[1, 3], pressures)
+
+    with pytest.raises(ValueError, match="pressures must have shape"):
+        renderer._static_pressures(np.zeros((2, 2, 2)), num_robots=2)
+    with pytest.raises(ValueError, match="sequence pressures"):
+        renderer._sequence_pressures(np.zeros((2, 2)), num_robots=2, num_frames=4)
+
+
 def test_build_and_update_preserve_custom_handle_identity():
     renderer = _renderer(_make_robot(connectors=True))
     renderer._server = _FakeServer()
@@ -249,6 +341,103 @@ def test_build_and_update_preserve_custom_handle_identity():
     assert renderer._robot_visual_handles[0].chamber_handles[0] is first_handle
     assert renderer._server.atomic_calls == 1
     assert not np.allclose(first_handle.vertices, first_vertices)
+
+
+def test_pressure_labels_and_colors_update_in_place():
+    renderer = _renderer(_make_robot(connectors=True))
+    renderer._server = _FakeServer()
+    renderer._scene_handles = SceneHandles()
+    q = jnp.zeros((renderer.robot.num_dofs,))
+    curves, frames = _curves_and_frames(renderer, q)
+    renderer._current_geometry_q = q[None, :]
+    renderer._current_pressures = np.array([[2.0e4, 1.5e5, 3.0e5, np.nan, 0.0, 4.0e5]])
+
+    renderer._build_robot_geometry(
+        curves,
+        np.ones((1, renderer.num_points, 4)),
+        material_frames=frames,
+        base_plate_color=(0.1, 0.1, 0.1),
+    )
+
+    robot_handles = renderer._robot_visual_handles[0]
+    assert robot_handles.pressure_label_handles == []
+    assert renderer._server.scene.labels == []
+    assert robot_handles.chamber_handles[3].color == (145, 145, 145)
+    pressure_color = robot_handles.chamber_handles[0].color
+
+    renderer._setup_pressure_gui()
+    checkbox = renderer._gui_handles["show_pressure_labels"]
+    colorbar = renderer._gui_handles["pressure_colorbar"]
+    assert checkbox.value is False
+    assert colorbar.format == "png"
+    assert colorbar.image.ndim == 3
+    assert colorbar.image.shape[-1] == 4
+    checkbox.update(True)
+    labels = robot_handles.pressure_label_handles
+    assert len(labels) == 6
+    assert labels[0].text == "Segment 1 · Chamber 1\n20.0 kPa"
+    assert labels[3].text == "Segment 2 · Chamber 1\n--"
+    assert all(label.visible for label in labels)
+    assert robot_handles.chamber_handles[0].color == pressure_color
+    first_label = labels[0]
+    first_position = np.asarray(first_label.position)
+
+    q_next = q.at[1].set(2.0)
+    curves_next, frames_next = _curves_and_frames(renderer, q_next)
+    renderer._current_geometry_q = q_next[None, :]
+    renderer._update_robot_geometry(curves_next, frames_next)
+
+    assert renderer._robot_visual_handles[0].pressure_label_handles[0] is first_label
+    assert not np.allclose(first_label.position, first_position)
+    assert first_label.visible
+
+    checkbox.update(False)
+    assert robot_handles.pressure_label_handles == []
+    assert first_label.remove_count == 1
+
+
+def test_geometry_without_pressures_uses_default_chamber_style():
+    renderer = _renderer(_make_robot(connectors=True))
+    renderer._server = _FakeServer()
+    renderer._scene_handles = SceneHandles()
+    q = jnp.zeros((renderer.robot.num_dofs,))
+    curves, frames = _curves_and_frames(renderer, q)
+    renderer._current_geometry_q = q[None, :]
+
+    renderer._build_robot_geometry(
+        curves,
+        np.ones((1, renderer.num_points, 4)),
+        material_frames=frames,
+        base_plate_color=(0.1, 0.1, 0.1),
+    )
+
+    robot_handles = renderer._robot_visual_handles[0]
+    assert robot_handles.pressure_label_handles == []
+    assert robot_handles.chamber_handles[0].color == renderer._color_tuple(
+        renderer.visual_config.chamber_color
+    )
+
+
+def test_render_frame_forces_labels_only_when_pressures_are_supplied(monkeypatch):
+    renderer = _renderer(_make_robot(connectors=True))
+    q = jnp.zeros((renderer.robot.num_dofs,))
+    captured = []
+
+    def fake_render_frame(self, q, **kwargs):
+        captured.append((self._current_pressures, self._force_pressure_labels, kwargs))
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(
+        "soromox.rendering.viser_renderer.ViserRenderer.render_frame",
+        fake_render_frame,
+    )
+    renderer.render_frame(q)
+    renderer.render_frame(q, pressures=np.full(renderer.robot.num_actuators, 2.0e4))
+
+    assert captured[0][0] is None
+    assert captured[0][1] is False
+    assert captured[1][0].shape == (1, renderer.robot.num_actuators)
+    assert captured[1][1] is True
 
 
 def test_batched_geometry_applies_base_offsets():
@@ -290,3 +479,48 @@ def test_live_controller_updates_custom_geometry_in_place():
     assert renderer._current_geometry_q.shape == (1, renderer.robot.num_dofs)
     assert renderer._robot_visual_handles[0].chamber_handles[0] is first_handle
     assert renderer._server.atomic_calls == 1
+
+
+def test_live_controller_pushes_pressures_with_state():
+    renderer = _renderer(_make_robot(connectors=True))
+    renderer._server = _FakeServer()
+    renderer._scene_handles = SceneHandles()
+    controller = ISupportLiveModeController(renderer)
+    controller.start()
+    q = np.zeros((renderer.robot.num_dofs,))
+    pressures = np.arange(renderer.robot.num_actuators) * 1.0e5
+
+    controller.push_state_with_pressures(q, pressures)
+    assert renderer._robot_visual_handles[0].pressure_label_handles == []
+    renderer._set_pressure_labels_visible(True)
+    controller.stop()
+
+    assert_allclose(renderer._current_pressures[0], pressures)
+    labels = renderer._robot_visual_handles[0].pressure_label_handles
+    assert labels[4].text == "Segment 2 · Chamber 2\n400.0 kPa"
+
+
+def test_sequence_frame_selects_matching_pressures(monkeypatch):
+    renderer = _renderer(_make_robot(connectors=True))
+    q_ts = jnp.zeros((3, renderer.robot.num_dofs))
+    pressure_ts = np.arange(18, dtype=float).reshape(3, 6) * 1.0e4
+
+    def fake_render_sequence(self, ts, q_ts, **kwargs):
+        return None
+
+    def fake_update_frame(self, frame_idx, *args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "soromox.rendering.viser_renderer.ViserRenderer.render_sequence",
+        fake_render_sequence,
+    )
+    monkeypatch.setattr(
+        "soromox.rendering.viser_renderer.ViserRenderer._update_frame",
+        fake_update_frame,
+    )
+    renderer.render_sequence(np.arange(3), q_ts, pressures=pressure_ts)
+    renderer._update_frame(2, q_ts[None, ...])
+
+    assert_allclose(renderer._current_pressures[0], pressure_ts[2])
+    assert renderer._pressure_frame_idx == 2
