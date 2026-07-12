@@ -4,6 +4,13 @@ RECORDED chamber pressures exported from MATLAB (6 x M matrix sampled on
 merged_time), fed as a time-varying open-loop input through the closed-loop
 rollout hook.
 
+A first-order continuous low-pass filter is applied to the recorded pressures
+inside the ODE. The filtered pressure is carried as an integrated
+control_state, so the filter dynamics are solved together with the mechanical
+dynamics by the same adaptive solver. The filter is initialized to zero.
+
+    tau * d(u_filt)/dt = u_raw - u_filt      =>      fc = 1 / (2*pi*tau)
+
 System parameters adapted from:
 Alessi, Carlo, Egidio Falotico, and Alessandro Lucantonio.
 "Ablation study of a dynamic model for a 3d-printed pneumatic soft robotic arm."
@@ -70,33 +77,57 @@ p_real = [2.33, 2.35, 2.26, 2.09, 2.63, 2.32]
 # bar2Pa
 PRESSURE_SCALE = 1.0e5
 act_values = act_values * PRESSURE_SCALE
+NOMINAL_PMAX = 3.0
 
 act_time = merged_time - merged_time[0]  # zero the clock
 act_time_j = jnp.asarray(act_time)
 act_values_j = jnp.asarray(act_values)  # (6, M)
 
 # =====================================================
-# Recorded-input "controller": ignores state, returns interp(t)
+# Low-pass filter configuration
+# =====================================================
+# Cutoff frequency [Hz]. tau = 1 / (2*pi*fc).
+LOWPASS_CUTOFF_HZ = 2.8
+LOWPASS_TAU = 1.0 / (2.0 * jnp.pi * LOWPASS_CUTOFF_HZ)
+
+# =====================================================
+# Recorded-input "controller" with a first-order low-pass filter.
+# The control_state carries the filtered pressure u_filt (6,); the
+# controller returns (u_filt, d(u_filt)/dt) so the solver integrates it.
 # =====================================================
 class RecordedInput(eqx.Module):
     act_time: jax.Array     # (M,)
     act_values: jax.Array   # (6, M)
     perm: jax.Array         # (6, 6) permutation matrix
     air_leaks: jax.Array    # (6, 6) Scale matrix for Air Leaks
+    tau: jax.Array          # () first-order filter time constant [s]
 
     def __call__(self, state: SystemState):
         """Interpolate the 6 recorded chamber pressures at the live solver time,
-        shifted back by `delay` to emulate the control-box latency.
-        Returns flat (6,) ordered [seg0_ch0, seg0_ch1, seg0_ch2, seg1_ch0, seg1_ch1, seg1_ch2].
-        Permute the rows here if your ROS node uses a different chamber order.
+        apply the permutation and air-leak scaling, then low-pass filter the result
+        with a first-order lag whose state is integrated by the ODE solver.
+
+        Returns:
+            u_filt: filtered (6,) pressures actually applied to the robot, ordered
+                [seg0_ch0, seg0_ch1, seg0_ch2, seg1_ch0, seg1_ch1, seg1_ch2].
+            du_dt: derivative of the filter state, d(u_filt)/dt = (u_raw - u_filt)/tau.
+        Permute the rows in `perm` if your ROS node uses a different chamber order.
         """
         t = state.t
 
+        # Raw (unfiltered) command at the live solver time.
         # Improve computational efficiency
-        u_t = jax.vmap(lambda row: jnp.interp(t, self.act_time, row))(self.act_values)
+        u_raw = jax.vmap(lambda row: jnp.interp(t, self.act_time, row))(self.act_values)
+        u_raw = self.air_leaks @ self.perm @ u_raw
 
-        u_t = self.air_leaks @ self.perm @ u_t
-        return u_t, None  # no control_state derivative
+        # Filtered pressure is carried in the control_state.
+        u_filt = state.control_state
+
+        # First-order low-pass dynamics: tau * du/dt = u_raw - u_filt.
+        du_dt = (u_raw - u_filt) / self.tau
+
+        # Apply the filtered pressure; return its derivative for integration.
+        return u_filt, du_dt
 
 def permutation_matrix(perm_idx):
     P = jnp.zeros((len(perm_idx), len(perm_idx)))
@@ -104,7 +135,7 @@ def permutation_matrix(perm_idx):
     return P
 
 def gain_air_leaks(p_real):
-    return jnp.diag(jnp.asarray(p_real)) / 3.0
+    return jnp.diag(jnp.asarray(p_real)) / NOMINAL_PMAX
 
 # Permutation for matching the experiment setup
 perm_idx = [2, 1, 0, 5, 4, 3]
@@ -118,6 +149,7 @@ recorded_input = RecordedInput(
     act_values=act_values_j,
     perm=P,
     air_leaks=air_leaks,
+    tau=jnp.asarray(LOWPASS_TAU),
 )
 
 if __name__ == "__main__":
@@ -209,11 +241,16 @@ if __name__ == "__main__":
     t0 = 15.22
     t1 = 60.22
 
+    # Initial filter state: match MATLAB simulate_robot_lp, which starts the
+    # filter at the raw (scaled) command evaluated at the window start time.
+    u_raw_t0 = jax.vmap(lambda row: jnp.interp(t0, act_time_j, row))(act_values_j)
+    u_filt0 = air_leaks @ P @ u_raw_t0
+
     initial_state = SystemState(
         t=t0,
         y=jnp.concatenate([q0, qd0]),
         u=jnp.zeros((robot.num_actuators,)),  # base_u = 0; all input via controller
-        control_state=None,  # no control state to track
+        control_state=u_filt0,  # filtered pressures, integrated by the solver
     )
 
     # =====================================================
@@ -229,6 +266,7 @@ if __name__ == "__main__":
     #################################################################
     # Open-loop control law: implemented as closed_loop_to          #
     # with base_u = 0 and the function that ignores q, qdot, ...    #
+    # The filter state (control_state) is integrated alongside y.   #
     #################################################################
 
     trajectory = robot.rollout_closed_loop_to(
@@ -247,7 +285,7 @@ if __name__ == "__main__":
 
     ts = trajectory.t
     q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
-    u_ts = trajectory.u  # actuation actually applied at each save step
+    u_ts = trajectory.u  # filtered actuation actually applied at each save step
 
     # =====================================================
     # Configuration q and velocity qd upon time
@@ -379,16 +417,27 @@ if __name__ == "__main__":
     plt.show()
 
     # =====================================================
-    # Applied actuation (sanity check vs recorded data)
+    # Applied actuation (filtered) vs raw recorded command
     # =====================================================
+    # Recompute the raw (unfiltered) command on the save grid for comparison.
+    u_raw_ts = jax.vmap(
+        lambda t_i: air_leaks
+        @ P
+        @ jax.vmap(lambda row: jnp.interp(t_i, act_time_j, row))(act_values_j)
+    )(ts)
+    u_raw_np = np.asarray(u_raw_ts)
+
     plt.figure()
     for k in range(u_ts.shape[1]):
-        plt.plot(ts, u_ts[:, k], label=f"u{k}")
+        line, = plt.plot(ts, u_ts[:, k], label=f"u{k} (filtered)")
+        plt.plot(
+            ts, u_raw_np[:, k], "--", color=line.get_color(), alpha=0.4
+        )
     plt.xlabel("Time [s]")
     plt.ylabel("Applied pressure [Pa]")
     plt.legend(ncol=3)
     plt.grid(True)
-    plt.title("Applied actuation")
+    plt.title(f"Applied actuation (solid=filtered, dashed=raw), fc={LOWPASS_CUTOFF_HZ} Hz")
     plt.tight_layout()
     plt.show()
 
