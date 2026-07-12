@@ -87,14 +87,22 @@ act_values_j = jnp.asarray(act_values)  # (6, M)
 # Low-pass filter configuration
 # =====================================================
 # Cutoff frequency [Hz]. tau = 1 / (2*pi*fc).
-LOWPASS_CUTOFF_HZ = 2.8
+LOWPASS_CUTOFF_HZ = 2.8     # [Hz]
 LOWPASS_TAU = 1.0 / (2.0 * jnp.pi * LOWPASS_CUTOFF_HZ)
 
 ### --- Estimated Params --- ###
-ESTIMATED_E     = 1.955596117275246e+06
-ESTIMATED_ETA   = 1.356440907178834e+05
-ESTIMATED_RHO   = 1.015625845884526e+04
+### Default
+ESTIMATED_E       = 1.6464e+6
+ESTIMATED_ETA     = 1e+4
+ESTIMATED_RHO     = 1.104e+3
+
+### Estimated
+# ESTIMATED_E     = 1.955596117275246e+06
+# ESTIMATED_ETA   = 1.356440907178834e+05
+# ESTIMATED_RHO   = 1.015625845884526e+04
+
 ESTIMATED_POI   = 0.5
+PLA_DENSITY     = 1210.0
 
 # =====================================================
 # Recorded-input "controller" with a first-order low-pass filter.
@@ -171,13 +179,17 @@ if __name__ == "__main__":
     # Physical layout: base interface, pneumatic section, middle interface,
     # pneumatic section, tip interface.
     rigid_segment_selector = (True, False, True, False, True)
-    physical_segment_lengths = jnp.array([41e-3, 190e-3, 27e-3, 190e-3, 6e-3])
+    physical_segment_lengths = jnp.array([41e-3, 180e-3, 27e-3, 180e-3, 6e-3])
     # Alessi et al. (2023) report a 30 mm circular cross-section radius for
     # the complete arm, including its pneumatic sections and terminal plates.
     physical_segment_radii = 30e-3 * jnp.ones((len(rigid_segment_selector),))
     # The compiled reference model stores 1210 kg/m^3 for every rigid
     # interface and 1104 kg/m^3 for each pneumatic section.
-    physical_segment_densities = jnp.array([1210.0, ESTIMATED_RHO, 1210.0, ESTIMATED_RHO, 1210.0])
+    physical_segment_densities = jnp.array([PLA_DENSITY, 
+                                            ESTIMATED_RHO, 
+                                            PLA_DENSITY, 
+                                            ESTIMATED_RHO, 
+                                            PLA_DENSITY])
 
     # Topology: how many PCS segments approximate each pneumatic segment.
     pcs_segment_counts = (1, 1)
@@ -196,7 +208,7 @@ if __name__ == "__main__":
     params = ISupportParams(
         base_pose=jnp.array([
                 jnp.cos(theta / 2), jnp.sin(theta / 2), 0.0, 0.0,   # quaternion [w, x, y, z]
-                21e-3, 0.0, 0.0,                                       # position [x, y, z]
+                0.0, 0.0, 0.0,                                      # position [x, y, z]
         ]),
         length=physical_segment_lengths,
         radius=physical_segment_radii,
