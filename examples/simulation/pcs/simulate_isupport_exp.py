@@ -90,6 +90,12 @@ act_values_j = jnp.asarray(act_values)  # (6, M)
 LOWPASS_CUTOFF_HZ = 2.8
 LOWPASS_TAU = 1.0 / (2.0 * jnp.pi * LOWPASS_CUTOFF_HZ)
 
+### --- Estimated Params --- ###
+ESTIMATED_E     = 1.955596117275246e+06
+ESTIMATED_ETA   = 1.356440907178834e+05
+ESTIMATED_RHO   = 1.015625845884526e+04
+ESTIMATED_POI   = 0.5
+
 # =====================================================
 # Recorded-input "controller" with a first-order low-pass filter.
 # The control_state carries the filtered pressure u_filt (6,); the
@@ -156,28 +162,33 @@ if __name__ == "__main__":
     num_pneumatic_segments = 2
 
     # Elastic modulus and poisson ratio
-    E = 1.955596117275246e+06  # Elastic modulus [Pa]
-    poisson_ratio = 0.5
+    E = ESTIMATED_E  # Elastic modulus [Pa]
+    poisson_ratio = ESTIMATED_POI
     G = E / (
         2 * (1 + poisson_ratio)
     )  # Shear modulus from elastic modulus and poisson ratio
 
-    pneumatic_segment_lengths = 190 * 1e-3 * jnp.ones((num_pneumatic_segments,))
+    # Physical layout: base interface, pneumatic section, middle interface,
+    # pneumatic section, tip interface.
+    rigid_segment_selector = (True, False, True, False, True)
+    physical_segment_lengths = jnp.array([41e-3, 190e-3, 27e-3, 190e-3, 6e-3])
+    # Alessi et al. (2023) report a 30 mm circular cross-section radius for
+    # the complete arm, including its pneumatic sections and terminal plates.
+    physical_segment_radii = 30e-3 * jnp.ones((len(rigid_segment_selector),))
+    # The compiled reference model stores 1210 kg/m^3 for every rigid
+    # interface and 1104 kg/m^3 for each pneumatic section.
+    physical_segment_densities = jnp.array([1210.0, ESTIMATED_RHO, 1210.0, ESTIMATED_RHO, 1210.0])
 
     # Topology: how many PCS segments approximate each pneumatic segment.
     pcs_segment_counts = (1, 1)
     # Parameters: metric PCS segment lengths, flattened by pneumatic segment.
+    # The first two entries sum to 190 mm; the last three sum to 180 mm.
     # Set this to None to divide each pneumatic segment equally according to
     # pcs_segment_counts.
     pcs_segment_lengths = None
-    # Topology: base, interface, and tip connector slots are present.
-    rigid_connector_selector = (True, True, True)
-    # Parameters: connector lengths (only used for selected slots).
-    # rigid_connector_lengths = jnp.array([41e-3, 27e-3, 6e-3])
-    rigid_connector_lengths = jnp.array([6e-3, 27e-3, 6e-3])
 
     # Material Damping Coefficient for Damping Tensor
-    material_damping_coefficient = 1.356440907178834e+05    # \eta [Pa s]
+    material_damping_coefficient = ESTIMATED_ETA    # \eta [Pa s]
 
     # Experimental Offset
     theta = -jnp.pi/6.0     # - 30 deg
@@ -187,15 +198,17 @@ if __name__ == "__main__":
                 jnp.cos(theta / 2), jnp.sin(theta / 2), 0.0, 0.0,   # quaternion [w, x, y, z]
                 21e-3, 0.0, 0.0,                                       # position [x, y, z]
         ]),
-        length=pneumatic_segment_lengths,
-        radius=28.6 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
-        density=1.015625845884526e+04 * jnp.ones((num_pneumatic_segments,)),
+        length=physical_segment_lengths,
+        radius=physical_segment_radii,
+        density=physical_segment_densities,
         gravity=jnp.array([9.81, 0.0, 0.0]),
-        young_modulus=E * jnp.ones((num_pneumatic_segments,)),
-        shear_modulus=G * jnp.ones((num_pneumatic_segments,)),
-        material_damping_coefficient=material_damping_coefficient,
+        young_modulus=E * jnp.ones((len(rigid_segment_selector),)),
+        shear_modulus=G * jnp.ones((len(rigid_segment_selector),)),
+        material_damping_coefficient=material_damping_coefficient
+        * jnp.ones((len(rigid_segment_selector),)),
         reference_strain=jnp.tile(
-            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_pneumatic_segments
+            jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            len(rigid_segment_selector),
         ),
         chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
         chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
@@ -207,7 +220,6 @@ if __name__ == "__main__":
             (num_pneumatic_segments, 1),
         ),
         pcs_segment_lengths=pcs_segment_lengths,
-        rigid_connector_lengths=rigid_connector_lengths,
     )
 
     # ======================================================
@@ -217,7 +229,7 @@ if __name__ == "__main__":
         params=params,
         structure=ISupportStructure(
             pcs_segment_counts=pcs_segment_counts,
-            rigid_connector_selector=rigid_connector_selector,
+            rigid_segment_selector=rigid_segment_selector,
         ),
     )
 
@@ -239,7 +251,7 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.22
-    t1 = 60.22
+    t1 = 16.22
 
     # Initial filter state: match MATLAB simulate_robot_lp, which starts the
     # filter at the raw (scaled) command evaluated at the window start time.
