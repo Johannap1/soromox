@@ -192,7 +192,21 @@ class DynamicGVSIdentification:
         to the complement of ``robot.structure.rigid_segment_selector``.
     robot_update_fn : callable(robot, p_real) -> robot, optional
         Override if your soromox version caches quantities that
-        ``eqx.tree_at`` on ``robot.params`` would not refresh.
+        ``eqx.tree_at`` on ``robot.params`` would not refresh (e.g.
+        ``ISupport`` expands params and precomputes stiffness/inertia; pass a
+        function that routes through ``robot.update_params(...)`` so those
+        caches are rebuilt).
+        NOTE (Fix A architecture): the robot is built OUTSIDE the jitted
+        rollout, so an update function that *validates* under the hood
+        (``ISupport.update_params`` -> ``params.replace().validate()``) is
+        fine for the finite-difference solver (``scipy`` with
+        ``scipy_jac="3-point"``), which only ever calls the update on
+        concrete arrays. The autodiff solvers (``lm``, ``adam``,
+        ``scipy_jac="autodiff"``) differentiate THROUGH the update, which
+        traces it; for those you need a trace-safe update (one built from
+        ``eqx.tree_at`` + the internal re-expansion/refresh, without a
+        Python-``bool`` validate). If autodiff on your update fails, the code
+        falls back cleanly and tells you to use the ``scipy`` FD path.
     ode_solver, stepsize_controller, solver_dt, max_steps :
         Passed to ``rollout_closed_loop_to``. Note: reverse-mode autodiff
         through diffrax typically requires a finite ``max_steps``.
@@ -321,8 +335,15 @@ class DynamicGVSIdentification:
         self._save_dt = float(self.time[1] - self.time[0])
 
         # --- jitted pure functions ----------------------------------------
+        # Fix A: the ROBOT is built OUTSIDE the jit (so soromox's
+        # update_params / validate() run on concrete arrays, not tracers),
+        # and passed INTO the jitted simulation as an Equinox-module argument.
+        # Only the ODE rollout + FK are compiled; the cheap
+        # update/residual arithmetic around them is not. This is what makes
+        # ISupport.update_params (which calls params.replace().validate(),
+        # incompatible with tracing) usable here.
         self._sim_fn = eqx.filter_jit(self._build_sim_fn())
-        self._residual_fn = eqx.filter_jit(self._build_residual_fn())
+        self._residual_fn = self._build_residual_fn()   # NOT jitted
         self._loss_fn = lambda pi: jnp.sum(self._residual_fn(pi) ** 2)
 
     # ------------------------------------------------------------------
@@ -361,9 +382,9 @@ class DynamicGVSIdentification:
         solver, controller_ss = self.ode_solver, self.stepsize_controller
         solver_dt, save_dt, max_steps = self.solver_dt, self._save_dt, self.max_steps
 
-        def simulate(p_real):
-            robot_p = self._update_robot(p_real)
-
+        def simulate(robot_p):
+            # robot_p is a fully-built ISupport (constructed on concrete
+            # params by forward_simulation / residuals, OUTSIDE this jit).
             ctrl = RecordedInputController(
                 act_time=time, act_values=u_samples,
                 tau=jnp.asarray(tau), low_pass=low_pass,
@@ -406,20 +427,25 @@ class DynamicGVSIdentification:
         """Simulate with FULL real-unit params. Returns
         (p_sim_tip (3,M), p_sim_mid (3,M), q_ts (M, n_q)) — the MATLAB
         method returned (p_sim_tip, p_sim_mid, result)."""
-        p_sim_mid, p_sim_tip, q_ts = self._sim_fn(jnp.asarray(p_real))
+        robot_p = self._update_robot(jnp.asarray(p_real))   # concrete: validate() OK
+        p_sim_mid, p_sim_tip, q_ts = self._sim_fn(robot_p)
         return p_sim_tip, p_sim_mid, q_ts
 
     # ------------------------------------------------------------------
     # Residuals / cost (cost_function / cost_scalar of MATLAB)
     # ------------------------------------------------------------------
     def _build_residual_fn(self):
-        sim = self._build_sim_fn()
+        # Uses the jitted self._sim_fn (compiled ODE rollout + FK). The robot
+        # is (re)built here on CONCRETE params, outside the trace, so a
+        # validating soromox update_params works. Consequently this residual
+        # function is itself NOT jitted.
         p_exp_mid, p_exp_tip = self.p_exp_mid, self.p_exp_tip
         sw_mid, sw_tip = self._sw_mid, self._sw_tip
 
         def residuals(pi_active):
             p_real = self.expand_params(pi_active)
-            p_sim_mid, p_sim_tip, _ = sim(p_real)
+            robot_p = self._update_robot(p_real)          # concrete -> validate() OK
+            p_sim_mid, p_sim_tip, _ = self._sim_fn(robot_p)
             res_mid = (p_exp_mid - p_sim_mid) * sw_mid  # (3, M), NaNs masked
             res_tip = (p_exp_tip - p_sim_tip) * sw_tip
             # MATLAB: cost = [res_mid(:); res_tip(:)]
@@ -540,10 +566,41 @@ class DynamicGVSIdentification:
                   "p_sim_mid": onp.asarray(p_sim_mid)}
         return onp.asarray(pi_star), info, result
 
+    # --- autodiff readiness probe -------------------------------------
+    _AUTODIFF_HELP = (
+        "Autodiff through the robot update failed. With the Fix-A "
+        "architecture the residual differentiates THROUGH robot_update_fn; "
+        "a validating update (e.g. ISupport.update_params, which calls "
+        "params.replace().validate()) cannot be traced. Options: (1) use "
+        "solver='scipy' with scipy_jac='3-point' (finite differences, no "
+        "tracing of the update); or (2) pass a trace-safe robot_update_fn "
+        "built from eqx.tree_at + the internal re-expansion/refresh, without "
+        "a Python-bool validate()."
+    )
+
+    def _check_autodiff_ready(self):
+        """Probe whether the residual (hence robot_update_fn) can be traced
+        and differentiated. optimistix / optax wrap the objective in their own
+        jit, so we must reproduce *that* trace here — a bare eager jacfwd would
+        miss failures that only surface under jit closure-conversion. We
+        therefore trace jacfwd(residual) under jit and raise a guided error on
+        any failure (typically TracerBoolConversionError from a validating
+        update_params)."""
+        try:
+            eqx.filter_jit(jax.jacfwd(self._residual_fn)) \
+                .lower(self.pi0).compile()
+            return True
+        except Exception as err:
+            raise RuntimeError(
+                f"{self._AUTODIFF_HELP}\n(original error: "
+                f"{type(err).__name__}: {str(err)[:160]})"
+            ) from err
+
     # --- individual solvers -------------------------------------------
     def _solve_lm(self, pi0, bounded, rtol, atol, max_steps, info, verbose):
         if optx is None:
             raise ImportError("optimistix is required for solver='lm'")
+        self._check_autodiff_ready()
         res_fn = self._residual_fn
         if bounded:
             to_box, to_raw = self._bound_maps()
@@ -567,6 +624,7 @@ class DynamicGVSIdentification:
     def _solve_adam(self, pi0, bounded, lr, steps, clip, info, verbose):
         if optax is None:
             raise ImportError("optax is required for solver='adam'")
+        self._check_autodiff_ready()
         res_fn = self._residual_fn
         if bounded:
             to_box, to_raw = self._bound_maps()
@@ -604,7 +662,8 @@ class DynamicGVSIdentification:
         ub = onp.asarray(self.ub_full[self._active_idx])
 
         if jac == "autodiff":
-            jac_fn = eqx.filter_jit(jax.jacfwd(self._residual_fn))
+            self._check_autodiff_ready()
+            jac_fn = jax.jacfwd(self._residual_fn)
             jac_arg = lambda x: onp.asarray(jac_fn(jnp.asarray(x)))
         else:
             jac_arg = jac  # "2-point" / "3-point" handled by scipy

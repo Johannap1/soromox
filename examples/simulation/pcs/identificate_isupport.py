@@ -86,9 +86,9 @@ u_scaled = u_scaled[:, ::stride]
 # =====================================================================
 # Time-window weights (30 s -> 40 s, steepness 3, base 0, peak 1)
 # =====================================================================
-custom_weights = generate_time_window_weights(
-    exp_time, 30.0, 40.0, steepness=3.0, base_weight=0.0, peak_weight=1.0
-)
+# custom_weights = generate_time_window_weights(
+#     exp_time, 30.0, 40.0, steepness=3.0, base_weight=0.0, peak_weight=1.0
+# )
 
 # =====================================================================
 # Robot with NOMINAL (initial-guess) parameters — identical to the
@@ -110,6 +110,22 @@ physical_segment_densities = jnp.array(
     [PLA_DENSITY, NOMINAL_RHO, PLA_DENSITY, NOMINAL_RHO, PLA_DENSITY]
 )
 pcs_segment_counts = (1, 1)
+
+# soft_mask over the 5 PHYSICAL segments = complement of rigid_segment_selector
+soft_mask_phys = np.array([not r for r in rigid_segment_selector])  # [F,T,F,T,F]
+
+def update_isupport(robot, p_real):
+    E, eta, rho, poi = p_real[0], p_real[1], p_real[2], p_real[3]
+    G = E / (2.0 * (1.0 + poi))
+
+    p = robot.params                      # UNEXPANDED physical params (len 5)
+    m = jnp.asarray(soft_mask_phys)
+    return robot.update_params(
+        young_modulus=jnp.where(m, E,   p.young_modulus),
+        shear_modulus=jnp.where(m, G,   p.shear_modulus),
+        material_damping_coefficient=jnp.where(m, eta, p.material_damping_coefficient),
+        density=jnp.where(m, rho, p.density),
+    )
 
 theta = -jnp.pi / 6.0  # -30 deg experimental offset
 
@@ -168,7 +184,8 @@ identificator = DynamicGVSIdentification(
     s_mid=s_mid,
     w_mid=0.0,
     w_tip=1.0,
-    w_time=custom_weights,
+    # w_time=custom_weights,
+    robot_update_fn=update_isupport,
     ode_solver=Tsit5(),
     stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),
     solver_dt=1e-3,
