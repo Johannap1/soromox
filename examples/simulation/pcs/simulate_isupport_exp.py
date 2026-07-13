@@ -39,15 +39,8 @@ jax.config.update("jax_enable_x64", True)  # double precision
 from soromox.rendering import ISupportViserRenderer, MatplotlibRenderer
 from soromox.systems import ISupport, ISupportParams, ISupportStructure, SystemState
 
-####################### IDENTIFIED PARAMETERS #######################
-#                   E   = 1.955596117275246e+06                     #
-#                   eta = 1.356440907178834e+05                     #
-#                   rho = 1.015625845884526e+04                     #
-#                   poisson = 0.5                                   #
-#                                                                   #
-# More details here:                                                #
-# https://github.com/Elektron97/am_isupportGVS/blob/main/README.md  #
-#####################################################################
+### Time for Debug ###
+# import time
 
 # Figure path
 RESULTS_DIR = "amisupport_dataset/results"
@@ -91,18 +84,22 @@ LOWPASS_CUTOFF_HZ = 2.8     # [Hz]
 LOWPASS_TAU = 1.0 / (2.0 * jnp.pi * LOWPASS_CUTOFF_HZ)
 
 ### --- Estimated Params --- ###
-### Default
-ESTIMATED_E       = 1.6464e+6
-ESTIMATED_ETA     = 1e+4
-ESTIMATED_RHO     = 1.104e+3
+# ### Default
+# ESTIMATED_E       = 1.6464e+6
+# ESTIMATED_ETA     = 1e+4
+# ESTIMATED_RHO     = 1.104e+3
 
-### Estimated
-# ESTIMATED_E     = 1.955596117275246e+06
-# ESTIMATED_ETA   = 1.356440907178834e+05
-# ESTIMATED_RHO   = 1.015625845884526e+04
+## Estimated (Ac = pi * r_in^2)
+ESTIMATED_E     = 1.076632416072824e+06
+ESTIMATED_ETA   = 0.083795344450652e+06
+ESTIMATED_RHO   = 0.006471046068502e+06
 
 ESTIMATED_POI   = 0.5
 PLA_DENSITY     = 1210.0
+
+### GEOMETRICAL PARAMS
+R_IN            = 6.39e-3   # [m]
+R_OUT           = 7.79e-3   # [m]
 
 # =====================================================
 # Recorded-input "controller" with a first-order low-pass filter.
@@ -222,8 +219,8 @@ if __name__ == "__main__":
             jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
             len(rigid_segment_selector),
         ),
-        chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
-        chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
+        chamber_inner_radius=R_IN * jnp.ones((num_pneumatic_segments,)),
+        chamber_outer_radius=R_OUT * jnp.ones((num_pneumatic_segments,)),
         chamber_distance=20 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
         # Explicit [0, 2*pi/3, 4*pi/3] = [0, 120, 240] degrees for each
         # pneumatic segment. Array index is the corresponding pressure channel.
@@ -232,6 +229,7 @@ if __name__ == "__main__":
             (num_pneumatic_segments, 1),
         ),
         pcs_segment_lengths=pcs_segment_lengths,
+        chamber_effective_pressure_area=(jnp.pi*(R_IN)**2)*jnp.ones((num_pneumatic_segments,)),
     )
 
     # ======================================================
@@ -263,7 +261,7 @@ if __name__ == "__main__":
 
     # Start and End time of the simulation
     t0 = 15.22
-    t1 = 16.22
+    t1 = 60.22
 
     # Initial filter state: match MATLAB simulate_robot_lp, which starts the
     # filter at the raw (scaled) command evaluated at the window start time.
@@ -293,6 +291,11 @@ if __name__ == "__main__":
     # The filter state (control_state) is integrated alongside y.   #
     #################################################################
 
+    # # ---- Timed rollout ----
+    # # JAX is asynchronous: block_until_ready() forces completion before we stop
+    # # the timer. The FIRST call also includes JIT compilation time.
+    # t_start = time.perf_counter()
+
     trajectory = robot.rollout_closed_loop_to(
         initial_state=initial_state,
         controller=recorded_input,
@@ -306,6 +309,12 @@ if __name__ == "__main__":
         stepsize_controller=PIDController(rtol=1e-5, atol=1e-7),  # adaptive time-steps
         max_steps=None,
     )
+
+    # # Force all device computation to finish (walks the pytree, blocks on each leaf).
+    # jax.block_until_ready(trajectory)
+
+    # elapsed = time.perf_counter() - t_start
+    # print(f"Rollout (incl. JIT compile) took {elapsed:.4f} s")
 
     ts = trajectory.t
     q_ts, qd_ts = jnp.split(trajectory.y, 2, axis=1)
@@ -340,7 +349,6 @@ if __name__ == "__main__":
     axes[1].legend(ncol=4, fontsize=8)
 
     plt.tight_layout()
-    plt.show()
 
     # =====================================================
     # End-effector position upon time
@@ -417,7 +425,6 @@ if __name__ == "__main__":
     axes[-1].set_xlabel("Time [s]")
     axes[0].set_title("Simulated EE vs recorded Vicon tip (per axis)")
     plt.tight_layout()
-    plt.show()
 
     # 3D overlay
     fig = plt.figure()
@@ -438,7 +445,6 @@ if __name__ == "__main__":
     ax.legend()
     ax.set_title("Trajectory overlay")
     plt.tight_layout()
-    plt.show()
 
     # =====================================================
     # Applied actuation (filtered) vs raw recorded command
@@ -463,12 +469,22 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.title(f"Applied actuation (solid=filtered, dashed=raw), fc={LOWPASS_CUTOFF_HZ} Hz")
     plt.tight_layout()
-    plt.show()
 
-    ## Save Figures
+    # =====================================================
+    # Save ALL figures first (before showing, so nothing is cleared/closed),
+    # then display them all at once.
+    # =====================================================
     for num in plt.get_fignums():
         fig = plt.figure(num)
-        fig.savefig(os.path.join(RESULTS_DIR, f"figure_{num}.png"), dpi=200, bbox_inches="tight")
+        fig.savefig(
+            os.path.join(RESULTS_DIR, f"figure_{num}.png"),
+            dpi=200,
+            bbox_inches="tight",
+        )
+    print(f"Figures saved in '{RESULTS_DIR}'.")
+
+    # Show all figures at the end (blocks until windows are closed).
+    plt.show()
 
     # # =====================================================
     # # Plot the robot configuration upon time
