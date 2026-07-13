@@ -53,7 +53,7 @@ act_time = merged_time - merged_time[0]
 # =====================================================================
 # Identification window: 15.22 s -> 60.22 s (identification.m)
 # =====================================================================
-start_time, end_time = 15.22, 60.22
+start_time, end_time = 15.22, 16.22
 start_idx = int(np.argmin(np.abs(merged_time - start_time)))
 end_idx = int(np.argmin(np.abs(merged_time - end_time)))
 

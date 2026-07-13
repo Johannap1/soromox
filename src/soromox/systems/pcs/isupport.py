@@ -764,8 +764,8 @@ class ISupport(PCS):
 
         def _actuation_matrix_one_chamber(i: Array, varphi: Array) -> Array:
             # Area of one pneumatic chamber
-            # A_one_chamber = jnp.pi * self.r_chamber_in[i] ** 2
-            A_one_chamber = jnp.pi * self.r_chamber_out[i] ** 2
+            A_one_chamber = jnp.pi * self.r_chamber_in[i] ** 2
+            # A_one_chamber = jnp.pi * self.r_chamber_out[i] ** 2
 
             # force contribution of the chamber
             force_contrib = jnp.array(
