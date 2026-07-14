@@ -194,6 +194,8 @@ rl = [
 test = [
     "codecov",
     "coverage[toml]",
+    "matplotlib",
+    "opencv-python",
     "pytest",
     "pytest-cov",
     "pytest-html",
