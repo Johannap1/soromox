@@ -545,7 +545,6 @@ def test_open3d_interactive_camera_front_points_from_eye_to_target():
 
 
 def test_viser_camera_uses_shared_up_and_radian_fov():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -573,7 +572,6 @@ def test_viser_camera_uses_shared_up_and_radian_fov():
 
 
 def test_viser_camera_accepts_full_trajectory_curves_for_bounds():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -601,7 +599,6 @@ def test_viser_camera_accepts_full_trajectory_curves_for_bounds():
 
 
 def test_viser_discrete_backbone_spheres_use_robot_radius():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import SceneHandles, ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -628,7 +625,6 @@ def test_viser_discrete_backbone_spheres_use_robot_radius():
 
 
 def test_viser_defaults_to_swept_backbone():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -648,7 +644,6 @@ def test_open3d_defaults_to_swept_backbone():
 
 
 def test_viser_swept_backbone_uses_material_frame_rings():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import SceneHandles, ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -674,7 +669,6 @@ def test_viser_swept_backbone_uses_material_frame_rings():
 
 
 def test_viser_swept_body_owns_closed_tip_and_updates_atomically():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import SceneHandles, ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -708,7 +702,6 @@ def test_viser_swept_body_owns_closed_tip_and_updates_atomically():
 
 
 def test_viser_default_camera_uses_backend_specific_distance():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -728,7 +721,6 @@ def test_viser_default_camera_uses_backend_specific_distance():
 
 
 def test_viser_actuator_geometry_updates_existing_line_handles():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import SceneHandles, ViserRenderer
 
     robot = DummyActuatedSpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
@@ -760,7 +752,6 @@ def test_viser_actuator_geometry_updates_existing_line_handles():
 
 
 def test_viser_paused_frame_slider_seeks_rendered_frame():
-    pytest.importorskip("viser")
     from soromox.rendering.viser_renderer import AnimationState, ViserRenderer
 
     robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))

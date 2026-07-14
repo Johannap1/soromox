@@ -200,6 +200,7 @@ test = [
     "pytest-cov",
     "pytest-html",
     "tox",
+    "viser",
 ]
 all = [
     "bump2version",

@@ -12,8 +12,6 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-pytest.importorskip("viser")
-
 from soromox.rendering import ISupportViserRenderer, ISupportVisualConfig
 from soromox.rendering.color_config import validate_rgb
 from soromox.rendering.isupport.viser_renderer import ISupportLiveModeController
