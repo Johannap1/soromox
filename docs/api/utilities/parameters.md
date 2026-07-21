@@ -1,5 +1,9 @@
 # Parameters
 
+Actuator and passive-element parameters follow the same immutable replacement
+style through indexed robot delegates. See
+[Actuation parameter updates](../actuation/index.md#parameter-updates).
+
 System parameters are represented as typed Equinox PyTrees. Shared base classes
 and cross-system tendon params live in `soromox.systems.params`; concrete params
 and structures live next to their system family, for example
@@ -135,41 +139,46 @@ Calling `replace(base_pose=None)` or `replace(gravity=None)` restores the
 dimension-appropriate default. The former identity fallback is available as
 `.horizontal(...)` or by passing an explicit identity pose.
 
-## Tendon Parameters
+## Threadlike Actuation Parameters
 
-Continuum tendon routing uses `LinearTendonRoutingParams`. It is a batched
-PyTree: the leading axis indexes tendons, so each tendon can have distinct
-intercepts, slopes, and an attachment segment.
+Continuum routed actuation uses `ThreadlikeRouting` and explicit active or
+passive components. The leading array axis indexes paths, so each path can have
+distinct offsets, slopes, and a contiguous segment span.
 
 ```python
 import jax.numpy as jnp
-from soromox.systems import LinearTendonRoutingParams, PassiveTendonParams
-
-active_routing = LinearTendonRoutingParams(
-    y_intercept=jnp.array([0.01, -0.01]),
-    y_slope=jnp.array([0.0, 0.002]),
-    z_intercept=jnp.array([0.0, 0.0]),
-    z_slope=jnp.array([0.0, 0.0]),
-    attachment_segment_index=jnp.array([0, 1]),
+from soromox.actuation import (
+    ThreadlikeActuator,
+    ThreadlikeImpedance,
+    ThreadlikeRouting,
 )
 
-passive_routing = LinearTendonRoutingParams(
-    y_intercept=jnp.array([0.005, -0.005]),
-    y_slope=jnp.array([0.0, 0.0]),
-    z_intercept=jnp.array([0.004, 0.004]),
-    z_slope=jnp.array([0.0, 0.0]),
-    attachment_segment_index=jnp.array([0, 1]),
+active_routing = ThreadlikeRouting.linear(
+    intercept=jnp.array([[0.0, 0.01, 0.0], [0.0, -0.01, 0.0]]),
+    slope=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.002, 0.0]]),
+    start_segment_index=(0, 0),
+    end_segment_index=(0, 1),
+)
+active_tendons = ThreadlikeActuator.tendons(active_routing)
+
+passive_routing = ThreadlikeRouting.linear(
+    intercept=jnp.array([[0.0, 0.005, 0.004], [0.0, -0.005, 0.004]]),
+    slope=jnp.zeros((2, 3)),
+    start_segment_index=(0, 0),
+    end_segment_index=(0, 1),
 )
 
-passive_impedance = PassiveTendonParams(
+passive_impedance = ThreadlikeImpedance(
+    routing=passive_routing,
     stiffness=jnp.array([10.0, 25.0]),
     damping=jnp.array([0.1, 0.3]),
-    rest_length_offset=jnp.array([0.0, 0.01]),
+    rest_length=jnp.array([0.2, 0.21]),
 )
 ```
 
-The number of active or passive tendons is fixed by these leading dimensions.
-Changing it changes actuator layout and requires reconstruction.
+The number of paths and their segment-span topology are structural. Changing
+either requires reconstructing the component and robot; numeric coefficients
+and mechanical parameters use immutable component updates.
 
 ## Structure Naming
 

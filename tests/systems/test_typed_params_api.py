@@ -8,25 +8,21 @@ from jax import numpy as jnp
 from numpy.testing import assert_allclose
 from system_param_builders import (
     articulated_params,
-    linear_tendon_routing,
-    passive_tendon_params,
     pcs_params,
     pendulum_params,
     planar_base_pose,
     planar_pcs_params,
     spatial_base_pose,
-    tendon_actuated_pcs_params,
-    tendon_actuated_planar_pcs_params,
 )
 
-from soromox.actuation.tendon_actuation import (
-    linear_routing,
-    linear_routing_arc_length_derivative,
+from soromox.actuation import (
+    ArticulatedTendonImpedance,
+    ThreadlikeActuator,
+    ThreadlikeRouting,
 )
 from soromox.systems import (
     PCS,
     ArticulatedSoftRobotParams,
-    BaseTendonRoutingParams,
     ISupport,
     ISupportParams,
     ISupportStructure,
@@ -35,8 +31,6 @@ from soromox.systems import (
     PendulumParams,
     PlanarPCS,
     PlanarPCSParams,
-    TendonActuatedPCS,
-    TendonActuatedPlanarPCS,
 )
 from soromox.utils.array_math import blk_diag
 from soromox.utils.geometry import poses
@@ -266,43 +260,6 @@ def test_named_mounting_rejects_competing_base_pose():
         )
 
 
-class QuadraticTendonRoutingParams(BaseTendonRoutingParams):
-    y_offset: jax.Array
-    y_quadratic: jax.Array
-    z_offset: jax.Array
-    z_quadratic: jax.Array
-    attachment_segment_index: tuple[int, ...] = eqx.field(static=True)
-
-    @property
-    def num_tendons(self) -> int:
-        return int(self.y_offset.shape[0])
-
-    @property
-    def attachment_segment_indices(self) -> tuple[int, ...]:
-        return self.attachment_segment_index
-
-    def validate(self) -> None:
-        expected_shape = (self.num_tendons,)
-        for name in ("y_quadratic", "z_offset", "z_quadratic"):
-            value = getattr(self, name)
-            if value.shape != expected_shape:
-                raise ValueError(f"{name} must have shape {expected_shape}.")
-        if len(self.attachment_segment_index) != self.num_tendons:
-            raise ValueError("attachment_segment_index must match num_tendons.")
-
-
-def quadratic_routing(params: QuadraticTendonRoutingParams, s):
-    y = params.y_offset + params.y_quadratic * s**2
-    z = params.z_offset + params.z_quadratic * s**2
-    return jnp.stack([jnp.zeros_like(y), y, z], axis=-1)
-
-
-def quadratic_routing_derivative(params: QuadraticTendonRoutingParams, s):
-    y = 2.0 * params.y_quadratic * s
-    z = 2.0 * params.z_quadratic * s
-    return jnp.stack([jnp.zeros_like(y), y, z], axis=-1)
-
-
 def test_params_are_pytrees_and_replace_is_immutable():
     params = _pcs_params()
     leaves = jax.tree.leaves(params)
@@ -457,16 +414,11 @@ def test_tendon_pcs_inherits_material_damping_path():
         damping_matrix=None,
         material_damping_coefficient=jnp.array([2.0], dtype=jnp.float64),
     )
-    routing = linear_tendon_routing(
-        y_intercept=jnp.array([0.005], dtype=jnp.float64),
-        y_slope=jnp.array([0.0], dtype=jnp.float64),
-        z_intercept=jnp.array([0.0], dtype=jnp.float64),
-        z_slope=jnp.array([0.0], dtype=jnp.float64),
-        attachment_segment_index=jnp.array([0], dtype=jnp.int32),
+    routing = ThreadlikeRouting.linear(
+        intercept=jnp.array([0.0, 0.005, 0.0], dtype=jnp.float64),
+        end_segment_index=(0,),
     )
-    robot = TendonActuatedPCS(
-        params=tendon_actuated_pcs_params(body=body, active_tendon_routing=routing)
-    )
+    robot = PCS(params=body, actuators=ThreadlikeActuator.tendons(routing))
 
     expected = _expected_spatial_material_damping(
         body.length, body.radius, body.material_damping_coefficient
@@ -479,19 +431,11 @@ def test_planar_tendon_pcs_inherits_material_damping_path():
         damping_matrix=None,
         material_damping_coefficient=jnp.array([2.0], dtype=jnp.float64),
     )
-    routing = linear_tendon_routing(
-        y_intercept=jnp.array([0.005], dtype=jnp.float64),
-        y_slope=jnp.array([0.0], dtype=jnp.float64),
-        z_intercept=jnp.array([0.0], dtype=jnp.float64),
-        z_slope=jnp.array([0.0], dtype=jnp.float64),
-        attachment_segment_index=jnp.array([0], dtype=jnp.int32),
+    routing = ThreadlikeRouting.linear(
+        intercept=jnp.array([0.0, 0.005, 0.0], dtype=jnp.float64),
+        end_segment_index=(0,),
     )
-    robot = TendonActuatedPlanarPCS(
-        params=tendon_actuated_planar_pcs_params(
-            body=body,
-            active_tendon_routing=routing,
-        )
-    )
+    robot = PlanarPCS(params=body, actuators=ThreadlikeActuator.tendons(routing))
 
     expected = _expected_planar_material_damping(
         body.length, body.radius, body.material_damping_coefficient
@@ -575,101 +519,6 @@ def test_planar_params_validate_base_pose_finite_values():
         planar.validate()
 
 
-def test_tendon_attachment_indices_are_static_topology():
-    body = _pcs_params(num_segments=2)
-    routing = linear_tendon_routing(
-        y_intercept=jnp.array([0.005], dtype=jnp.float64),
-        y_slope=jnp.array([0.0], dtype=jnp.float64),
-        z_intercept=jnp.array([0.0], dtype=jnp.float64),
-        z_slope=jnp.array([0.0], dtype=jnp.float64),
-        attachment_segment_index=jnp.array([1], dtype=jnp.int32),
-    )
-    robot = TendonActuatedPCS(
-        params=tendon_actuated_pcs_params(body=body, active_tendon_routing=routing)
-    )
-
-    assert routing.attachment_segment_index == (1,)
-    assert routing.routing_for_tendon(0).attachment_segment_index == 1
-    assert not any(
-        getattr(leaf, "dtype", None) == jnp.dtype(jnp.int32)
-        for leaf in jax.tree.leaves(routing)
-    )
-
-    with pytest.raises(ValueError, match="topology"):
-        routing.replace(attachment_segment_index=jnp.array([0], dtype=jnp.int32))
-
-    changed_attachment = linear_tendon_routing(
-        y_intercept=routing.y_intercept,
-        y_slope=routing.y_slope,
-        z_intercept=routing.z_intercept,
-        z_slope=routing.z_slope,
-        attachment_segment_index=jnp.array([0], dtype=jnp.int32),
-    )
-    with pytest.raises(ValueError, match="topology"):
-        robot.with_params(
-            robot.params.replace(active_tendon_routing=changed_attachment)
-        )
-
-
-def test_tendon_system_accepts_base_routing_subclasses():
-    body = _pcs_params(num_segments=1)
-    routing = QuadraticTendonRoutingParams(
-        y_offset=jnp.array([0.005], dtype=jnp.float64),
-        y_quadratic=jnp.array([0.01], dtype=jnp.float64),
-        z_offset=jnp.array([0.0], dtype=jnp.float64),
-        z_quadratic=jnp.array([0.0], dtype=jnp.float64),
-        attachment_segment_index=(0,),
-    )
-    robot = TendonActuatedPCS(
-        params=tendon_actuated_pcs_params(body=body, active_tendon_routing=routing),
-        active_tendon_routing_basis={
-            "d_s": quadratic_routing,
-            "dd_s_ds": quadratic_routing_derivative,
-        },
-    )
-
-    assert robot.num_actuators == 1
-    assert robot.active_tendon_routing is routing
-    assert robot.actuation_matrix(jnp.zeros((robot.num_dofs,))).shape == (
-        robot.num_dofs,
-        1,
-    )
-
-
-def test_planar_tendon_params_use_body_wrapper_and_reject_topology_changes():
-    body = _planar_pcs_params(num_segments=2)
-    routing = linear_tendon_routing(
-        y_intercept=jnp.array([0.005], dtype=jnp.float64),
-        y_slope=jnp.array([0.0], dtype=jnp.float64),
-        z_intercept=jnp.array([0.0], dtype=jnp.float64),
-        z_slope=jnp.array([0.0], dtype=jnp.float64),
-        attachment_segment_index=jnp.array([1], dtype=jnp.int32),
-    )
-    robot = TendonActuatedPlanarPCS(
-        params=tendon_actuated_planar_pcs_params(
-            body=body,
-            active_tendon_routing=routing,
-        )
-    )
-
-    updated_body = body.replace(radius=0.9 * body.radius)
-    updated_robot = robot.with_params(robot.params.replace(body=updated_body))
-    assert_allclose(updated_robot.r, 0.9 * robot.r)
-    assert robot.params.body is body
-
-    changed_attachment = linear_tendon_routing(
-        y_intercept=routing.y_intercept,
-        y_slope=routing.y_slope,
-        z_intercept=routing.z_intercept,
-        z_slope=routing.z_slope,
-        attachment_segment_index=jnp.array([0], dtype=jnp.int32),
-    )
-    with pytest.raises(ValueError, match="topology"):
-        robot.with_params(
-            robot.params.replace(active_tendon_routing=changed_attachment)
-        )
-
-
 def test_same_shape_param_updates_do_not_retrace_under_filter_jit():
     params = _pendulum_params()
     robot = Pendulum(params=params)
@@ -701,45 +550,21 @@ def test_grad_differentiates_through_typed_params():
     assert jnp.isfinite(grad_value)
 
 
-def test_linear_tendon_routing_supports_distinct_batched_tendons():
-    routing = linear_tendon_routing(
-        y_intercept=jnp.array([0.01, -0.02], dtype=jnp.float64),
-        y_slope=jnp.array([0.1, 0.0], dtype=jnp.float64),
-        z_intercept=jnp.array([0.0, 0.03], dtype=jnp.float64),
-        z_slope=jnp.array([0.0, -0.2], dtype=jnp.float64),
-        attachment_segment_index=jnp.array([0, 1], dtype=jnp.int32),
-    )
-
-    assert routing.num_tendons == 2
-    positions = linear_routing(routing, jnp.array(0.5, dtype=jnp.float64))
-    derivatives = linear_routing_arc_length_derivative(
-        routing, jnp.array(0.5, dtype=jnp.float64)
-    )
-
-    assert positions.shape == (2, 3)
-    assert derivatives.shape == (2, 3)
-    assert_allclose(positions[0], jnp.array([0.0, 0.06, 0.0]))
-    assert_allclose(positions[1], jnp.array([0.0, -0.02, -0.07]))
-
-    single = routing.routing_for_tendon(1)
-    assert single.y_intercept.shape == ()
-    assert_allclose(linear_routing(single, 0.5), positions[1])
-
-
-def test_passive_tendon_params_store_per_tendon_impedance():
-    params = passive_tendon_params(
+def test_articulated_tendon_impedance_stores_per_tendon_mechanics():
+    impedance = ArticulatedTendonImpedance.from_routing(
+        jnp.array([[1.0, 0.0], [1.0, 1.0], [1.0, -1.0]]),
         stiffness=jnp.array([10.0, 20.0, 30.0], dtype=jnp.float64),
         damping=jnp.array([0.1, 0.2, 0.3], dtype=jnp.float64),
-        rest_length_offset=jnp.array([0.0, -0.01, 0.02], dtype=jnp.float64),
+        coordinate_offset=jnp.array([0.0, -0.01, 0.02], dtype=jnp.float64),
     )
+    params = impedance.params
 
-    assert params.num_tendons == 3
     updated = params.replace(damping=params.damping + 1.0)
     assert_allclose(params.damping, jnp.array([0.1, 0.2, 0.3]))
     assert_allclose(updated.damping, jnp.array([1.1, 1.2, 1.3]))
 
-    with pytest.raises(ValueError, match="rest_length_offset"):
-        params.replace(rest_length_offset=jnp.array([0.0, 0.0]))
+    with pytest.raises(ValueError, match="damping"):
+        params.replace(damping=jnp.array([0.0, 0.0]))
 
 
 def test_removed_plural_typed_param_names_fail():

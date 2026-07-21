@@ -1,17 +1,16 @@
 import math
-from collections.abc import Callable
 from typing import Any
 
 import equinox as eqx
 import jax.numpy as jnp
 from jax import Array, vmap
 
-from soromox.systems.params import BaseTendonRoutingParams, LinearTendonRoutingParams
-from soromox.systems.pcs.params import ISupportParams, TendonActuatedPCSParams
+from soromox.actuation import ThreadlikeActuator, ThreadlikeRouting
+from soromox.systems.pcs.params import ISupportParams
 from soromox.systems.pcs.structures import ISupportStructure, PCSStructure
 from soromox.utils.array_math import blk_diag
 
-from .tendon_actuated_pcs import TendonActuatedPCS
+from .pcs import PCS
 
 _RIGID_CONNECTOR_PARENT = -1
 
@@ -30,7 +29,7 @@ def _with_default_chamber_azimuth_angles(params: ISupportParams) -> ISupportPara
 
 
 def _resolve_chamber_effective_pressure_area(params: ISupportParams) -> Array:
-    """Return one pressure-to-force area per physical pneumatic segment."""
+    """Return one pressure-coordinate area per physical pneumatic segment."""
     if params.chamber_effective_pressure_area is not None:
         return jnp.asarray(params.chamber_effective_pressure_area, dtype=jnp.float64)
     r_inner = jnp.asarray(params.chamber_inner_radius, dtype=jnp.float64)
@@ -38,40 +37,49 @@ def _resolve_chamber_effective_pressure_area(params: ISupportParams) -> Array:
     return jnp.pi * (r_outer**2 - r_inner**2)
 
 
-def _pneumatic_chamber_routing(
+def _pneumatic_chamber_actuator(
     params: ISupportParams,
     pcs_segment_to_pneumatic_segment: Array,
-) -> LinearTendonRoutingParams:
-    """Build straight, segment-local virtual tendons in pressure-channel order."""
+) -> ThreadlikeActuator:
+    """Build straight, segment-local chamber paths in pressure-channel order."""
     angles = jnp.asarray(params.chamber_azimuth_angles, dtype=jnp.float64)
     distances = jnp.asarray(params.chamber_distance, dtype=jnp.float64)[:, None]
-    y_intercept = (distances * jnp.cos(angles)).reshape(-1)
-    z_intercept = (distances * jnp.sin(angles)).reshape(-1)
+    y_offsets = (distances * jnp.cos(angles)).reshape(-1)
+    z_offsets = (distances * jnp.sin(angles)).reshape(-1)
+    intercept = jnp.stack((jnp.zeros_like(y_offsets), y_offsets, z_offsets), axis=-1)
 
-    parent_by_pcs_segment = tuple(
+    parents = tuple(
         int(parent) for parent in jnp.asarray(pcs_segment_to_pneumatic_segment).tolist()
     )
     num_pneumatic_segments, num_chambers = angles.shape
-    final_child_indices = tuple(
-        max(
-            index
-            for index, candidate_parent in enumerate(parent_by_pcs_segment)
-            if candidate_parent == pneumatic_segment
+    segment_spans = tuple(
+        (
+            min(index for index, parent in enumerate(parents) if parent == segment),
+            max(index for index, parent in enumerate(parents) if parent == segment),
         )
-        for pneumatic_segment in range(num_pneumatic_segments)
+        for segment in range(num_pneumatic_segments)
     )
-    attachment_segment_indices = tuple(
-        final_child_indices[pneumatic_segment]
-        for pneumatic_segment in range(num_pneumatic_segments)
+    starts = tuple(
+        segment_spans[segment][0]
+        for segment in range(num_pneumatic_segments)
         for _ in range(num_chambers)
     )
-
-    return LinearTendonRoutingParams(
-        y_intercept=y_intercept,
-        y_slope=jnp.zeros_like(y_intercept),
-        z_intercept=z_intercept,
-        z_slope=jnp.zeros_like(z_intercept),
-        attachment_segment_index=attachment_segment_indices,
+    ends = tuple(
+        segment_spans[segment][1]
+        for segment in range(num_pneumatic_segments)
+        for _ in range(num_chambers)
+    )
+    routing = ThreadlikeRouting.linear(
+        intercept=intercept,
+        start_segment_index=starts,
+        end_segment_index=ends,
+    )
+    effective_areas = jnp.repeat(
+        _resolve_chamber_effective_pressure_area(params), num_chambers
+    )
+    return ThreadlikeActuator.pressure_chambers(
+        routing,
+        effective_areas=effective_areas,
     )
 
 
@@ -381,7 +389,7 @@ def _expand_isupport_layout(
     )
 
 
-class ISupport(TendonActuatedPCS):
+class ISupport(PCS):
     """
     A kinematic and dynamic model for the (AM) I-Support robot based on the Piecewise Constant Strain shape parametrization.
 
@@ -443,7 +451,6 @@ class ISupport(TendonActuatedPCS):
     d_chamber: Array  # radial distance of the center of the chambers from the centerline of the backbone, shape (num_segments,)
     # Expanded per-PCS-segment copy of the resolved channel layout.
     chamber_azimuth_angles: Array
-    chamber_effective_pressure_area: Array
 
     num_chambers_per_segment: int = eqx.field(
         static=True, default=3
@@ -485,18 +492,19 @@ class ISupport(TendonActuatedPCS):
             pcs_segment_to_pneumatic_segment,
             pcs_segment_is_rigid,
         ) = _expand_isupport_layout(params, structure)
-        # Geometry-dependent caches and virtual-tendon validation are constructed
-        # by the parent initializers, so expose the expanded topology first.
+        # Geometry-dependent caches are constructed by PCS.__init__, so expose
+        # the expanded type mask before delegating to it.
         self.pcs_segment_is_rigid = pcs_segment_is_rigid
-        self.pcs_segment_to_pneumatic_segment = pcs_segment_to_pneumatic_segment
-        pneumatic_chamber_routing = _pneumatic_chamber_routing(
+        chamber_actuator = _pneumatic_chamber_actuator(
             params, pcs_segment_to_pneumatic_segment
         )
-        tendon_params = TendonActuatedPCSParams(
-            body=pcs_params,
-            active_tendon_routing=pneumatic_chamber_routing,
+        super().__init__(
+            pcs_params,
+            structure=pcs_structure,
+            actuators=chamber_actuator,
+            passive_elements=(),
+            **kwargs,
         )
-        super().__init__(tendon_params, structure=pcs_structure, **kwargs)
 
         self.params = params
         self.pcs_params = pcs_params
@@ -507,9 +515,6 @@ class ISupport(TendonActuatedPCS):
         self.num_pcs_segments = self.num_segments
         self.pcs_segment_to_pneumatic_segment = pcs_segment_to_pneumatic_segment
         self.pcs_segment_is_rigid = pcs_segment_is_rigid
-        self.chamber_effective_pressure_area = _resolve_chamber_effective_pressure_area(
-            params
-        )
 
     def _set_params(self, params: ISupportParams):
         """
@@ -622,12 +627,15 @@ class ISupport(TendonActuatedPCS):
             pcs_segment_to_pneumatic_segment,
             _,
         ) = _expand_isupport_layout(params, self.structure)
-        pneumatic_chamber_routing = _pneumatic_chamber_routing(
+        chamber_actuator = _pneumatic_chamber_actuator(
             params, pcs_segment_to_pneumatic_segment
         )
-        chamber_effective_pressure_area = _resolve_chamber_effective_pressure_area(
-            params
+        current_actuator = self.actuators[0]
+        chamber_actuator_params = chamber_actuator.params.replace(
+            lower_bounds=current_actuator.params.lower_bounds,
+            upper_bounds=current_actuator.params.upper_bounds,
         )
+        chamber_actuator = current_actuator.with_params(chamber_actuator_params)
         chamber_arrays = (
             jnp.asarray(pcs_params.chamber_inner_radius, dtype=jnp.float64),
             jnp.asarray(pcs_params.chamber_outer_radius, dtype=jnp.float64),
@@ -642,15 +650,13 @@ class ISupport(TendonActuatedPCS):
                 model.r_chamber_out,
                 model.d_chamber,
                 model.chamber_azimuth_angles,
-                model.active_tendon_routing,
-                model.chamber_effective_pressure_area,
+                model.actuators,
             ),
             updated_self,
             (
                 pcs_params,
                 *chamber_arrays,
-                pneumatic_chamber_routing,
-                chamber_effective_pressure_area,
+                (chamber_actuator,),
             ),
         )
         return updated_self._with_refreshed_precomputed_matrices()
@@ -818,91 +824,6 @@ class ISupport(TendonActuatedPCS):
         rigid_moments = super()._local_second_moment_of_area(i)
         return jnp.where(self.pcs_segment_is_rigid[i], rigid_moments, pneumatic_moments)
 
-    def _check_tendon_routing_in_body(
-        self,
-        tendon_routing_params: BaseTendonRoutingParams,
-        d_s: Callable,
-    ) -> bool:
-        """Check virtual tendons only where their pneumatic segment exists."""
-        if tendon_routing_params.num_tendons == 0:
-            return False
-
-        sample_s = jnp.stack([self.L_cum[:-1], self.L_cum[1:]], axis=-1).reshape(-1)
-        sample_segment_indices = jnp.repeat(jnp.arange(self.num_segments), 2)
-        tendon_positions = vmap(
-            vmap(d_s, in_axes=(None, 0), out_axes=0),
-            in_axes=(0, None),
-            out_axes=0,
-        )(tendon_routing_params, sample_s)
-        tendon_radii = jnp.linalg.norm(tendon_positions[..., 1:], axis=-1)
-
-        sample_parents = self.pcs_segment_to_pneumatic_segment[sample_segment_indices]
-        attachment_parents = self.pcs_segment_to_pneumatic_segment[
-            tendon_routing_params.attachment_segment_index_array
-        ]
-        local_samples = (attachment_parents[:, None] >= 0) & (
-            attachment_parents[:, None] == sample_parents[None, :]
-        )
-        body_radii = self.r[sample_segment_indices]
-        return bool(jnp.any(local_samples & (tendon_radii > body_radii[None, :])))
-
-    @eqx.filter_jit
-    def _local_actuation_basis(
-        self,
-        i: Array,
-        xi_i: Array,
-        s: Array,
-        tendon_routing_params_k: BaseTendonRoutingParams,
-        d_s_fn: Callable,
-        dd_s_ds_fn: Callable,
-        attachment_segment_idx: Array | None = None,
-    ) -> Array:
-        """Restrict a virtual tendon to the children of its pneumatic segment."""
-        if attachment_segment_idx is None:
-            attachment_segment_idx = tendon_routing_params_k.attachment_segment_index
-        tendon_basis = super()._local_actuation_basis(
-            i,
-            xi_i,
-            s,
-            tendon_routing_params_k,
-            d_s_fn,
-            dd_s_ds_fn,
-            attachment_segment_idx,
-        )
-        current_parent = self.pcs_segment_to_pneumatic_segment[i]
-        attachment_parent = self.pcs_segment_to_pneumatic_segment[
-            attachment_segment_idx
-        ]
-        is_local = (current_parent >= 0) & (current_parent == attachment_parent)
-        return is_local * tendon_basis
-
-    def _effective_pressure_area_per_chamber(self) -> Array:
-        """Expand per-segment effective areas into pressure-channel order."""
-        return jnp.repeat(
-            self.chamber_effective_pressure_area,
-            self.num_chambers_per_segment,
-        )
-
-    @eqx.filter_jit
-    def actuation_matrix(self, q: Array) -> Array:
-        """Map chamber pressures to generalized forces via virtual tendons."""
-        tendon_matrix = super().actuation_matrix(q)
-        pressure_area = self._effective_pressure_area_per_chamber()
-        return tendon_matrix * pressure_area[None, :]
-
-    @eqx.filter_jit
-    def virtual_tendon_force(self, pressure: Array) -> Array:
-        """Convert chamber pressure inputs in pascals to virtual tendon forces."""
-        return pressure * self._effective_pressure_area_per_chamber()
-
-    @eqx.filter_jit
-    def chamber_volumes(self, q: Array) -> Array:
-        """Return pressure-conjugate chamber volume coordinates ``A * length``."""
-        pressure_area = self._effective_pressure_area_per_chamber()
-        return pressure_area * self.active_tendon_length(q)
-
-    actuated_coordinates = chamber_volumes
-
     def actuator_visual_layers(
         self,
         q: Array,
@@ -910,6 +831,6 @@ class ISupport(TendonActuatedPCS):
         *,
         actuator_inputs: Array | None = None,
     ) -> tuple:
-        """Keep virtual tendons out of generic renderers."""
+        """Keep equivalent chamber-center paths out of generic renderers."""
         del q, s_points, actuator_inputs
         return ()

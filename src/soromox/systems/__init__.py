@@ -8,7 +8,7 @@ from soromox.systems.articulated.params import (
     McKibbenActuatedUMArmParams,
 )
 from soromox.systems.dynamical_system import DynamicalSystem
-from soromox.systems.gvs.params import GVSLinkParams, GVSParams, TendonActuatedGVSParams
+from soromox.systems.gvs.params import GVSLinkParams, GVSParams
 from soromox.systems.gvs.structures import (
     GVSJointStructure,
     GVSLinkStructure,
@@ -24,27 +24,18 @@ from soromox.systems.params import (
     BaseContinuumSoftRobotParams,
     BaseSoftRobotParams,
     BaseSystemParams,
-    BaseTendonRoutingParams,
-    LinearTendonRoutingParams,
-    PassiveTendonParams,
 )
 from soromox.systems.pcs.params import (
     ISupportParams,
     PCSParams,
     PlanarPCSParams,
-    PressureActuatedPlanarPCSParams,
-    TendonActuatedPCSParams,
-    TendonActuatedPlanarPCSParams,
 )
 from soromox.systems.pcs.structures import (
     ISupportStructure,
     PCSStructure,
     PlanarPCSStructure,
 )
-from soromox.systems.pendulum.params import (
-    PendulumParams,
-    TendonActuatedPendulumParams,
-)
+from soromox.systems.pendulum.params import PendulumParams
 from soromox.systems.soft_robot import (
     CrossSectionGeometry,
     SoftRobot,
@@ -58,18 +49,14 @@ from .gvs import (
     JointSpec,
     LinkSpec,
     StrainBasisSpec,
-    TendonActuatedGVS,
 )
 from .hsa import PlanarHSA
 from .pcs import (
     PCS,
     ISupport,
     PlanarPCS,
-    PressureActuatedPlanarPCS,
-    TendonActuatedPCS,
-    TendonActuatedPlanarPCS,
 )
-from .pendulum import Pendulum, TendonActuatedPendulum
+from .pendulum import Pendulum
 
 __all__ = [
     # base classes
@@ -86,9 +73,6 @@ __all__ = [
     "BaseSoftRobotParams",
     "BaseContinuumSoftRobotParams",
     "BaseArticulatedSoftRobotParams",
-    "BaseTendonRoutingParams",
-    "LinearTendonRoutingParams",
-    "PassiveTendonParams",
     # articulated systems
     "ArticulatedSoftRobot",
     "ArticulatedSoftRobotParams",
@@ -107,8 +91,6 @@ __all__ = [
     "LinkSpec",
     "JointSpec",
     "StrainBasisSpec",
-    "TendonActuatedGVS",
-    "TendonActuatedGVSParams",
     # hsa systems
     "PlanarHSA",
     "PlanarHSAParams",
@@ -116,8 +98,6 @@ __all__ = [
     # pendulum systems
     "Pendulum",
     "PendulumParams",
-    "TendonActuatedPendulum",
-    "TendonActuatedPendulumParams",
     # pcs systems
     "PCS",
     "PCSParams",
@@ -128,10 +108,4 @@ __all__ = [
     "PlanarPCS",
     "PlanarPCSParams",
     "PlanarPCSStructure",
-    "PressureActuatedPlanarPCS",
-    "PressureActuatedPlanarPCSParams",
-    "TendonActuatedPCS",
-    "TendonActuatedPCSParams",
-    "TendonActuatedPlanarPCS",
-    "TendonActuatedPlanarPCSParams",
 ]

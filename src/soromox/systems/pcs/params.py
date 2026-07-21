@@ -1,9 +1,6 @@
 __all__ = [
     "PCSParams",
     "PlanarPCSParams",
-    "TendonActuatedPCSParams",
-    "TendonActuatedPlanarPCSParams",
-    "PressureActuatedPlanarPCSParams",
     "ISupportParams",
 ]
 
@@ -15,10 +12,6 @@ from jax import Array
 
 from soromox.systems.params import (
     BaseContinuumSoftRobotParams,
-    BaseSystemParams,
-    BaseTendonRoutingParams,
-    LinearTendonRoutingParams,
-    PassiveTendonParams,
     validate_planar_base_pose,
     validate_quaternion_base_pose,
 )
@@ -150,92 +143,6 @@ class PlanarPCSParams(BaseContinuumSoftRobotParams):
         validate_planar_base_pose("base_pose", self.base_pose)
 
 
-class TendonActuatedPCSParams(BaseSystemParams):
-    """Dynamic parameters for spatial tendon-actuated PCS.
-
-    ``body`` contains the underlying PCS dynamic parameters. Active and passive
-    tendon routing fields are batched by tendon; passive impedance fields are
-    batched by passive tendon and must have the same leading length as
-    ``passive_tendon_routing``.
-    """
-
-    body: PCSParams
-    active_tendon_routing: BaseTendonRoutingParams
-    passive_tendon_routing: BaseTendonRoutingParams = eqx.field(
-        default_factory=LinearTendonRoutingParams.empty
-    )
-    passive_tendon: PassiveTendonParams = eqx.field(
-        default_factory=PassiveTendonParams.empty
-    )
-
-    def validate(self) -> None:
-        self.body.validate()
-        self.active_tendon_routing.validate()
-        self.passive_tendon_routing.validate()
-        self.passive_tendon.validate()
-        if self.passive_tendon.num_tendons != self.passive_tendon_routing.num_tendons:
-            raise ValueError(
-                "passive_tendon must have one impedance entry per "
-                "passive_tendon_routing entry."
-            )
-
-
-class TendonActuatedPlanarPCSParams(BaseSystemParams):
-    """Dynamic parameters for planar tendon-actuated PCS.
-
-    ``body`` contains the underlying planar PCS dynamic parameters. Active and
-    passive tendon routing fields are batched by tendon; attachment segment
-    indices define which planar segment each tendon reaches. Passive tendon
-    impedance fields are batched by passive tendon and must have the same
-    leading length as ``passive_tendon_routing``.
-    """
-
-    body: PlanarPCSParams
-    active_tendon_routing: BaseTendonRoutingParams
-    passive_tendon_routing: BaseTendonRoutingParams = eqx.field(
-        default_factory=LinearTendonRoutingParams.empty
-    )
-    passive_tendon: PassiveTendonParams = eqx.field(
-        default_factory=PassiveTendonParams.empty
-    )
-
-    def validate(self) -> None:
-        self.body.validate()
-        self.active_tendon_routing.validate()
-        self.passive_tendon_routing.validate()
-        self.passive_tendon.validate()
-        if self.passive_tendon.num_tendons != self.passive_tendon_routing.num_tendons:
-            raise ValueError(
-                "passive_tendon must have one impedance entry per "
-                "passive_tendon_routing entry."
-            )
-
-
-class PressureActuatedPlanarPCSParams(PlanarPCSParams):
-    """Dynamic parameters for pressure-actuated planar PCS.
-
-    Chamber geometry arrays describe the per-segment chamber layout and can be
-    updated without changing the strain layout as long as their shapes are
-    unchanged.
-    """
-
-    chamber_inner_radius: Array
-    chamber_outer_radius: Array
-    chamber_angle: Array
-    chamber_distance: Array
-
-    def validate(self) -> None:
-        super().validate()
-        n_segments = self.length.shape[0]
-        for name in (
-            "chamber_inner_radius",
-            "chamber_outer_radius",
-            "chamber_angle",
-            "chamber_distance",
-        ):
-            _require_shape(name, getattr(self, name), (n_segments,))
-
-
 class ISupportParams(PCSParams):
     """Dynamic parameters for the I-SUPPORT spatial pneumatic PCS model.
 
@@ -246,9 +153,10 @@ class ISupportParams(PCSParams):
     azimuth is right-handed about local +X, measured from +Y toward +Z; array
     index ``j`` is pressure channel ``j``. If ``chamber_azimuth_angles`` is
     omitted, ``ISupport`` uses 0, 120, and 240 degrees for every pneumatic
-    segment. ``chamber_effective_pressure_area`` converts each chamber pressure
-    to its virtual tendon force. It contains one value per pneumatic segment and
-    is shared by all chambers in that segment. When omitted, it is derived as
+    segment. ``chamber_effective_pressure_area`` scales each routed chamber-path
+    length into its pressure-conjugate equivalent-volume coordinate. It contains
+    one value per pneumatic segment and is shared by all chambers in that
+    segment. When omitted, it is derived as
     ``pi * (chamber_outer_radius**2 - chamber_inner_radius**2)``. Damping can be
     supplied as ``material_damping_coefficient`` or as a full ``damping_matrix``.
     A custom ``damping_matrix`` is expressed in flattened pneumatic-segment

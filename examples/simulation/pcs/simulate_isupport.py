@@ -71,7 +71,7 @@ if __name__ == "__main__":
         chamber_inner_radius=6.39 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
         chamber_outer_radius=7.79 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
         chamber_distance=20 * 1e-3 * jnp.ones((num_pneumatic_segments,)),
-        # chamber_effective_pressure_area may override the default annular area
+        # Optional: override the default effective area
         # pi * (chamber_outer_radius**2 - chamber_inner_radius**2).
         # Explicit [0, 2*pi/3, 4*pi/3] = [0, 120, 240] degrees for each
         # pneumatic segment. Array index is the corresponding pressure channel.
@@ -115,8 +115,8 @@ if __name__ == "__main__":
     # A = robot.actuation_matrix(q0)
     # print("A:\n", A)
 
-    # Actuation pressures [Pa]. Internally, each local virtual tendon receives
-    # force = pressure * chamber_effective_pressure_area.
+    # Actuation pressures [Pa]. The threadlike transmission uses the
+    # pressure-conjugate coordinate V = effective_area * chamber_path_length.
     u = (
         jnp.repeat(
             jnp.array([2e-1, 0.0, 0.0])[None, :],

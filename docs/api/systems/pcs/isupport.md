@@ -4,9 +4,10 @@
 
 ## Overview
 
-`ISupport` is a specialized tendon-actuated PCS implementation for 3D pneumatic
-soft robots. Each pressure chamber is represented internally by a straight,
-segment-local virtual tendon:
+`ISupport` is a specialized PCS implementation for 3D pneumatic soft robots.
+Its pressure chambers use the common threadlike-actuation model: each physical
+chamber is represented by a straight, segment-local equivalent path through the
+deformable pneumatic section.
 
 - **3 chambers per segment**: Radially arranged pneumatic chambers
 - **Pressure-based control**: Direct pressure input for actuation
@@ -93,8 +94,6 @@ params = ISupportParams(
     chamber_outer_radius=jnp.array([7.79e-3]),
     chamber_distance=jnp.array([20e-3]),
     chamber_azimuth_angles=(2.0 * jnp.pi * jnp.arange(3) / 3)[None, :],
-    # Optional override. The default is pi * (r_outer**2 - r_inner**2).
-    chamber_effective_pressure_area=None,
 )
 robot = ISupport(
     params,
@@ -141,28 +140,51 @@ order differs from that default.
 
 ### Actuation Mapping
 
-The control input remains chamber pressure in pascals. For chamber `k`, the
-model converts pressure to a virtual tendon force using
+Pressure remains the user control and is measured in pascals. The work
+coordinate of chamber `k` is the equivalent chamber volume
 
-`f_k = p_k * A_k`.
+```text
+V_k(q) = A_eff,k * length_k(q),
+```
 
-`chamber_effective_pressure_area` has shape `(num_pneumatic_segments,)`; one
-area is shared by all chambers in a pneumatic segment. If it is omitted, the
-model uses
+so the pressure actuation matrix is
 
-`A = pi * (chamber_outer_radius**2 - chamber_inner_radius**2)`.
+```text
+A(q) = (dV/dq)^T = (d length/dq)^T diag(A_eff).
+```
 
-The pressure actuation matrix is the configuration-dependent, length-integrated
-`TendonActuatedPCS` matrix with each column scaled by its effective pressure
-area. Virtual tendons contribute only to the PCS children of their own
-pneumatic segment, so pressure sections remain independent. Consequently, this
-matrix intentionally differs from the former configuration-independent local
-wrench approximation.
+This is the same distributed virtual-path model introduced in PR #116, now
+expressed through `ThreadlikeActuator.pressure_chambers(...)`. It is
+configuration-dependent and integrates the path contribution along every PCS
+child belonging to the physical pneumatic section. A chamber never crosses a
+rigid connector or contributes to another pneumatic section.
 
-The pressure-conjugate actuation coordinates are available through
-`robot.chamber_volumes(q)` and `robot.actuated_coordinates(q)`. They are modeled
-as effective area times virtual tendon length, and their Jacobian is the
-transpose of the pressure actuation matrix.
+`chamber_effective_pressure_area` has one entry per physical pneumatic section
+and is shared by its pressure channels. If omitted, the model uses the annular
+area
+
+```text
+A_eff = pi * (chamber_outer_radius**2 - chamber_inner_radius**2).
+```
+
+The pressure-conjugate coordinates, velocities, efforts, moment matrix, and
+generalized force use the shared actuation interface:
+
+```python
+volumes = robot.actuator_coordinates(q)
+volume_rates = robot.actuator_velocities(q, qd)
+pressure_efforts = robot.actuator_efforts(q, pressures, qd=qd)
+A = robot.actuation_matrix(q)
+tau = robot.actuation_force(q, pressures, qd=qd)
+```
+
+For the current `DirectEffort` model, `pressure_efforts == pressures`. The
+effective area is part of the transmission coordinate and moment matrix rather
+than a separate pressure-to-force conversion API.
+
+I-SUPPORT's specialized renderer continues to draw the detailed bellows and
+accepts `actuator_inputs=` (with `pressures=` as a mutually exclusive alias).
+The internal equivalent paths are not drawn as generic pneumatic tubes.
 
 ## API Reference
 
