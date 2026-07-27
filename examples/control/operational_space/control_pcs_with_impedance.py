@@ -157,9 +157,9 @@ def main():
     Lambda_0 = osd.inertia_matrix(q0)
     D_x = 2.0 * damping_ratio * jnp.sqrt(K_x * jnp.diag(Lambda_0))
 
-    # Select "full" for the most accurate moving-reference tracking, or
-    # "partial" to cancel only null-space Coriolis coupling.
-    feedback_linearization = "full"
+    # Use partial feedback linearization by default to cancel only null-space
+    # Coriolis coupling. Switch to "full" for complete task-space cancellation.
+    feedback_linearization = "partial"
 
     # Create the impedance controller
     controller = OperationalSpaceImpedanceControlTracker(
