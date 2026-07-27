@@ -5,9 +5,9 @@ This example demonstrates how to use the OperationalSpaceImpedanceControlTracker
 two-segment PCS soft robot in operational space, where the task is defined as
 tracking the end-effector position.
 
-The operational-space impedance controller uses partial feedback linearization
-to cancel the original task dynamics and replace them with a desired impedance
-behavior characterized by stiffness K_x and damping D_x gains.
+The operational-space impedance controller uses feedback linearization and
+moving-reference feedforward to replace the original task dynamics with a
+desired impedance behavior characterized by stiffness K_x and damping D_x.
 
 References:
     Della Santina, C., Katzschmann, R. K., Bicchi, A., & Rus, D. (2020).
@@ -117,9 +117,11 @@ def main():
         amplitude_y = 0.02  # 2 cm amplitude in y
         amplitude_z = 0.01  # 1 cm amplitude in z
 
-        # Smooth trajectory with sinusoidal motion
-        # Ramp up the motion smoothly in the first second
-        ramp = jnp.minimum(t / 1.0, 1.0)
+        # Ramp up with a C2-continuous minimum-jerk profile. Starting the
+        # reference with zero velocity and acceleration avoids an artificial
+        # impulse in the feedforward terms.
+        ramp_phase = jnp.clip(t / 1.0, 0.0, 1.0)
+        ramp = ramp_phase**3 * (10.0 - 15.0 * ramp_phase + 6.0 * ramp_phase**2)
 
         # x0_full is [rot_x, rot_y, rot_z, p_x, p_y, p_z] for 3D PCS
         # Modify position components (indices 3, 4, 5)
@@ -144,12 +146,20 @@ def main():
     # Impedance Controller Setup
     # =========================================================================
     # Define operational space gains
-    # K_x: Stiffness gain (makes the closed-loop stiffer -> faster convergence)
-    # D_x: Damping gain (suppresses oscillations)
-
-    # For a second-order system with critical damping: D = 2 * sqrt(K)
+    # K_x: task stiffness. For a full-pose task, use separate rotational and
+    # translational entries because their units and operational inertias differ.
     K_x = 1.0 * jnp.ones((osd.n_operational_space,))  # Stiffness [N/m]
-    D_x = 0.2 * jnp.ones((osd.n_operational_space,))  # Damping [N·s/m]
+
+    # Approximate modal critical damping at the initial configuration:
+    # D_i = 2*zeta*sqrt(K_i*Lambda_ii). This is preferable to D = 2*sqrt(K),
+    # which implicitly assumes unit operational-space inertia.
+    damping_ratio = 1.0
+    Lambda_0 = osd.inertia_matrix(q0)
+    D_x = 2.0 * damping_ratio * jnp.sqrt(K_x * jnp.diag(Lambda_0))
+
+    # Select "full" for the most accurate moving-reference tracking, or
+    # "partial" to cancel only null-space Coriolis coupling.
+    feedback_linearization = "full"
 
     # Create the impedance controller
     controller = OperationalSpaceImpedanceControlTracker(
@@ -157,8 +167,10 @@ def main():
         reference_trajectory=reference_trajectory,
         K_x=K_x,
         D_x=D_x,
+        feedback_linearization=feedback_linearization,
     )
 
+    print(f"Feedback linearization: {feedback_linearization}")
     print(f"Operational space stiffness K_x: {K_x}")
     print(f"Operational space damping D_x: {D_x}")
 
@@ -178,7 +190,9 @@ def main():
     )
 
     # Simulation parameters
-    solver_dt = 1e-4
+    # Full-pose variants of this example require the smaller step to avoid the
+    # numerical divergence seen with 1e-4 s.
+    solver_dt = 2e-5
     save_dt = 0.01
 
     # =========================================================================
