@@ -53,6 +53,25 @@ They differ only in their Coriolis/centrifugal compensation:
 | `full` | \(\mu_x\dot{q}\) | Cancels the complete task-space Coriolis force |
 | `partial` | \(\mu_x(I-\bar{J}J)\dot{q}\) | Cancels only null-space Coriolis coupling and retains \(\mu_x\bar{J}\dot{x}\) |
 
+!!! info "Historical provenance"
+    The `partial` mode follows the Cartesian impedance structure proposed in
+    Section 3.3, equations 49 and 56–60, of
+    [Della Santina et al. (2020)](https://doi.org/10.1177/0278364919897292).
+    That controller removes dynamic coupling from the residual/null-space
+    degrees of freedom while deliberately retaining the natural task-space
+    Coriolis term. The implementation here extends the paper's set-point law
+    with desired velocity and acceleration feedforward for moving-reference
+    tracking.
+
+    The `full` mode instead uses a Khatib-style operational-space nonlinear
+    dynamic-decoupling structure. Section IV, equations 29–31, of
+    [Khatib (1987)](https://doi.org/10.1109/JRA.1987.1087068) compensates the
+    complete operational-space centrifugal/Coriolis and gravity terms before
+    applying desired acceleration and tracking feedback. The implementation
+    here is not a verbatim reproduction: its stiffness and damping are physical
+    task-space impedance forces, so the closed-loop error dynamics retain
+    \(\Lambda\) rather than being presented as unit-mass dynamics.
+
 With full linearization and \(e_x\) denoting the geometric correction from the
 current pose to the desired pose, the local closed-loop error dynamics become:
 

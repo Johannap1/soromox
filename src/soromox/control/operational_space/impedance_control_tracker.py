@@ -36,6 +36,23 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
       ``μ_x (I - J_bar J) q̇``. It preserves the natural task-space term
       ``μ_x J_bar ẋ`` instead of fully linearizing it.
 
+    Historical provenance:
+        - The ``"partial"`` mode follows the Cartesian impedance structure
+          proposed by Della Santina et al. (2020, Sec. 3.3, Eqs. 49 and
+          56--60). That law compensates coupling from the residual/null-space
+          dynamics while deliberately retaining the natural task-space
+          Coriolis term. This implementation extends the paper's set-point
+          formulation with desired velocity and acceleration feedforward for
+          moving-reference tracking.
+        - The ``"full"`` mode is a Khatib-style operational-space nonlinear
+          dynamic-decoupling variant (Khatib, 1987, Sec. IV, Eqs. 29--31):
+          it compensates the complete task-space Coriolis/centrifugal force
+          before applying desired acceleration and tracking feedback. It is
+          not a verbatim reproduction of Khatib's controller. Here the
+          stiffness and damping are physical task-space impedance forces, so
+          the closed-loop error dynamics retain the operational-space inertia
+          ``Λ`` rather than being presented as unit-mass dynamics.
+
     Here, Λ is the operational-space inertia matrix, D_x is the desired damping,
     K_x is the desired stiffness, and ``e_x`` is the geometric correction from
     the current pose to the desired pose. Full linearization is the default.
@@ -91,6 +108,7 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         Khatib, O. (1987). A unified approach for motion and force control of robot
         manipulators: The operational space formulation. IEEE Journal on Robotics
         and Automation, 3(1), 43-53.
+        https://doi.org/10.1109/JRA.1987.1087068
 
         Ott, C. (2008). Cartesian impedance control of redundant and flexible-joint robots. Springer.
 
@@ -98,6 +116,7 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         Model-based dynamic feedback control of a planar soft robot: trajectory
         tracking and interaction with the environment. The International Journal
         of Robotics Research, 39(4-5), 490-513.
+        https://doi.org/10.1177/0278364919897292
 
         Stölzle, M. (2025). Safe yet Precise Soft Robots: Incorporating Physics
         into Learned Models for Control. Dissertation, Delft University of Technology.
