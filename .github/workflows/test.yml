@@ -40,8 +40,8 @@ jobs:
       - name: Run pytest
         run: python -m pytest
 
-  minimum-dependencies:
-    name: test (minimum dependencies, Python 3.11)
+  minimum-numerical-dependencies:
+    name: test (minimum numerical dependencies, Python 3.11)
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
