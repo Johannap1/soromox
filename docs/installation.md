@@ -22,6 +22,7 @@
     - **Python** >= 3.11
     - **JAX** >= 0.10.0
     - **Diffrax** >= 0.7.2
+    - **NumPy**
 
 !!! warning "Python Version Compatibility"
     - **Open3D Rendering**: Open3D rendering is currently not compatible with Python 3.13+
