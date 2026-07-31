@@ -505,7 +505,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Return after initializing one Viser update loop iteration.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.video_output is not None and (args.no_autoplay or args.loop):
+        parser.error("--video-output cannot be combined with --no-autoplay or --loop.")
+    return args
 
 
 def main() -> None:
