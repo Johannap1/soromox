@@ -1286,6 +1286,9 @@ class ViserRenderer(BaseSoftRobotRenderer):
         loop: bool = False,
         record_path: str | None = None,
         record_every_n: int = 1,
+        stop_when_recording_done: bool = False,
+        record_client_timeout: float = 10.0,
+        record_frame_timeout: float = 10.0,
         video_config: VideoEncodingConfig | None = None,
         camera_config: CameraConfig | None = None,
         base_offsets: Array | None = None,
@@ -1315,6 +1318,12 @@ class ViserRenderer(BaseSoftRobotRenderer):
             loop: Loop animation
             record_path: Path to save video (mp4, mov)
             record_every_n: Record every N frames
+            stop_when_recording_done: If True, return after recording one non-looping
+                pass through the sequence.
+            record_client_timeout: Seconds to wait for a browser client before video
+                recording fails.
+            record_frame_timeout: Seconds to wait for each browser render before video
+                recording fails.
             video_config: FFmpeg encoding settings
             camera_config: Camera configuration (fov, position, look_at, etc.)
             base_offsets: Base position offsets (N, 2/3)
@@ -1340,6 +1349,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
         ts = np.asarray(ts)
         q_ts = jnp.asarray(q_ts)
+        record_every_n = max(1, int(record_every_n))
 
         if q_ts.ndim == 3 and (plot_configurations or plot_actuator_positions):
             raise ValueError(
@@ -1514,7 +1524,14 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
         # Video recording setup
         video_writer = None
+        record_client = None
         if record_path is not None:
+            record_client = self._wait_for_recording_client(record_client_timeout)
+            if record_client is None:
+                raise RuntimeError(
+                    "Viser video recording requires a connected browser client. "
+                    "Open the Viser URL or enable browser auto-open."
+                )
             fps = 1.0 / np.mean(np.diff(ts)) if len(ts) > 1 else 30.0
             video_writer = FFmpegVideoWriter(
                 record_path,
@@ -1525,6 +1542,11 @@ class ViserRenderer(BaseSoftRobotRenderer):
                 video_config=video_config,
             )
             print(f"[ViserRenderer] Recording to {record_path}")
+            self._record_viser_frame(
+                video_writer,
+                record_client,
+                timeout=record_frame_timeout,
+            )
 
         # Animation loop
         try:
@@ -1555,21 +1577,26 @@ class ViserRenderer(BaseSoftRobotRenderer):
                             if next_idx != state.frame_idx:
                                 state.frame_idx = next_idx
                                 seek_frame(next_idx)
+                                recording_final_frame = (
+                                    stop_when_recording_done
+                                    and video_writer is not None
+                                    and not state.loop
+                                    and next_idx >= state.num_frames - 1
+                                )
 
                                 # Record frame
-                                if (
-                                    video_writer is not None
-                                    and next_idx % record_every_n == 0
+                                if video_writer is not None and (
+                                    next_idx % record_every_n == 0
+                                    or recording_final_frame
                                 ):
-                                    clients = list(self._server.get_clients().values())
-                                    if clients:
-                                        try:
-                                            frame = clients[0].camera.get_render(
-                                                height=self.height, width=self.width
-                                            )
-                                            video_writer.write(np.array(frame))
-                                        except Exception:
-                                            pass
+                                    record_client = self._record_viser_frame(
+                                        video_writer,
+                                        record_client,
+                                        timeout=record_frame_timeout,
+                                    )
+
+                                if video_writer is not None and recording_final_frame:
+                                    break
 
                     # Update GUI
                     self._update_playback_gui(state)
@@ -1644,6 +1671,67 @@ class ViserRenderer(BaseSoftRobotRenderer):
 
         # Update dynamic spheres
         self._update_dynamic_spheres(frame_idx)
+
+    def _wait_for_recording_client(self, timeout: float) -> Any | None:
+        """Wait briefly for a Viser browser client used for video capture."""
+        if self._server is None:
+            return None
+
+        deadline = time.time() + max(0.0, float(timeout))
+        while time.time() <= deadline:
+            clients = list(self._server.get_clients().values())
+            if clients:
+                return clients[0]
+            time.sleep(0.05)
+        return None
+
+    def _record_viser_frame(
+        self,
+        video_writer: FFmpegVideoWriter,
+        client: Any | None,
+        *,
+        timeout: float,
+    ) -> Any | None:
+        """Capture one Viser frame and return the client used."""
+        if self._server is None:
+            return client
+
+        clients = list(self._server.get_clients().values())
+        if clients and client not in clients:
+            client = clients[0]
+        if client is None:
+            return client
+
+        result: dict[str, Any] = {}
+        error: dict[str, BaseException] = {}
+
+        def capture() -> None:
+            try:
+                result["frame"] = client.camera.get_render(
+                    height=self.height,
+                    width=self.width,
+                )
+            except BaseException as exc:
+                error["exception"] = exc
+
+        thread = threading.Thread(target=capture, daemon=True)
+        thread.start()
+        thread.join(timeout=max(0.0, float(timeout)))
+        if thread.is_alive():
+            raise RuntimeError(
+                "Timed out while capturing a Viser video frame. Make sure the "
+                "Viser browser tab is open, foregrounded, and connected."
+            )
+        if "exception" in error:
+            raise RuntimeError("Failed to capture a Viser video frame.") from error[
+                "exception"
+            ]
+
+        frame = result.get("frame")
+        if frame is None:
+            raise RuntimeError("Viser did not return a video frame.")
+        video_writer.write(np.asarray(frame, dtype=np.uint8))
+        return client
 
     def _setup_playback_gui(
         self,

@@ -211,6 +211,19 @@ python examples/control/configuration_space/trajectory_tracking_comparison.py
 
 **Key concepts:** Trajectory tracking, configuration-space control, reference generation
 
+#### Regulation Followed by Tracking
+
+```bash
+python examples/control/configuration_space/regulation_tracking_comparison.py
+```
+
+**What you'll learn:**
+- Regulation and tracking within one uninterrupted control task
+- Comparison of model-free, feedforward-compensation, and computed-torque controllers
+- Phase-specific tracking metrics and result visualization
+
+**Key concepts:** Regulation versus tracking, inverse-dynamics feedforward, computed torque
+
 ### Operational-Space Controllers
 
 Operational-space controllers operate on the robot's end-effector or task-space coordinates.

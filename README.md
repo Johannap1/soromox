@@ -206,6 +206,8 @@ For model-based control examples:
 
 ```bash
 python examples/control/configuration_space/setpoint_regulation_comparison.py
+python examples/control/configuration_space/trajectory_tracking_comparison.py
+python examples/control/configuration_space/regulation_tracking_comparison.py
 ```
 
 ## Documentation
