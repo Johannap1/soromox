@@ -4,6 +4,26 @@ This case reproduces the Section Vc configuration-space controller comparisons.
 The three generators share the robot, controller, trajectory, serialization,
 plotting, and rendering implementation in `code/configuration_space_comparison_simulation.py`.
 
+## Integral-error saturation
+
+The PID integral state uses the unit-preserving smooth saturation
+
+$$
+\dot{\eta}_i = e_{\mathrm{sat},i}
+\tanh\!\left(e_i/e_{\mathrm{sat},i}\right).
+$$
+
+The PCS coordinates combine rotational strains in $\mathrm{m^{-1}}$ and
+dimensionless linear strains, so the benchmark uses separate physical scales:
+
+- $e_{\kappa,\mathrm{sat}}=10\,\mathrm{m^{-1}}$, corresponding to a 1 rad
+  angular error across the 0.1 m segment;
+- $e_{\sigma,\mathrm{sat}}=0.1$, corresponding to a 10% linear strain error.
+
+These scales keep the nominal PID integral gain unchanged for small errors.
+They can be varied with `--rotational-integral-error-scale` and
+`--linear-integral-error-scale` on each simulation command.
+
 ## Reproduce
 
 From the repository root, generate all three datasets without touching the
@@ -60,8 +80,10 @@ combined regulation/tracking archive additionally stores the four terminal
 setpoint-window MAEs and their equal-weight aggregate for regulation.
 `outputs/configuration_space_comparison.pdf` contains the complete
 regulation-to-tracking trajectory for all three controlled strains.
-`outputs/regulation_tracking_rmse.pdf` reports the corresponding RMSE values
-separately for the setpoint-regulation and trajectory-tracking phases.
+`outputs/regulation_tracking_rmse.pdf` places the full setpoint-regulation RMSE
+next to the steady-state regulation MAE, followed by the trajectory-tracking
+RMSE. The steady-state MAE is computed over the final quarter of each setpoint
+interval and averaged equally across the four setpoints.
 Scenario-specific tracking and error plots are reproducible diagnostics and
 remain uncommitted. The checked-in NPZ files were regenerated from scratch with
 the current Section Vc generators.
