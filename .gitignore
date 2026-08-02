@@ -140,6 +140,10 @@ dmypy.json
 *.mp4
 *.gif
 
+# Generated example artifacts stay next to the script that creates them.
+examples/**/figures/*
+examples/**/videos/*
+
 # Documentation build
 site/
 
@@ -149,7 +153,3 @@ site/
 # camera params saved during rendering
 DepthCamera_*.json
 DepthCapture_*.png
-
-# Generated CLF-CBF outputs
-force_goal_distance_plot.pdf
-force_goal_distance_plot.png

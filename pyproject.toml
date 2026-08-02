@@ -291,6 +291,7 @@ ignore = [
   "assets/**",
   "benchmarks/**",
   "bump_version.py",
+  "data/**",
   "docs/**",
   "examples/**",
   "extract_changelog.py",
@@ -362,6 +363,7 @@ unfixable = []
 
 [tool.ruff.lint.per-file-ignores]
 "examples/**/*.py" = ["E402"]
+"paper_results/**/*.py" = ["E402"]
 "tools/benchmarks/**/*.py" = ["E402"]
 
 [tool.ruff.lint.isort]

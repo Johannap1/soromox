@@ -1,0 +1,2 @@
+# Keep trained model checkpoints out of normal Git object history.
+paper_results/secVf_parallel_rl/data/checkpoints/* filter=lfs diff=lfs merge=lfs -text

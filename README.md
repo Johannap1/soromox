@@ -126,7 +126,7 @@ workflows, or the dependencies used to reproduce the paper results.
 | `examples` | Running the example scripts under `examples/`. | `matplotlib`, `seaborn`, `ipython`, `optax`, `optimistix`, `open3d`, `opencv-python`, `plotly`, `trimesh`, `viser`, `ffmpeg-python` |
 | `rendering` | Using optional rendering backends and exporting plots, videos, or interactive visualizations. | `matplotlib`, `open3d`, `opencv-python`, `plotly`, `trimesh`, `viser`, `ffmpeg-python` |
 | `rl` | Training and evaluating reinforcement-learning controllers with SoRoMoX, including parallel RL workflows. | `gymnasium`, `stable-baselines3`, `matplotlib` |
-| `paper_results` | Reproducing the paper results, including benchmarking scripts, RL experiments, visualization, and comparison baselines. | `cbfpy`, `elastica`, `gymnasium`, `stable-baselines3`, plus the example and rendering stack |
+| `paper_results` | Reproducing the research workflows, data, figures, and videos under `paper_results/`, including benchmarks, RL experiments, visualization, and comparison baselines. | `cbfpy`, `elastica`, `gymnasium`, `stable-baselines3`, plus the example and rendering stack |
 | `test` | Running the test suite without the full development stack. | `pytest`, `pytest-cov`, `pytest-html`, `coverage`, `tox`, `codecov` |
 | `all` | Broad convenience install for users who want one environment with most optional tooling. For reproducible workflows, prefer the task-specific extras above. | See the `all` extra in `pyproject.toml` |
 
@@ -151,6 +151,11 @@ To reproduce the paper results or run RL experiments from the source checkout:
 uv pip install -e ".[paper_results]"
 uv pip install -e ".[rl]"
 ```
+
+Complete publication workflows, their input and generated data, and committed
+canonical outputs live under `paper_results/`. Use the `paper_results` extra for
+these workflows; the narrower `rl` extra remains available for
+reinforcement-learning-only work.
 
 ### Using uv for Project Management
 
@@ -202,12 +207,14 @@ or to simulate the planar PCS robot:
 python examples/simulation/pcs/simulate_planar_pcs.py
 ```
 
-For model-based control examples:
+The lightweight example catalogue and output conventions are documented in
+[`examples/README.md`](examples/README.md). Reproducible paper workflows,
+including the Section Vc model-based control studies, are under
+[`paper_results/`](paper_results/README.md):
 
 ```bash
-python examples/control/configuration_space/setpoint_regulation_comparison.py
-python examples/control/configuration_space/trajectory_tracking_comparison.py
-python examples/control/configuration_space/regulation_tracking_comparison.py
+python paper_results/secVc_model_based_control/configuration_space_comparison/code/setpoint_regulation_comparison.py
+python paper_results/secVc_model_based_control/operational_space_impedance_control/code/control_pcs_with_impedance.py
 ```
 
 ## Documentation
