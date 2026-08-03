@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.2.1] - 2026-08-03
+
+### Added
+
 - Section-scoped `paper_results/` workflows that colocate generation and
   plotting code, source or generated data, canonical figures and videos, and
   reproduction instructions for the results reported in the paper.
