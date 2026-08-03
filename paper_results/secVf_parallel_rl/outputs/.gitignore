@@ -1,0 +1,6 @@
+# Keep reproducible diagnostics local; explicitly version canonical paper media.
+*
+!.gitignore
+!reward_curve.pdf
+!rl_rollout.mp4
+!rl_rollout_random.mp4

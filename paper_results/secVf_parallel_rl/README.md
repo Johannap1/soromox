@@ -52,12 +52,17 @@ uv run python paper_results/secVf_parallel_rl/code/run_rl_policy.py \
   --trajectory-output /tmp/soromox-secVf-rollout.npz
 ```
 
-Render saved trajectory data without rerunning the policy:
+Render the trained and initialized-policy trajectory data without rerunning a
+policy:
 
 ```bash
 uv run python paper_results/secVf_parallel_rl/code/render_rl_video.py \
-  --data /tmp/soromox-secVf-rollout.npz \
+  --data paper_results/secVf_parallel_rl/data/traj/open3d_rollout_data.npz \
   --output paper_results/secVf_parallel_rl/outputs/rl_rollout.mp4
+
+uv run python paper_results/secVf_parallel_rl/code/render_rl_video.py \
+  --data paper_results/secVf_parallel_rl/data/traj/open3d_rollout_data_random.npz \
+  --output paper_results/secVf_parallel_rl/outputs/rl_rollout_random.mp4
 ```
 
 `run_rl_policy.py --render` additionally renders all selected environments in
