@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protection, plotting, controller setup, trajectory primitives, and rendering.
 - Complete Section IVa, IVb, Va, Vd, Ve, and Vf generation workflows alongside
   their paper data and outputs, including released RL checkpoints.
+- Reproducible Section Vc evaluation metrics for all six configuration
+  coordinates and geometric operational-space pose tracking, with canonical
+  NPZ and JSON artifacts and a human- or machine-readable reporting CLI.
+- A publication-sized Section Vc composite figure combining configuration-space
+  comparisons, operational-space tracking and errors, and chronological
+  experiment snapshots in committed PDF and SVG outputs.
 
 ### Changed
 
@@ -38,10 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference trajectories.
 - Store trained model checkpoints through Git LFS while leaving generated
   example artifacts and noncanonical paper diagnostics ignored.
+- Made the built-in `tanh` PID integral-error saturation unit preserving as
+  `Gamma^-1 tanh(Gamma e)`, retained unit slope at the origin, and validated
+  scalar, vector, and matrix saturation parameters against their required
+  positivity and shape constraints.
+- Applied separate physical integral-error saturation scales to rotational and
+  linear Section Vc strains, regenerated the canonical data and figures, and
+  added steady-state regulation MAE over the final 10% of each evaluated
+  setpoint interval.
+- Refactored Viser sequence rendering around deterministic scene and frame
+  hooks, synchronized video and lossless snapshot capture, explicit snapshot
+  validation, and a render-only workflow for the operational-space paper scene.
 
 ### Fixed
 
 - Rejected paused or looping playback modes for finite Viser video exports.
+- Included `cbfpy` in the test dependency set so the Section Ve rendering tests
+  collect across every supported Python version.
+- Corrected the documented Section Vc steady-state evaluation window from the
+  final quarter to the final 10% (0.3 s) of each 3 s setpoint interval.
 
 ## [0.2.0] - 2026-07-29
 
