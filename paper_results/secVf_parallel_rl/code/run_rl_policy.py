@@ -1,22 +1,14 @@
-"""Generate a Section Vf PPO rollout and optionally render it directly.
-
-The saved NPZ uses the schema consumed by ``render_rl_video.py``. Direct
-multi-environment MP4/GIF rendering remains available through ``--render``.
-"""
+"""Generate and save Section Vf PPO rollout trajectories."""
 
 import argparse
 import importlib.util
-import math
 import os
-import shutil
-import subprocess
-from collections.abc import Iterable
 from pathlib import Path
 
 CODE_DIR = Path(__file__).resolve().parent
 CASE_DIR = CODE_DIR.parent
 DATA_DIR = CASE_DIR / "data"
-OUTPUTS_DIR = CASE_DIR / "outputs"
+TRAJECTORY_DIR = DATA_DIR / "traj"
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/soromox_matplotlib")
@@ -38,35 +30,12 @@ else:
     spec.loader.exec_module(env_module)
     ParallelSoromoxEnv = env_module.ParallelSoromoxEnv
 
-try:
-    import open3d as o3d
-
-    from soromox.rendering.camera_config import CameraConfig
-    from soromox.rendering.color_config import (
-        ActuatorStyleConfig,
-        BackboneColorConfig,
-        RendererColorConfig,
-    )
-    from soromox.rendering.open3d_renderer import Open3DRenderer
-    from soromox.rendering.video_encoding import FFmpegVideoWriter, VideoEncodingConfig
-except ImportError as exc:
-    o3d = None
-    CameraConfig = None
-    ActuatorStyleConfig = None
-    BackboneColorConfig = None
-    RendererColorConfig = None
-    FFmpegVideoWriter = None
-    VideoEncodingConfig = None
-    Open3DRenderer = object
-    OPEN3D_IMPORT_ERROR = exc
-else:
-    OPEN3D_IMPORT_ERROR = None
-
 
 DEFAULT_MODEL_PATH = DATA_DIR / "checkpoints" / "ppo_model.zip"
 DEFAULT_VECNORMALIZE_PATH = DATA_DIR / "checkpoints" / "env_vecnormalize.pkl"
-DEFAULT_TRAJECTORY_OUTPUT = DATA_DIR / "traj" / "open3d_rollout_data.npz"
-DEFAULT_OUTPUT_PATH = OUTPUTS_DIR / "parallel_track_video.mp4"
+DEFAULT_TRAINED_TRAJECTORY_OUTPUT = TRAJECTORY_DIR / "rl_rollout_trained_1_env.npz"
+DEFAULT_RANDOM_TRAJECTORY_OUTPUT = TRAJECTORY_DIR / "rl_rollout_initialized_1_env.npz"
+POLICY_CHOICES = ("trained", "random")
 
 
 class Progress:
@@ -114,182 +83,28 @@ def extract_q_batch(raw_env: ParallelSoromoxEnv) -> np.ndarray:
     return to_numpy(q, dtype=np.float64)
 
 
-def parse_vec3(value: str) -> tuple[float, float, float]:
-    parts = [part.strip() for part in value.split(",")]
-    if len(parts) != 3:
-        raise argparse.ArgumentTypeError(
-            f"Expected three comma-separated floats, got: {value!r}"
-        )
-    try:
-        return tuple(float(part) for part in parts)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"Expected three comma-separated floats, got: {value!r}"
-        ) from exc
+def default_trajectory_output(policy: str) -> Path:
+    """Return the case-local generated trajectory path for a policy type."""
+    if policy == "trained":
+        return DEFAULT_TRAINED_TRAJECTORY_OUTPUT
+    if policy == "random":
+        return DEFAULT_RANDOM_TRAJECTORY_OUTPUT
+    raise ValueError(f"Unknown policy type: {policy!r}")
 
 
-def make_grid_offsets(
-    num_envs: int, rows: int, cols: int, spacing: float
+def sample_random_action_batch(
+    raw_env: ParallelSoromoxEnv,
 ) -> np.ndarray:
-    if rows * cols < num_envs:
-        raise ValueError(f"rows * cols must cover num_envs; got {rows}x{cols}")
-
-    offsets = np.zeros((num_envs, 3), dtype=np.float64)
-    for env_idx in range(num_envs):
-        row, col = divmod(env_idx, cols)
-        offsets[env_idx] = [
-            (col - (cols - 1) / 2.0) * spacing,
-            (row - (rows - 1) / 2.0) * spacing,
-            0.0,
-        ]
-    return offsets
-
-
-def auto_grid(num_envs: int) -> tuple[int, int]:
-    cols = int(math.ceil(math.sqrt(num_envs)))
-    rows = int(math.ceil(num_envs / cols))
-    return rows, cols
-
-
-def make_lineset(points: np.ndarray, color: tuple[float, float, float]):
-    pts = np.asarray(points, dtype=np.float64)
-    if pts.shape[0] < 2:
-        return None
-
-    lines = np.stack(
-        [np.arange(0, pts.shape[0] - 1), np.arange(1, pts.shape[0])],
-        axis=1,
-    ).astype(np.int32)
-    line_set = o3d.geometry.LineSet(
-        points=o3d.utility.Vector3dVector(pts),
-        lines=o3d.utility.Vector2iVector(lines),
-    )
-    line_set.colors = o3d.utility.Vector3dVector(
-        np.tile(np.asarray(color, dtype=np.float64)[None, :], (lines.shape[0], 1))
-    )
-    return line_set
-
-
-class HeadlessMultiArmVideoRenderer(Open3DRenderer):
-    def __init__(
-        self,
-        *args,
-        ball_trajectories: np.ndarray | None = None,
-        trajectory_color: tuple[float, float, float] = (224 / 255, 56 / 255, 62 / 255),
-        visible: bool = False,
-        progress: Progress | None = None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.ball_trajectories = ball_trajectories
-        self.trajectory_color = trajectory_color
-        self.visible = visible
-        self.progress = progress
-
-    def _create_visualizer(self, window_name: str):
-        vis = o3d.visualization.VisualizerWithKeyCallback()
-        vis.create_window(
-            window_name=window_name,
-            width=self.width,
-            height=self.height,
-            visible=self.visible,
-        )
-        opt = vis.get_render_option()
-        opt.background_color = np.array(self.background_color, dtype=np.float64)
-        opt.line_width = self.actuator_line_width
-        return vis, vis.get_view_control()
-
-    def _build_scene(self, vis, scene_data, frame_idx=0, *, color_config=None):
-        handles = super()._build_scene(
-            vis,
-            scene_data,
-            frame_idx=frame_idx,
-            color_config=color_config,
-        )
-        if self.ball_trajectories is not None:
-            for traj in np.asarray(self.ball_trajectories, dtype=np.float64):
-                line_set = make_lineset(traj, self.trajectory_color)
-                if line_set is not None:
-                    vis.add_geometry(line_set)
-        return handles
-
-    def _run_viewer(
-        self,
-        scene_data,
-        *,
-        playback_speed,
-        autoplay,
-        loop,
-        record_cfg,
-        window_name,
-        camera_config=None,
-        color_config=None,
-    ) -> None:
-        if record_cfg.path is None:
-            raise ValueError("record_path is required for MP4 rendering.")
-
-        video_path = Path(record_cfg.path)
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-
-        frame_indices = list(range(0, scene_data.num_frames, record_cfg.every_n))
-        if not frame_indices or frame_indices[-1] != scene_data.num_frames - 1:
-            frame_indices.append(scene_data.num_frames - 1)
-
-        dt_seq = np.diff(np.asarray(scene_data.ts, dtype=np.float64))
-        fps = 15.0 if dt_seq.size == 0 else 1.0 / max(1e-6, float(np.median(dt_seq)))
-        fps = fps / max(1, record_cfg.every_n)
-
-        video_writer = FFmpegVideoWriter(
-            str(video_path),
-            int(self.width),
-            int(self.height),
-            fps,
-            input_pix_fmt="rgb24",
-            video_config=record_cfg.video_config,
-        )
-        print(f"[Open3D] Writing MP4: {video_path} (fps={fps:.2f})")
-
-        vis, ctrl = self._create_visualizer(window_name)
-        try:
-            handles = self._build_scene(
-                vis,
-                scene_data,
-                frame_idx=0,
-                color_config=color_config,
-            )
-            self._setup_interactive_camera(vis, ctrl, scene_data, camera_config)
-
-            for frame_idx in frame_indices:
-                self._update_scene(
-                    vis,
-                    scene_data,
-                    handles,
-                    frame_idx=frame_idx,
-                    color_config=color_config,
-                )
-                vis.poll_events()
-                vis.update_renderer()
-                img = np.asarray(
-                    vis.capture_screen_float_buffer(do_render=True),
-                    dtype=np.float32,
-                )
-                frame = np.clip(img * 255.0, 0.0, 255.0).astype(np.uint8)
-                video_writer.write(frame)
-                if self.progress is not None:
-                    self.progress.update()
-        finally:
-            video_writer.close()
-            if video_writer.stderr_log:
-                stderr_tail = "\n".join(video_writer.stderr_log.splitlines()[-8:])
-                if stderr_tail:
-                    print(f"[ffmpeg] {stderr_tail}")
-            vis.destroy_window()
+    """Sample one uniformly random action for each parallel environment."""
+    return np.stack(
+        [raw_env.action_space.sample() for _ in range(raw_env.num_envs)],
+        axis=0,
+    ).astype(np.float32)
 
 
 def run_policy_and_collect(
     args: argparse.Namespace,
 ) -> tuple[
-    ParallelSoromoxEnv,
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -307,13 +122,19 @@ def run_policy_and_collect(
         ball_surface_vmax=args.ball_surface_vmax,
         success_threshold=args.success_threshold,
     )
-    vec_env = VecNormalize.load(str(args.vecnormalize_path), raw_env)
-    vec_env.training = False
-    vec_env.norm_reward = False
-    model = PPO.load(str(args.model_path), env=vec_env)
+    vec_env = None
+    model = None
+    if args.policy == "trained":
+        vec_env = VecNormalize.load(str(args.vecnormalize_path), raw_env)
+        vec_env.training = False
+        vec_env.norm_reward = False
+        model = PPO.load(str(args.model_path), env=vec_env)
+    else:
+        raw_env.action_space.seed(args.seed)
 
     obs = raw_env.reset()
-    obs = vec_env.normalize_obs(obs)
+    if vec_env is not None:
+        obs = vec_env.normalize_obs(obs)
 
     q_list = [extract_q_batch(raw_env)]
     ball_list = [to_numpy(raw_env._env_states.ball_pos, dtype=np.float64)]
@@ -323,8 +144,14 @@ def run_policy_and_collect(
     progress = Progress(args.n_steps, "Rollout")
     try:
         for _ in range(args.n_steps):
-            actions, _ = model.predict(obs, deterministic=not args.stochastic)
-            actions = np.asarray(actions, dtype=np.float32)
+            if model is None:
+                actions = sample_random_action_batch(raw_env)
+            else:
+                actions, _ = model.predict(
+                    obs,
+                    deterministic=not args.stochastic,
+                )
+                actions = np.asarray(actions, dtype=np.float32)
             (
                 env_states,
                 raw_obs,
@@ -335,7 +162,8 @@ def run_policy_and_collect(
                 _invalid_obs,
             ) = raw_env._step_batch(raw_env._env_states, actions)
             raw_env._env_states = env_states
-            obs = vec_env.normalize_obs(to_numpy(raw_obs, dtype=np.float32))
+            if vec_env is not None:
+                obs = vec_env.normalize_obs(to_numpy(raw_obs, dtype=np.float32))
             action_list.append(actions)
             reward_list.append(to_numpy(_rewards, dtype=np.float64))
             q_list.append(extract_q_batch(raw_env))
@@ -349,165 +177,96 @@ def run_policy_and_collect(
     actions = np.asarray(action_list, dtype=np.float64)
     rewards = np.asarray(reward_list, dtype=np.float64)
     ts = np.arange(q_ts.shape[0], dtype=np.float64) / float(args.control_fps)
-    vec_env.close()
-    return raw_env, ts, q_ts, ball_ts, actions, rewards
+    if vec_env is not None:
+        vec_env.close()
+    else:
+        raw_env.close()
+    return ts, q_ts, ball_ts, actions, rewards
 
 
-def render_rollout_to_mp4(
-    raw_env: ParallelSoromoxEnv,
-    ts: np.ndarray,
-    q_ts_time_first: np.ndarray,
-    ball_ts_time_first: np.ndarray,
-    args: argparse.Namespace,
-) -> None:
-    if OPEN3D_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "Open3D rendering dependencies are not available. Install the example "
-            "dependencies with `pip install soromox[examples]` and ensure `open3d` "
-            "is installed."
-        ) from None
-
-    num_envs = min(args.max_envs, q_ts_time_first.shape[1])
-    q_ts_time_first = q_ts_time_first[:, :num_envs, :]
-    ball_ts_time_first = ball_ts_time_first[:, :num_envs, :]
-
-    rows, cols = (args.rows, args.cols)
-    if rows is None or cols is None:
-        rows, cols = auto_grid(num_envs)
-    offsets = make_grid_offsets(num_envs, rows, cols, args.grid_spacing)
-
-    q_ts_batched = np.transpose(q_ts_time_first, (1, 0, 2))
-    ball_ts_batched = np.transpose(ball_ts_time_first, (1, 0, 2)) + offsets[:, None, :]
-
-    color_config = RendererColorConfig(
-        backbone=BackboneColorConfig(
-            segment_colors=np.array([[0.0039, 0.6510, 0.8392, 1.0]], dtype=np.float64)
-        ),
-        base_plate_color=(0.2, 0.2, 0.2),
-        actuators=ActuatorStyleConfig(default_color=(0.9, 0.15, 0.15)),
-    )
-    camera_config = CameraConfig(
-        fov=args.camera_fov,
-        distance_factor=args.camera_distance_factor,
-        position_offset=args.camera_position_offset,
-        up=args.camera_up,
-    )
-
-    frame_count = len(list(range(0, len(ts), args.record_every_n)))
-    if (len(ts) - 1) % args.record_every_n != 0:
-        frame_count += 1
-    progress = Progress(frame_count, "Render/encode")
-    renderer = HeadlessMultiArmVideoRenderer(
-        raw_env.arm,
-        width=args.width,
-        height=args.height,
-        num_points=args.num_points,
-        backbone_style="discrete",
-        background_color=(1.0, 1.0, 1.0),
-        sphere_resolution=args.sphere_resolution,
-        actuator_line_width=args.tendon_line_width,
-        grid_spacing=(args.grid_spacing, args.grid_spacing),
-        base_offsets=offsets,
-        ball_trajectories=None if args.no_trajectories else ball_ts_batched,
-        visible=args.visible,
-        progress=progress,
-    )
-
-    try:
-        renderer.render_sequence(
-            ts=ts,
-            q_ts=q_ts_batched,
-            playback_speed=1.0,
-            autoplay=True,
-            loop=False,
-            record_path=str(args.output),
-            record_every_n=args.record_every_n,
-            video_config=VideoEncodingConfig(
-                codec="libx264",
-                pix_fmt="yuv420p",
-                preset=args.preset,
-                crf=args.crf,
-                tune=None,
-                extra_args=("-movflags", "+faststart"),
-            ),
-            base_offsets=offsets,
-            color_config=color_config,
-            camera_config=camera_config,
-            render_actuators=True,
-            dynamic_spheres_positions=ball_ts_batched,
-            dynamic_spheres_radii=np.full((num_envs,), 0.02, dtype=np.float64),
-            dynamics_spheres_colors=np.tile(
-                np.array([[1.0, 170 / 255, 0.0]], dtype=np.float64),
-                (num_envs, 1),
-            ),
-            window_name="SoRoMoX PPO Rollout Multi-Arm",
-        )
-    finally:
-        progress.close()
-
-
-def encode_gif_from_mp4(
+def save_rollout_npz(
+    path: Path,
     *,
-    mp4_path: Path,
-    gif_path: Path,
-    fps: int,
-    width: int,
-) -> None:
-    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    ts: np.ndarray,
+    q_ts: np.ndarray,
+    ball_ts: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    arm_length: float,
+    arm_radius: float,
+    policy: str = "trained",
+    force: bool = False,
+) -> Path:
+    """Save a complete parallel rollout using the time-major Section Vf schema."""
+    ts = np.asarray(ts, dtype=np.float64)
+    q_ts = np.asarray(q_ts, dtype=np.float64)
+    ball_ts = np.asarray(ball_ts, dtype=np.float64)
+    actions = np.asarray(actions, dtype=np.float64)
+    rewards = np.asarray(rewards, dtype=np.float64)
+    if ts.ndim != 1 or ts.size == 0:
+        raise ValueError(f"ts must have shape (T,) with T > 0; got {ts.shape}")
+    if ts.size > 1 and np.any(np.diff(ts) <= 0.0):
+        raise ValueError("ts must be strictly increasing")
+    if q_ts.ndim != 3 or q_ts.shape[0] != ts.size or q_ts.shape[1] == 0:
+        raise ValueError(f"q_ts must have shape (T,N,D) matching ts; got {q_ts.shape}")
+    num_steps, num_envs = q_ts.shape[:2]
+    if ball_ts.shape != (num_steps, num_envs, 3):
+        raise ValueError(
+            f"ball_ts must have shape (T,N,3) matching q_ts; got {ball_ts.shape}"
+        )
+    if actions.ndim != 3 or actions.shape[:2] != (num_steps - 1, num_envs):
+        raise ValueError(
+            f"actions must have shape (T-1,N,A) matching q_ts; got {actions.shape}"
+        )
+    if rewards.shape != (num_steps - 1, num_envs):
+        raise ValueError(
+            f"rewards must have shape (T-1,N) matching q_ts; got {rewards.shape}"
+        )
+    if not np.isfinite(arm_length) or arm_length <= 0.0:
+        raise ValueError("arm_length must be a positive finite value")
+    if not np.isfinite(arm_radius) or arm_radius <= 0.0:
+        raise ValueError("arm_radius must be a positive finite value")
+    if policy not in POLICY_CHOICES:
+        raise ValueError(f"policy must be one of {POLICY_CHOICES}; got {policy!r}")
 
-    filters = [f"fps={fps}"]
-    if width > 0:
-        filters.append(f"scale={width}:-1:flags=lanczos")
-    filters.append(
-        "split[s0][s1];[s0]palettegen=max_colors=128[p];"
-        "[s1][p]paletteuse=dither=bayer:bayer_scale=5"
+    path = Path(path).resolve()
+    if path.exists() and not force:
+        raise FileExistsError(f"Refusing to overwrite {path}; pass --force")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        ts=ts,
+        q_ts=q_ts,
+        ball_ts=ball_ts,
+        actions=actions,
+        rewards=rewards,
+        arm_length=np.asarray(arm_length, dtype=np.float64),
+        arm_radius=np.asarray(arm_radius, dtype=np.float64),
+        policy=np.asarray(policy),
     )
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(mp4_path),
-        "-vf",
-        ",".join(filters),
-        "-loop",
-        "0",
-        str(gif_path),
-    ]
-    print(f"Encoding GIF: {gif_path}")
-    subprocess.run(cmd, check=True)
+    return path
 
 
-def existing_paths(paths: Iterable[Path]) -> None:
-    missing = [str(path) for path in paths if not path.exists()]
-    if missing:
-        raise FileNotFoundError("Missing required file(s): " + ", ".join(missing))
-
-
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--policy",
+        choices=POLICY_CHOICES,
+        default="trained",
+        help="Use the released trained PPO or the uniform-random initialized baseline.",
+    )
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument(
         "--vecnormalize-path", type=Path, default=DEFAULT_VECNORMALIZE_PATH
     )
     parser.add_argument(
-        "--trajectory-output", type=Path, default=DEFAULT_TRAJECTORY_OUTPUT
-    )
-    parser.add_argument(
-        "--render",
-        action="store_true",
-        help="Also render the complete batched rollout directly to MP4 and GIF.",
-    )
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument(
-        "--gif-output",
+        "--trajectory-output",
         type=Path,
         default=None,
-        help="GIF output path. Defaults to --output with a .gif suffix.",
+        help="Output NPZ. Defaults to a policy-specific filename in data/traj/.",
     )
 
     parser.add_argument("--num-envs", type=int, default=64)
-    parser.add_argument("--max-envs", type=int, default=64)
     parser.add_argument("--n-steps", type=int, default=105)
     parser.add_argument("--seed", type=int, default=40)
     parser.add_argument("--game-time", type=float, default=7.0)
@@ -518,38 +277,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ball-surface-vmax", type=float, default=0.015)
     parser.add_argument("--success-threshold", type=float, default=0.01)
     parser.add_argument("--stochastic", action="store_true")
-
-    parser.add_argument("--width", type=int, default=1920)
-    parser.add_argument("--height", type=int, default=1920)
-    parser.add_argument("--num-points", type=int, default=40)
-    parser.add_argument("--rows", type=int, default=None)
-    parser.add_argument("--cols", type=int, default=None)
-    parser.add_argument("--grid-spacing", type=float, default=0.16)
-    parser.add_argument("--sphere-resolution", type=int, default=12)
-    parser.add_argument("--tendon-line-width", type=float, default=1.0)
-    parser.add_argument("--record-every-n", type=int, default=1)
-    parser.add_argument("--camera-fov", type=float, default=75.0)
-    parser.add_argument("--camera-distance-factor", type=float, default=10.0)
-    parser.add_argument(
-        "--camera-position-offset", type=parse_vec3, default=(0.8, -0.8, 0.5)
-    )
-    parser.add_argument("--camera-up", type=parse_vec3, default=(0.0, 0.0, 1.0))
-    parser.add_argument("--no-trajectories", action="store_true")
-    parser.add_argument("--visible", action="store_true")
-
-    parser.add_argument(
-        "--crf", type=int, default=18, help="Lower means higher quality."
-    )
-    parser.add_argument("--preset", type=str, default="medium")
-    parser.add_argument("--gif-fps", type=int, default=10)
-    parser.add_argument(
-        "--gif-width",
-        type=int,
-        default=720,
-        help="GIF width in pixels. Use 0 to keep the MP4 width.",
-    )
     parser.add_argument("--force", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.trajectory_output is None:
+        args.trajectory_output = default_trajectory_output(args.policy)
+    return args
 
 
 def main() -> None:
@@ -557,77 +289,53 @@ def main() -> None:
     args.model_path = args.model_path.resolve()
     args.vecnormalize_path = args.vecnormalize_path.resolve()
     args.trajectory_output = args.trajectory_output.resolve()
-    args.output = args.output.resolve()
-    args.gif_output = (
-        args.output.with_suffix(".gif")
-        if args.gif_output is None
-        else args.gif_output.resolve()
+    if args.num_envs <= 0 or args.n_steps <= 0:
+        raise ValueError("--num-envs and --n-steps must be positive.")
+    if args.arm_length <= 0.0 or args.arm_radius <= 0.0:
+        raise ValueError("--arm-length and --arm-radius must be positive.")
+    missing_inputs = (
+        [
+            path
+            for path in (args.model_path, args.vecnormalize_path)
+            if not path.exists()
+        ]
+        if args.policy == "trained"
+        else []
     )
-
-    if args.record_every_n <= 0:
-        raise ValueError("--record-every-n must be positive.")
-    if args.gif_fps <= 0:
-        raise ValueError("--gif-fps must be positive.")
-    if args.gif_width < 0:
-        raise ValueError("--gif-width must be nonnegative.")
-    if args.max_envs <= 0 or args.num_envs <= 0:
-        raise ValueError("--num-envs and --max-envs must be positive.")
-    if args.max_envs > args.num_envs:
-        raise ValueError("--max-envs cannot be greater than --num-envs.")
-    existing_paths((args.model_path, args.vecnormalize_path))
-    requested_outputs = [args.trajectory_output]
-    if args.render:
-        requested_outputs.extend((args.output, args.gif_output))
-    existing_outputs = [path for path in requested_outputs if path.exists()]
-    if existing_outputs and not args.force:
-        raise FileExistsError(
-            "Refusing to overwrite existing output(s): "
-            + ", ".join(str(path) for path in existing_outputs)
-            + "; pass --force"
+    if missing_inputs:
+        raise FileNotFoundError(
+            "Missing required file(s): " + ", ".join(map(str, missing_inputs))
         )
-    if args.render and shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg was not found on PATH.")
-    if args.render and OPEN3D_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "Open3D rendering dependencies are not available. Install the example "
-            "dependencies with `pip install soromox[examples]` and ensure `open3d` "
-            "is installed."
-        ) from None
+    if args.trajectory_output.exists() and not args.force:
+        raise FileExistsError(
+            f"Refusing to overwrite {args.trajectory_output}; pass --force"
+        )
 
-    print(f"Model: {args.model_path}")
-    print(f"VecNormalize: {args.vecnormalize_path}")
+    print(f"Policy: {args.policy}")
+    if args.policy == "trained":
+        print(f"Model: {args.model_path}")
+        print(f"VecNormalize: {args.vecnormalize_path}")
     print(f"Trajectory data: {args.trajectory_output}")
 
-    raw_env, ts, q_ts, ball_ts, actions, rewards = run_policy_and_collect(args)
-    args.trajectory_output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
+    ts, q_ts, ball_ts, actions, rewards = run_policy_and_collect(args)
+    output = save_rollout_npz(
         args.trajectory_output,
         ts=ts,
-        q_ts=q_ts[:, 0, :],
-        ball_ts=ball_ts[:, 0, :],
-        actions=actions[:, :1, :],
-        rewards=rewards[:, :1],
+        q_ts=q_ts,
+        ball_ts=ball_ts,
+        actions=actions,
+        rewards=rewards,
+        arm_length=args.arm_length,
+        arm_radius=args.arm_radius,
+        policy=args.policy,
+        force=args.force,
     )
-    print(f"Saved trajectory data: {args.trajectory_output}")
-    if not args.render:
-        return
-
-    print(f"Output MP4: {args.output}")
-    print(f"Output GIF: {args.gif_output}")
-    render_rollout_to_mp4(raw_env, ts, q_ts, ball_ts, args)
-
-    if not args.output.exists() or args.output.stat().st_size == 0:
-        raise RuntimeError(f"MP4 was not created correctly: {args.output}")
-    encode_gif_from_mp4(
-        mp4_path=args.output,
-        gif_path=args.gif_output,
-        fps=args.gif_fps,
-        width=args.gif_width,
+    print(f"Saved {q_ts.shape[1]} environment(s): {output}")
+    print(
+        "Render with: uv run python "
+        "paper_results/secVf_parallel_rl/code/render_rl_video.py "
+        f"--data {output}"
     )
-    if not args.gif_output.exists() or args.gif_output.stat().st_size == 0:
-        raise RuntimeError(f"GIF was not created correctly: {args.gif_output}")
-    print(f"Saved MP4: {args.output}")
-    print(f"Saved GIF: {args.gif_output}")
 
 
 if __name__ == "__main__":

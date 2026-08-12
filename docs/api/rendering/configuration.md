@@ -1,6 +1,7 @@
-# Camera & Colors Configuration
+# Shared Renderer Configuration
 
-This page documents the camera and color configuration options for SoRoMoX renderers.
+This page documents camera, base, ground-plane, and color settings shared by
+multiple SoRoMoX renderers.
 
 ## Camera Configuration
 
@@ -26,12 +27,16 @@ renderer.show(q, camera_config=camera)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `fov` | float | 60.0 | Field of view in degrees |
+| `fov` | float | 75.0 | Field of view in degrees |
 | `position` | tuple | None | Explicit camera position (x, y, z), None for auto |
 | `look_at` | tuple | None | Point camera looks at, None for scene center |
 | `up` | tuple | (0, 0, 1) | Camera up vector |
-| `distance_factor` | float | 2.0 | Multiplier for auto-positioning distance |
-| `position_offset` | tuple | None | Direction vector for camera placement |
+| `distance_factor` | float | 10.0 | Multiplier for auto-positioning distance |
+| `position_offset` | tuple | (0.8, -0.8, 0.5) | Direction vector for camera placement |
+
+Matplotlib applies `fov` and the viewing direction from `position` to
+`look_at`; its axes limits determine the remaining framing. Open3D and Viser
+also use the explicit camera distance.
 
 ::: soromox.rendering.camera_config.CameraConfig
     options:
@@ -40,6 +45,39 @@ renderer.show(q, camera_config=camera)
       heading_level: 3
       docstring_section_style: table
       members_order: source
+
+---
+
+## Robot Base and Ground Plane
+
+All renderers obtain the robot origin and orientation from the model's
+`base_pose` and `base_transform`. This keeps the rendered backbone, base, and
+reference geometry in the same world frame without a renderer-specific pose
+override.
+
+| Setting | Purpose | Availability |
+| --- | --- | --- |
+| `base_plate_radius_scale` | Scales the rendered base-plate radius relative to the robot cross section | Open3D and Viser |
+| `base_plate_thickness` | Sets the base-plate thickness in meters | Open3D and Viser |
+| `show_ground_plane` | Shows or hides the base-aligned reference plane | Matplotlib, Open3D, and Viser |
+| `ground_plane_size` | Sets the reference-plane side length in meters; `None` uses a robot-scaled default | Matplotlib, Open3D, and Viser |
+
+```python
+from soromox.rendering import ViserRenderer
+
+renderer = ViserRenderer(
+    robot,
+    base_plate_radius_scale=2.0,
+    base_plate_thickness=0.06,
+    show_ground_plane=True,
+    ground_plane_size=0.6,
+)
+```
+
+Matplotlib draws a lightweight base marker. Open3D and Viser render base-plate
+geometry and place the ground plane immediately behind it along the model's
+base axis. Viser uses its native grid primitive. Specialized Viser renderers,
+including I-SUPPORT and UMArm, inherit these settings.
 
 ---
 
@@ -70,6 +108,8 @@ color_config = RendererColorConfig(
         segment_palette="soromox:ember",
     ),
     base_plate_color=(0.5, 0.5, 0.5),
+    ground_plane_color=(0.94, 0.95, 0.96),
+    ground_plane_grid_color=(0.72, 0.75, 0.78),
     actuators=ActuatorStyleConfig(
         default_color=(0.8, 0.2, 0.2),
         kind_colors={"tendon": (0.85, 0.2, 0.15)},
@@ -176,6 +216,75 @@ legend = renderer.get_color_legend(num_robots=3, color_config=color_config)
 ```
 
 ::: soromox.rendering.color_config.ColorLegend
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+      docstring_section_style: table
+      members_order: source
+
+---
+
+## Multi-Robot Layouts
+
+Matplotlib, Open3D, and Viser accept batched robot configurations:
+
+- `q` with shape `(N, DOF)` for `show()` and `render_frame()`;
+- `q_ts` with shape `(N, T, DOF)` for sequence rendering or animation.
+
+Use `base_offsets` to place each robot explicitly or `grid_spacing` to control
+automatically generated layouts. Viser additionally supports
+`multi_robot_layout="overlay"` to render robots at a common base pose. Per-robot
+colors and alpha values can distinguish overlaid configurations.
+
+Open3D automatically merges each robot's backbone primitives into one dynamic
+mesh when an animated scene contains multiple robots. This removes most backend
+geometry registrations; set `merge_backbone_meshes=True` to force merging for
+one robot or `False` to disable it for profiling or compatibility. Viser always
+uses its instanced or color-grouped backbone representation because browser
+scene-handle and message counts dominate that backend. Automatically sized
+Viser ground planes are centered on the rendered bases and expanded to cover
+the layout.
+
+```python
+renderer.render_sequence(
+    ts,
+    q_ts_batched,
+    multi_robot_layout="overlay",
+    color_config=color_config,
+)
+```
+
+---
+
+## Recording and Video Encoding
+
+All renderer families accept `record_path` for sequence output, while their
+capture mechanisms differ:
+
+- Matplotlib uses its animation writers and requires FFmpeg for MP4 output.
+- Open3D and Viser use FFmpeg with `VideoEncodingConfig`.
+- Open3D writes PNG frames when `record_path` names a directory.
+- Viser can capture synchronized browser snapshots with `snapshot_paths`.
+- OpenCV uses FFmpeg when available and otherwise falls back to
+  `cv2.VideoWriter`.
+
+```python
+from soromox.rendering import VideoEncodingConfig
+
+renderer.render_sequence(
+    ts,
+    q_ts,
+    record_path="trajectory.mp4",
+    video_config=VideoEncodingConfig(crf=18, pix_fmt="yuv420p"),
+)
+```
+
+Use `record_every_n` to subsample captured frames where supported. Recording
+depends on the backend, so consult the relevant [renderer API](renderers.md)
+for capture-only options.
+
+::: soromox.rendering.video_encoding.VideoEncodingConfig
     options:
       show_root_heading: true
       show_source: false

@@ -58,7 +58,6 @@ theme:
 
 nav:
   - Home: index.md
-  - Citation: citation.md
   - Installation: installation.md
   - User Guide:
     - Quick Start: user-guide/quick-start.md
@@ -85,25 +84,26 @@ nav:
             - Planar HSA: api/systems/hsa/planar-hsa.md
       - Rendering:
           - Overview: api/rendering/index.md
-          - Renderers: api/rendering/renderers.md
-          - Camera & Colors: api/rendering/configuration.md
+          - Renderer API: api/rendering/renderers.md
+          - Shared Configuration: api/rendering/configuration.md
+      - Actuation:
+          - Actuation Model: api/actuation/index.md
+          - Joint-Space Actuation: api/actuation/joint-space.md
+          - Threadlike Actuation: api/actuation/threadlike.md
+          - API Reference: api/actuation/reference.md
       - Control:
           - Overview: api/control/index.md
           - Configuration-Space Controllers: api/control/configuration-space.md
           - Operational-Space Controllers: api/control/operational-space.md
           - Actuation-Space Controllers: api/control/actuation-space.md
           - Utilities: api/control/utilities.md
-      - Actuation:
-          - Actuation Model: api/actuation/index.md
-          - Joint-Space Actuation: api/actuation/joint-space.md
-          - Threadlike Actuation: api/actuation/threadlike.md
-          - API Reference: api/actuation/reference.md
       - Utilities:
           - Overview: api/utilities/index.md
           - Parameters: api/utilities/parameters.md
           - Geometry: api/utilities/geometry.md
           - Lie Algebra: api/utilities/lie-algebra.md
-          - Symbolic Derivation: api/utilities/symbolic-derivation.md
+  - Paper & Results: research.md
+  - Citation: citation.md
   - Development:
     - Contributing: development/contributing.md
     - Extending SoRoMoX: development/extending.md
@@ -191,6 +191,7 @@ extra_javascript:
 
 extra_css:
   - stylesheets/sidebar.css
+  - stylesheets/media.css
 
 extra:
   version:

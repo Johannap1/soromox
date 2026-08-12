@@ -9,13 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A top-level Paper & Results documentation page with CPU and GPU benchmarks,
+  all six application case studies, reproduction pointers, and curated
+  web-optimized figures, animations, and videos from the SoRoMoX paper.
+- Configurable, base-aligned ground planes for the Matplotlib, Open3D, and Viser
+  renderers, including inherited support in the I-SUPPORT and UMArm renderers.
+- A responsive core-renderer gallery, system-specific rendering samples, and a
+  concise top-level contributor guide.
+
 ### Changed
 
 - Made the SoRoMoX arXiv preprint the primary academic citation, centralized
   citation guidance, and retained an exact-release software citation for
   reproducibility-sensitive work.
+- Refocused the README and documentation home on the JAX-native model
+  implementations for articulated and continuum soft robots, their
+  control-oriented interface, installation, performance, and first use.
+- Kept Citation at the top level of the documentation navigation immediately
+  after Paper & Results, and grouped the supported systems following the paper.
+- Reorganized the rendering documentation into an overview and gallery,
+  backend API guide, and shared configuration reference; normalized Python
+  examples throughout the generated package documentation as fenced code.
+- Applied the shared camera field of view and tighter scene framing to
+  Matplotlib's 3D renderer, bringing its gallery view closer to Open3D and
+  Viser while retaining metric axes.
+- Placed Actuation before Control in the API navigation and removed the
+  outdated symbolic-derivation documentation page.
+- Separated Section Vf reinforcement-learning rollout generation from rendering:
+  trained and uniform-random baseline trajectories now retain the full parallel
+  batch under `data/traj`, while the shared offline renderer derives single-arm
+  or automatically framed grid MP4/GIF names from its input data under
+  `outputs` and uses the paper's visual style. Renamed the canonical artifacts
+  around policy state and environment count, versioned the current trajectory
+  and render artifacts, and moved Section Vf MP4/GIF storage to Git LFS.
+- Improved Open3D and Viser efficiency for multi-robot animations with
+  renderer-owned vectorized actuator geometry, batched actuator and sphere
+  scene objects, automatically merged multi-robot Open3D backbones, and
+  instanced or merged Viser geometry with one atomic transaction per frame.
+  Viser ground planes now follow the complete batched layout. This substantially
+  reduces backend registrations and browser scene handles without adding
+  trajectory-rendering concerns to soft-robot mechanics. In a 16-robot,
+  80-point, eight-frame
+  benchmark, merged Open3D improved initial/frame rendering by 21.0x/2.7x
+  (6.51 s to 0.31 s and 41.2 ms to 15.1 ms), while batched Viser improved full
+  swept-video/browser-capture time by 2.3x/3.6x (27.9 s to 12.0 s and 2.98 s
+  to 0.83 s) with 38.5x fewer live handles.
+- Separated backend-specific renderer coverage into dedicated Matplotlib,
+  Open3D, and Viser test modules, leaving the shared base-renderer tests focused
+  on backend-independent behavior.
+- Moved detailed contributor and documentation tooling into the development
+  guide and made `VERSION_BUMP_README.md` the authoritative maintainer release
+  workflow, including the branch, pull-request, tag, and recovery procedures.
+- Standardized the renderer gallery around consistent robot geometry, colors,
+  ground planes, and framing, with tighter I-SUPPORT and UMArm close-ups.
+- Removed the obsolete duplicate actuation overview page in favor of the
+  structured actuation documentation section.
 
 ### Fixed
+
+- Corrected the I-SUPPORT dynamic-model DOI and added platform references to
+  the I-SUPPORT and McKibben UMArm system pages.
 
 ## [0.2.1] - 2026-08-03
 

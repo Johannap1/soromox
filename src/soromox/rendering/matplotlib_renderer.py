@@ -38,10 +38,11 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
     The dimensionality is auto-detected from the robot's forward kinematics output.
 
     Example:
-        >>> renderer = MatplotlibRenderer(robot)
-        >>> renderer.show(q)  # Single frame
-        >>> renderer.animate(ts, q_ts, mode="slider")  # Interactive slider
-        >>> renderer.animate(ts, q_ts, mode="animation")  # Auto-play
+        ```python
+        renderer = MatplotlibRenderer(robot)
+        renderer.show(q)
+        renderer.animate(ts, q_ts, mode="slider")
+        ```
     """
 
     def __init__(
@@ -52,6 +53,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
         num_points: int = 50,
         background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
         color_config: RendererColorConfig | None = None,
+        show_ground_plane: bool = True,
+        ground_plane_size: float | None = None,
         line_width: float = 4.0,
         grid_spacing: tuple[float, float] = (0.3, 0.3),
         base_offsets: Array | None = None,
@@ -66,6 +69,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             num_points: Number of points for backbone discretization
             background_color: RGB background color (0-1 range)
             color_config: Shared renderer color configuration
+            show_ground_plane: Whether to draw a reference plane through the base
+            ground_plane_size: Optional side length of the reference plane in meters
             line_width: Width of backbone line
             grid_spacing: (x, y) spacing for batched layouts
             base_offsets: Optional explicit base offsets for batched layouts
@@ -78,6 +83,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             num_points,
             background_color,
             color_config=color_config,
+            show_ground_plane=show_ground_plane,
+            ground_plane_size=ground_plane_size,
         )
         self.line_width = line_width
         self.grid_spacing = grid_spacing
@@ -103,8 +110,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
                 batched layouts. When provided for a single robot, accepts (dim,) or
                 (1, dim).
             color_config: Shared renderer color configuration.
-            camera_config: Camera configuration. Note: For Matplotlib, only position
-                and look_at are used to set view angle for 3D plots.
+            camera_config: Camera configuration. Matplotlib uses its field of view
+                and the direction from position to look-at for 3D plots.
             render_actuators: Whether to render actuator visual layers if available.
             actuator_inputs: Optional actuator inputs for scalar-colored layers.
 
@@ -206,6 +213,7 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             scene_extent=scene_extent,
         )
 
+        self._plot_ground_plane(ax, curves_np, cfg)
         self._plot_backbone(ax, curves_np, resolved_colors.per_robot_point_rgba)
         self._plot_base_markers(ax, curves_np, cfg.base_plate_color)
 
@@ -247,8 +255,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             base_offsets: Optional explicit base offsets for batched layouts
                 (N, 2/3) or (1, dim) for single robot.
             color_config: Shared renderer color configuration.
-            camera_config: Camera configuration. Note: For Matplotlib, only position
-                and look_at are used to set view angle for 3D plots.
+            camera_config: Camera configuration. Matplotlib uses its field of view
+                and the direction from position to look-at for 3D plots.
             render_actuators: Whether to render actuator visual layers if available.
             actuator_inputs: Optional actuator inputs for scalar-colored layers.
 
@@ -296,8 +304,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             record_path: Optional path to save animation (mp4/gif depending on writer)
             base_offsets: Optional explicit base offsets for batched layouts
             color_config: Shared renderer color configuration.
-            camera_config: Camera configuration. Note: For Matplotlib, only position
-                and look_at are used to set view angle for 3D plots.
+            camera_config: Camera configuration. Matplotlib uses its field of view
+                and the direction from position to look-at for 3D plots.
             render_actuators: Whether to render actuator visual layers if available
             actuator_inputs: Optional actuator inputs for scalar-colored layers.
 
@@ -423,6 +431,7 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             actuator_layers=actuator_layers,
             record_path=record_path,
             base_plate_color=cfg.base_plate_color,
+            ground_plane_color_config=cfg,
             playback_speed=playback_speed,
             camera_config=camera_config,
         )
@@ -526,6 +535,7 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             actuator_layers=actuator_layers,
             record_path=record_path,
             base_plate_color=cfg.base_plate_color,
+            ground_plane_color_config=cfg,
             playback_speed=playback_speed,
             camera_config=camera_config,
         )
@@ -542,6 +552,7 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
         actuator_layers: tuple[TrajectoryActuatorVisualLayer, ...] = (),
         record_path: str | None = None,
         base_plate_color: tuple[float, float, float] | None = None,
+        ground_plane_color_config: RendererColorConfig | None = None,
         playback_speed: float = 1.0,
         camera_config: CameraConfig | None = None,
     ):
@@ -600,6 +611,11 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
                 ax.add_collection(lc)
             lines.append(lc)
 
+        self._plot_ground_plane(
+            ax,
+            all_curves[:, 0],
+            ground_plane_color_config or self.color_config,
+        )
         base_artists = self._plot_base_markers(ax, all_curves[:, 0], base_plate_color)
 
         actuator_artists = []
@@ -747,8 +763,8 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             interval: Frame interval in ms
             record_path: Optional path to save animation
             playback_speed: Multiplier for playback speed
-            camera_config: Camera configuration. Note: For Matplotlib, only position
-                and look_at are used to set view angle for 3D plots.
+            camera_config: Camera configuration. Matplotlib uses its field of view
+                and the direction from position to look-at for 3D plots.
             color_config: Shared renderer color configuration.
             render_actuators: Whether to render actuator visual layers if available
             actuator_inputs: Optional actuator inputs for scalar-colored layers.
@@ -882,6 +898,67 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             artists.append(artist)
         return artists
 
+    def _plot_ground_plane(
+        self,
+        ax,
+        curves: np.ndarray,
+        color_config: RendererColorConfig,
+    ) -> list:
+        """Draw a base-aligned ground reference without affecting robot geometry."""
+        if not self.show_ground_plane or curves.size == 0:
+            return []
+
+        dim = int(curves.shape[-1])
+        bases = np.asarray(curves[:, 0], dtype=np.float64)
+        center = np.mean(bases, axis=0)
+        normal = self._base_tangent_axis(dim=dim)
+        size = self._resolve_ground_plane_size()
+        center = center - 0.0125 * max(self.L_max, 1e-3) * normal
+
+        if dim == 2:
+            tangent = np.array([-normal[1], normal[0]], dtype=np.float64)
+            endpoints = (
+                center[None, :] + 0.5 * size * np.array([-1.0, 1.0])[:, None] * tangent
+            )
+            return ax.plot(
+                endpoints[:, 0],
+                endpoints[:, 1],
+                color=color_config.ground_plane_grid_color,
+                linewidth=1.25,
+                alpha=0.75,
+                zorder=0,
+            )
+
+        reference = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        if abs(float(np.dot(normal, reference))) > 0.95:
+            reference = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        u = np.cross(normal, reference)
+        u = u / np.linalg.norm(u)
+        v = np.cross(normal, u)
+        coords = np.linspace(-0.5 * size, 0.5 * size, 9)
+        uu, vv = np.meshgrid(coords, coords)
+        points = center + uu[..., None] * u + vv[..., None] * v
+        surface = ax.plot_surface(
+            points[..., 0],
+            points[..., 1],
+            points[..., 2],
+            color=color_config.ground_plane_color,
+            alpha=0.42,
+            linewidth=0.0,
+            shade=False,
+            zorder=0,
+        )
+        wireframe = ax.plot_wireframe(
+            points[..., 0],
+            points[..., 1],
+            points[..., 2],
+            color=color_config.ground_plane_grid_color,
+            alpha=0.38,
+            linewidth=0.45,
+            zorder=0,
+        )
+        return [surface, wireframe]
+
     def _update_base_markers(self, artists: list, curves: np.ndarray) -> None:
         """Update animated Matplotlib base markers."""
         if not artists:
@@ -953,22 +1030,46 @@ class MatplotlibRenderer(BaseSoftRobotRenderer):
             width_m: Width in meters for limits
         """
         if self.is_3d:
-            ax.set_xlim(-width_m / 2, width_m / 2)
-            ax.set_ylim(-width_m / 2, width_m / 2)
-            ax.set_zlim(0, width_m)
-            ax.set_xlabel("X [m]")
-            ax.set_ylabel("Y [m]")
-            ax.set_zlabel("Z [m]")
-            config = camera_config or CameraConfig()
             center = (
                 np.array(scene_center, dtype=np.float64)
                 if scene_center is not None
                 else np.array([0.0, 0.0, width_m * 0.5], dtype=np.float64)
             )
-            extent = float(scene_extent) if scene_extent is not None else width_m
+            content_extent = (
+                float(scene_extent) if scene_extent is not None else width_m
+            )
+            plot_extent = max(1.15 * self.L_max, 1.1 * content_extent)
+            if self.show_ground_plane:
+                plot_extent = max(plot_extent, self._resolve_ground_plane_size())
+            half_extent = 0.5 * plot_extent
+            ax.set_xlim(center[0] - half_extent, center[0] + half_extent)
+            ax.set_ylim(center[1] - half_extent, center[1] + half_extent)
+            ax.set_zlim(center[2] - half_extent, center[2] + half_extent)
+            ax.set_xlabel("X [m]")
+            ax.set_ylabel("Y [m]")
+            ax.set_zlabel("Z [m]")
+            config = camera_config or CameraConfig()
+            fov = float(np.clip(config.fov, 1.0, 179.0))
+            focal_length = 1.0 / np.tan(np.deg2rad(fov) / 2.0)
+            if hasattr(ax, "set_proj_type"):
+                try:
+                    ax.set_proj_type("persp", focal_length=focal_length)
+                except TypeError:
+                    ax.set_proj_type("persp")
+            if hasattr(ax, "set_box_aspect"):
+                default_half_fov = np.deg2rad(CameraConfig().fov) / 2.0
+                zoom = np.clip(
+                    np.tan(default_half_fov) / np.tan(np.deg2rad(fov) / 2.0),
+                    0.85,
+                    1.2,
+                )
+                try:
+                    ax.set_box_aspect((1.0, 1.0, 1.0), zoom=float(zoom))
+                except TypeError:
+                    ax.set_box_aspect((1.0, 1.0, 1.0))
             camera_pos, look_at = config.compute_auto_position(
                 center,
-                extent,
+                content_extent,
                 reference_transform=np.asarray(self.base_transform),
             )
             view_vec = np.asarray(camera_pos, dtype=np.float64) - np.asarray(
