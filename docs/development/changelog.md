@@ -67,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved detailed contributor and documentation tooling into the development
   guide and made `VERSION_BUMP_README.md` the authoritative maintainer release
   workflow, including the branch, pull-request, tag, and recovery procedures.
+- Added Twine to the development dependency set so the documented distribution
+  validation command is available in the project environment.
 - Separated backend-specific renderer coverage into dedicated Matplotlib,
   Open3D, and Viser test modules, leaving the shared base-renderer tests focused
   on backend-independent behavior.

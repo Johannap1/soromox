@@ -139,6 +139,7 @@ dev = [
     "ruff",
     "seaborn",
     "tox",
+    "twine>=7.0.0",
 ]
 docs = [
     "zensical",
