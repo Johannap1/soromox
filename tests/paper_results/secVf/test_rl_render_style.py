@@ -2,7 +2,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
+
+pytest.importorskip("open3d")
+pytest.importorskip("gymnasium")
+pytest.importorskip("stable_baselines3")
 
 MODULE_DIR = (
     Path(__file__).resolve().parents[3] / "paper_results" / "secVf_parallel_rl" / "code"

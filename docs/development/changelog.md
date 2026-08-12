@@ -77,8 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Renamed the operational-space Viser renderer test module to prevent a
-  same-named rendering test module from colliding during full-suite collection.
+- Renamed the operational-space Viser renderer test module and made Section Vf
+  tests skip cleanly when optional paper dependencies are unavailable,
+  preventing full-suite collection failures.
 - Corrected the I-SUPPORT dynamic-model DOI and added platform references to
   the I-SUPPORT and McKibben UMArm system pages.
 
