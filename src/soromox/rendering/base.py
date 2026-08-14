@@ -10,6 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from soromox.rendering.actuation import (
+    vectorized_actuator_visual_layers_trajectory,
+)
 from soromox.rendering.actuators import (
     ActuatorVisualLayer,
     BatchedActuatorVisualLayer,
@@ -58,6 +61,8 @@ class BaseSoftRobotRenderer(ABC):
             ``[qw, qx, qy, qz, x, y, z]``.
         base_transform: Homogeneous base transform. Shape ``(3, 3)`` for
             planar robots and ``(4, 4)`` for spatial robots.
+        show_ground_plane: Whether supported backends render a ground reference
+        ground_plane_size: Optional ground-plane side length in meters
     """
 
     def __init__(
@@ -68,6 +73,8 @@ class BaseSoftRobotRenderer(ABC):
         num_points: int = 50,
         background_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
         color_config: RendererColorConfig | None = None,
+        show_ground_plane: bool = False,
+        ground_plane_size: float | None = None,
     ):
         """Initialize the renderer with a robot and visualization parameters.
 
@@ -78,6 +85,8 @@ class BaseSoftRobotRenderer(ABC):
             num_points: Number of points for backbone curve discretization
             background_color: RGB background color tuple (values 0-1)
             color_config: Shared renderer color configuration
+            show_ground_plane: Whether supported backends render a ground reference
+            ground_plane_size: Optional ground-plane side length in meters
         """
         self.robot: SoftRobot = robot
         self.width = width
@@ -85,6 +94,12 @@ class BaseSoftRobotRenderer(ABC):
         self.num_points = num_points
         self.background_color = background_color
         self.color_config = color_config or RendererColorConfig()
+        self.show_ground_plane = bool(show_ground_plane)
+        self.ground_plane_size = (
+            None if ground_plane_size is None else float(ground_plane_size)
+        )
+        if self.ground_plane_size is not None and self.ground_plane_size <= 0.0:
+            raise ValueError("ground_plane_size must be positive when provided")
         self._is_planar = bool(robot.is_planar)
         self.base_pose = jnp.asarray(robot.base_pose)
         self.base_transform = jnp.asarray(robot.base_transform)
@@ -95,18 +110,33 @@ class BaseSoftRobotRenderer(ABC):
         # Total robot length
         self.L_max = float(jnp.asarray(robot.length))
 
-        self._has_actuator_visual_layers = hasattr(robot, "actuator_visual_layers")
+        # Explicit hooks let specialized and third-party robots override the
+        # native SoftRobot visualization contract.
+        self._has_actuator_visual_layers = callable(
+            getattr(robot, "actuator_visual_layers", None)
+        )
         self._has_batched_actuator_visual_layers = hasattr(
             robot, "actuator_visual_layers_batched"
         )
         self._has_trajectory_actuator_visual_layers = hasattr(
             robot, "actuator_visual_layers_trajectory"
         )
+        self._uses_native_actuator_visual_adapter = (
+            isinstance(robot, SoftRobot)
+            and getattr(type(robot), "actuator_visual_layers", None)
+            is SoftRobot.actuator_visual_layers
+        )
         self._has_actuator_visuals = (
             self._has_actuator_visual_layers
             or self._has_batched_actuator_visual_layers
             or self._has_trajectory_actuator_visual_layers
         )
+
+    def _resolve_ground_plane_size(self, *minimum_sizes: float) -> float:
+        """Return the configured size or a robot-scaled backend default."""
+        if self.ground_plane_size is not None:
+            return self.ground_plane_size
+        return max(1.35 * self.L_max, 0.1, *minimum_sizes)
 
     def _base_position(self, dim: int | None = None) -> np.ndarray:
         """Return the configured base translation in renderer coordinates.
@@ -272,17 +302,17 @@ class BaseSoftRobotRenderer(ABC):
         Returns:
             Array of shape (num_points, 3) for 3D or (num_points, 2) for 2D
         """
-        s_ps = jnp.linspace(0.0, self.L_max, self.num_points)
-        if hasattr(self.robot, "forward_kinematics_batched"):
-            poses = self.robot.forward_kinematics_batched(q, s_ps)
-        else:
-            # Fallback to vmap over single-point FK
-            poses = jax.vmap(lambda s: self.robot.forward_kinematics(q, s))(s_ps)
-
-        # extract positions
+        poses = self.compute_backbone_poses(q)
         curve = self._extract_positions(poses)  # (num_points, dim)
 
         return curve
+
+    def compute_backbone_poses(self, q: Array) -> Array:
+        """Compute full FK poses at the configured backbone sample points."""
+        s_ps = jnp.linspace(0.0, self.L_max, self.num_points)
+        if hasattr(self.robot, "forward_kinematics_batched"):
+            return self.robot.forward_kinematics_batched(q, s_ps)
+        return jax.vmap(lambda s: self.robot.forward_kinematics(q, s))(s_ps)
 
     def compute_actuator_visual_layers(
         self,
@@ -313,9 +343,7 @@ class BaseSoftRobotRenderer(ABC):
                 num_robots=int(points.shape[0]),
                 target_dim=int(points.shape[-1]),
             )
-            offset_layers.append(
-                layer.with_points(points + offsets[:, None, None, :])
-            )
+            offset_layers.append(layer.with_points(points + offsets[:, None, None, :]))
         return tuple(offset_layers)
 
     def _offset_trajectory_actuator_layers(
@@ -539,9 +567,25 @@ class BaseSoftRobotRenderer(ABC):
             )
             return self._offset_trajectory_actuator_layers(layers, base_offsets)
 
+        # Native SoftRobot geometry is renderer-owned and JAX-vectorizable.
+        # Specialized robot hooks take precedence in the branch above.
+        if self._uses_native_actuator_visual_adapter:
+            s_ps = jnp.linspace(0.0, self.L_max, self.num_points)
+            raw_layers = vectorized_actuator_visual_layers_trajectory(
+                self.robot,
+                q_ts,
+                s_ps,
+                actuator_inputs=actuator_inputs,
+            )
+            layers = normalize_trajectory_actuator_layers(
+                raw_layers,
+                num_robots=int(num_robots),
+                num_steps=int(num_steps),
+            )
+            return self._offset_trajectory_actuator_layers(layers, base_offsets)
+
         if not (
-            self._has_batched_actuator_visual_layers
-            or self._has_actuator_visual_layers
+            self._has_batched_actuator_visual_layers or self._has_actuator_visual_layers
         ):
             return ()
 
@@ -655,6 +699,11 @@ class BaseSoftRobotRenderer(ABC):
         if poses.ndim == 3 and poses.shape[-2:] == (4, 4):
             # SE(3): extract translation from 4x4 matrices
             return poses[:, :3, 3]
+        elif poses.ndim == 3 and poses.shape[-2:] == (3, 3):
+            # Homogeneous SE(2): extract x, y and pad with z=0
+            xy = poses[:, :2, 2]
+            z = jnp.zeros((poses.shape[0], 1), dtype=poses.dtype)
+            return jnp.concatenate([xy, z], axis=1)
         elif poses.ndim == 2 and poses.shape[-1] == 3:
             # SE(2): extract x, y from [theta, x, y] and pad with z=0
             xy = poses[:, 1:3]  # Extract x, y (skip theta at index 0)
@@ -665,6 +714,36 @@ class BaseSoftRobotRenderer(ABC):
                 f"Unsupported pose format: expected SE(2) (N, 3) or SE(3) (N, 4, 4), "
                 f"got shape {poses.shape}"
             )
+
+    def _extract_material_frames_3d(self, poses: Array) -> Array:
+        """Extract 3D material-frame rotations from SE(2) or SE(3) poses."""
+        poses = jnp.asarray(poses)
+        if poses.ndim == 3 and poses.shape[-2:] == (4, 4):
+            return poses[:, :3, :3]
+        if poses.ndim == 3 and poses.shape[-2:] == (3, 3):
+            rotations = poses[:, :2, :2]
+            frames = jnp.zeros((poses.shape[0], 3, 3), dtype=poses.dtype)
+            frames = frames.at[:, :2, :2].set(rotations)
+            return frames.at[:, 2, 2].set(1.0)
+        if poses.ndim == 2 and poses.shape[-1] == 3:
+            theta = poses[:, 0]
+            cos_theta = jnp.cos(theta)
+            sin_theta = jnp.sin(theta)
+            zeros = jnp.zeros_like(theta)
+            ones = jnp.ones_like(theta)
+            return jnp.stack(
+                [
+                    jnp.stack([cos_theta, -sin_theta, zeros], axis=1),
+                    jnp.stack([sin_theta, cos_theta, zeros], axis=1),
+                    jnp.stack([zeros, zeros, ones], axis=1),
+                ],
+                axis=1,
+            )
+        raise ValueError(
+            "Unsupported pose format for material-frame extraction: expected "
+            "SE(2) (N, 3) or (N, 3, 3), or SE(3) (N, 4, 4), "
+            f"got shape {poses.shape}"
+        )
 
     @abstractmethod
     def render_frame(self, q: Array) -> np.ndarray:
@@ -1034,3 +1113,27 @@ class BaseSoftRobotRenderer(ABC):
 
         # Add base offsets: (N, num_points, dim) + (N, 1, dim)
         return curves + offsets[:, None, :]
+
+    def compute_backbone_curves_and_frames_batched(
+        self, q_batch: Array, base_offsets: Array
+    ) -> tuple[Array, Array]:
+        """Compute 3D backbone positions and material frames for multiple robots.
+
+        The frame columns are the local material-frame axes in world coordinates.
+        Positional base offsets translate the curves without rotating the frames.
+        """
+        q_batch = jnp.asarray(q_batch)
+        if q_batch.ndim != 2:
+            raise ValueError(
+                f"q_batch must have shape (N, DOF), got {q_batch.shape} with ndim={q_batch.ndim}"
+            )
+
+        poses = jax.vmap(self.compute_backbone_poses)(q_batch)
+        curves = jax.vmap(self._extract_positions_3d)(poses)
+        frames = jax.vmap(self._extract_material_frames_3d)(poses)
+        offsets = self._normalize_base_offsets(
+            base_offsets,
+            num_robots=int(q_batch.shape[0]),
+            target_dim=3,
+        )
+        return curves + offsets[:, None, :], frames

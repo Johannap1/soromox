@@ -22,9 +22,11 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
     This is a specialized renderer that uses HSA-specific forward kinematics.
 
     Example:
-        >>> renderer = OpenCVPlanarHSARenderer(robot)
-        >>> img = renderer.render_frame(q)
-        >>> renderer.show(q)
+        ```python
+        renderer = OpenCVPlanarHSARenderer(robot)
+        image = renderer.render_frame(q)
+        renderer.show(q)
+        ```
     """
 
     def __init__(
@@ -67,13 +69,19 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
 
         # Cache HSA-specific FK functions
         self._batched_fk_backbone = vmap(
-            robot.forward_kinematics_virtual_backbone_fn, in_axes=(None, 0), out_axes=-1
+            robot.forward_kinematics_virtual_backbone,
+            in_axes=(None, 0),
+            out_axes=-1,
         )
         self._batched_fk_rod = vmap(
-            robot.forward_kinematics_rod_fn, in_axes=(None, 0, None), out_axes=-1
+            robot.forward_kinematics_rod,
+            in_axes=(None, 0, None),
+            out_axes=-1,
         )
         self._batched_fk_platform = vmap(
-            robot.forward_kinematics_platform_fn, in_axes=(None, 0), out_axes=0
+            robot.forward_kinematics_platform,
+            in_axes=(None, 0),
+            out_axes=0,
         )
 
     @property

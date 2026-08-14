@@ -12,12 +12,16 @@ References:
     2508-2515.
 """
 
+import argparse
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)  # Double precision
 
+from soromox.actuation import ThreadlikeActuator, ThreadlikeRouting
 from soromox.control import (
     OperationalSpaceSynergisticController,
     PIDControl,
@@ -27,15 +31,20 @@ from soromox.control import (
 from soromox.coordinate_transformations import OperationalSpaceDynamics
 from soromox.rendering import Open3DRenderer
 from soromox.systems import (
-    LinearTendonRoutingParams,
+    PCS,
     PCSParams,
     SystemState,
-    TendonActuatedPCS,
-    TendonActuatedPCSParams,
 )
 
+FIGURES_DIR = Path(__file__).resolve().parent / "figures"
 
-def main():
+
+def main(
+    *,
+    show: bool = True,
+    render: bool = True,
+    figures_dir: Path = FIGURES_DIR,
+):
     # =========================================================================
     # Robot Configuration: Two-Segment tendon-actuated PCS
     # =========================================================================
@@ -46,16 +55,7 @@ def main():
     p0 = jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0])
 
     segment_lengths = 1e-1 * jnp.ones((num_segments,))
-
-    # Damping matrix
-    damping_matrix = 1e-3 * jnp.diag(
-        (
-            jnp.repeat(
-                jnp.array([[1e0, 1e0, 1e0, 1e3, 1e3, 1e3]]), num_segments, axis=0
-            )
-            * segment_lengths[:, None]
-        ).flatten()
-    )
+    material_damping_coefficient = 362.0
     body_params = PCSParams(
         base_pose=p0,
         length=segment_lengths,
@@ -64,7 +64,7 @@ def main():
         gravity=jnp.array([0.0, 0.0, 9.81]),
         young_modulus=2e3 * jnp.ones((num_segments,)),
         shear_modulus=1e3 * jnp.ones((num_segments,)),
-        damping_matrix=damping_matrix,
+        material_damping_coefficient=material_damping_coefficient,
         reference_strain=jnp.tile(
             jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
         ),
@@ -73,22 +73,25 @@ def main():
     # Tendons
     theta = jnp.pi / 32
     dtheta = jnp.pi / 3
-    active_tendon_routing = LinearTendonRoutingParams(
-        y_intercept=1.8e-2
-        * jnp.cos(jnp.array([theta, theta + 2 * dtheta, theta + 4 * dtheta])),
-        z_intercept=1.8e-2
-        * jnp.sin(jnp.array([theta, theta + 2 * dtheta, theta + 4 * dtheta])),
-        y_slope=jnp.zeros(3),
-        z_slope=jnp.zeros(3),
-        attachment_segment_index=jnp.array([1, 1, 1]),
+    tendon_angles = jnp.array([theta, theta + 2 * dtheta, theta + 4 * dtheta])
+    active_tendon_routing = ThreadlikeRouting.linear(
+        intercept=1.8e-2
+        * jnp.stack(
+            (
+                jnp.zeros_like(tendon_angles),
+                jnp.cos(tendon_angles),
+                jnp.sin(tendon_angles),
+            ),
+            axis=-1,
+        ),
+        start_segment_index=0,
+        end_segment_index=(1, 1, 1),
     )
 
     # Initialize robot
-    robot = TendonActuatedPCS(
-        params=TendonActuatedPCSParams(
-            body=body_params,
-            active_tendon_routing=active_tendon_routing,
-        ),
+    robot = PCS(
+        params=body_params,
+        actuators=ThreadlikeActuator.tendons(active_tendon_routing),
     )
     num_dofs = robot.num_active_strains
     total_length = float(jnp.sum(segment_lengths))
@@ -308,8 +311,15 @@ def main():
     ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("control_pcs_with_impedance_results.pdf", dpi=200)
-    plt.show()
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(
+        figures_dir / "control_tendon_actuated_pcs_with_synergistic_results.pdf",
+        dpi=200,
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     # Plot configuration space evolution
     fig2, axes2 = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
@@ -339,8 +349,14 @@ def main():
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("control_pcs_with_impedance_config.pdf", dpi=200)
-    plt.show()
+    plt.savefig(
+        figures_dir / "control_tendon_actuated_pcs_with_synergistic_config.pdf",
+        dpi=200,
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     # Compute and print summary statistics
     rmse = jnp.sqrt(jnp.mean(tracking_error**2, axis=0))
@@ -348,9 +364,11 @@ def main():
     print(f"Mean RMSE: {jnp.mean(rmse) * 1000:.3f} mm")
 
     print("\nPlots saved to:")
-    print("  - control_pcs_with_impedance_results.pdf")
-    print("  - control_pcs_with_impedance_config.pdf")
+    print("  - figures/control_tendon_actuated_pcs_with_synergistic_results.pdf")
+    print("  - figures/control_tendon_actuated_pcs_with_synergistic_config.pdf")
 
+    if not render:
+        return
     if Open3DRenderer is None:
         print("\nOpen3DRenderer unavailable. Install open3d to view the animation.")
     else:
@@ -369,4 +387,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-show", action="store_true")
+    parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--figures-dir", type=Path, default=FIGURES_DIR)
+    args = parser.parse_args()
+    main(
+        show=not args.no_show,
+        render=not args.no_render,
+        figures_dir=args.figures_dir,
+    )

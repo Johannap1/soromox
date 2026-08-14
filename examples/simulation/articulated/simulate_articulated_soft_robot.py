@@ -233,7 +233,6 @@ def render_robot(
             renderer = ViserRenderer(
                 robot,
                 num_points=80,
-                backbone_style="discrete",
             )
             renderer.render_sequence(
                 ts,
@@ -276,6 +275,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the example."""
     args = parse_args()
+    if args.record is not None and not args.record.is_absolute():
+        args.record = Path(__file__).resolve().parent / args.record
     robot = build_robot()
     ts, q_ts, qd_ts = simulate(robot, t1=args.t1)
 

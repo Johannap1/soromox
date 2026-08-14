@@ -1,6 +1,6 @@
 site_name: Soft Robot Models in jaX (SoRoMoX)
 site_description: High-performance kinematic and dynamic models of continuum and articulated soft robots using JAX
-site_author: Maximilian Stölzle, Solange Gribonval, Daniel Feliu Talegon, and Cosimo Della Santina
+site_author: Maximilian Stölzle, Solange Gribonval, Daniel Feliu-Talegon, Vito Daniele Perfetta, Michele Martini, Chuhan Zhang, Kiwan Wong, Daniela Rus, and Cosimo Della Santina
 site_url: https://tud-phi.github.io/soromox
 
 repo_name: tud-phi/soromox
@@ -8,7 +8,7 @@ repo_url: https://github.com/tud-phi/soromox
 edit_uri: edit/main/docs/
 not_in_nav: 404.md
 
-copyright: Copyright &copy; 2020-2026 Physical Intelligence (PhI) Lab @ TU Delft
+copyright: Copyright &copy; 2025-2026 SoRoMoX contributors
 
 theme:
   name: material
@@ -69,40 +69,41 @@ nav:
           - Articulated Systems:
             - Overview: api/systems/articulated/index.md
             - Pendulum: api/systems/pendulum/pendulum.md
-            - Tendon Actuated Pendulum: api/systems/pendulum/tendon-actuated-pendulum.md
             - Articulated Soft Robot: api/systems/articulated/articulated-soft-robot.md
+            - McKibben UMArm: api/systems/articulated/mckibben-umarm.md
           - PCS Systems:
             - Overview: api/systems/pcs/index.md
-            - PCS (Spatial): api/systems/pcs/pcs.md
+            - Spatial PCS: api/systems/pcs/pcs.md
             - Planar PCS: api/systems/pcs/planar-pcs.md
-            - Tendon Actuated PCS: api/systems/pcs/tendon-actuated-pcs.md
-            - Tendon Actuated Planar PCS: api/systems/pcs/tendon-actuated-planar-pcs.md
-            - Pressure Actuated Planar PCS: api/systems/pcs/pressure-actuated-planar-pcs.md
             - I-Support: api/systems/pcs/isupport.md
           - GVS Systems:
             - Overview: api/systems/gvs/index.md
             - GVS: api/systems/gvs/gvs.md
-            - Tendon Actuated GVS: api/systems/gvs/tendon-actuated-gvs.md
           - HSA Systems:
             - Overview: api/systems/hsa/index.md
             - Planar HSA: api/systems/hsa/planar-hsa.md
       - Rendering:
           - Overview: api/rendering/index.md
-          - Renderers: api/rendering/renderers.md
-          - Camera & Colors: api/rendering/configuration.md
+          - Renderer API: api/rendering/renderers.md
+          - Shared Configuration: api/rendering/configuration.md
+      - Actuation:
+          - Actuation Model: api/actuation/index.md
+          - Joint-Space Actuation: api/actuation/joint-space.md
+          - Threadlike Actuation: api/actuation/threadlike.md
+          - API Reference: api/actuation/reference.md
       - Control:
           - Overview: api/control/index.md
           - Configuration-Space Controllers: api/control/configuration-space.md
           - Operational-Space Controllers: api/control/operational-space.md
           - Actuation-Space Controllers: api/control/actuation-space.md
           - Utilities: api/control/utilities.md
-      - Actuation: api/actuation.md
       - Utilities:
           - Overview: api/utilities/index.md
           - Parameters: api/utilities/parameters.md
           - Geometry: api/utilities/geometry.md
           - Lie Algebra: api/utilities/lie-algebra.md
-          - Symbolic Derivation: api/utilities/symbolic-derivation.md
+  - Paper & Results: research.md
+  - Citation: citation.md
   - Development:
     - Contributing: development/contributing.md
     - Extending SoRoMoX: development/extending.md
@@ -190,6 +191,7 @@ extra_javascript:
 
 extra_css:
   - stylesheets/sidebar.css
+  - stylesheets/media.css
 
 extra:
   version:
@@ -198,6 +200,9 @@ extra:
     - icon: fontawesome/brands/github
       link: https://github.com/tud-phi/soromox
       name: View on GitHub
+    - icon: fontawesome/solid/file-lines
+      link: https://arxiv.org/abs/2608.06650
+      name: Read the SoRoMoX paper
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/soromox/
       name: View on PyPI

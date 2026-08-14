@@ -9,7 +9,7 @@ SoRoMoX is a comprehensive library for modeling, simulating, and controlling sof
 - **[Systems](systems/index.md)**: Robot system implementations (articulated soft robots, pendulums, PCS, GVS, HSA)
 - **[Control](control/index.md)**: Model-based controllers for trajectory tracking and regulation
 - **[Rendering](rendering/index.md)**: Visualization and animation utilities
-- **[Actuation](actuation.md)**: Actuation modeling and utilities
+- **[Actuation](actuation/index.md)**: Actuation modeling and utilities
 - **[Utilities](utilities/index.md)**: Parameter management and symbolic derivation tools
 
 ---
@@ -59,7 +59,7 @@ All renderers inherit from a common base class and provide cached forward kinema
 
 ## Actuation
 
-The [Actuation](actuation.md) module provides utilities for modeling and working with different actuation methods, including tendon routing, pressure chambers, and direct torque actuation.
+The [Actuation](actuation/index.md) module provides utilities for modeling and working with different actuation methods, including tendon routing, pressure chambers, and direct torque actuation.
 
 ---
 
@@ -68,7 +68,8 @@ The [Actuation](actuation.md) module provides utilities for modeling and working
 The [Utilities](utilities/index.md) module includes:
 
 - **[Parameters](utilities/parameters.md)**: Parameter handling, validation, and default configurations for soft robot systems
-- **[Symbolic Derivation](utilities/symbolic-derivation.md)**: Symbolic mathematics and derivation utilities using SymPy for soft robot modeling
+- **[Geometry](utilities/geometry.md)**: Pose encodings, rotations, and geometric errors
+- **[Lie Algebra](utilities/lie-algebra.md)**: Rigid-body and constant-strain operators
 
 ---
 

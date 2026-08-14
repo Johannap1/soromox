@@ -31,6 +31,10 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Generated double-anonymous submission artifacts
+/anonymous-supplementary-material.zip
+/ANONYMIZATION_REPORT.txt
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -140,6 +144,14 @@ dmypy.json
 *.mp4
 *.gif
 
+# Curated, web-optimized documentation media is intentionally versioned.
+!docs/assets/**/*.mp4
+!docs/assets/**/*.gif
+
+# Generated example artifacts stay next to the script that creates them.
+examples/**/figures/*
+examples/**/videos/*
+
 # Documentation build
 site/
 
@@ -149,7 +161,3 @@ site/
 # camera params saved during rendering
 DepthCamera_*.json
 DepthCapture_*.png
-
-# Generated CLF-CBF outputs
-force_goal_distance_plot.pdf
-force_goal_distance_plot.png

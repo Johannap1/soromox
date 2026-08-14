@@ -1,3 +1,5 @@
+from inspect import signature
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -10,10 +12,24 @@ from soromox.rendering.actuators import (
 )
 from soromox.rendering.base import BaseSoftRobotRenderer
 from soromox.rendering.camera_config import CameraConfig
-from soromox.rendering.matplotlib_renderer import MatplotlibRenderer
+from soromox.rendering.color_config import ActuatorStyleConfig
 from soromox.rendering.opencv_planar_renderer import OpenCVPlanarRenderer
 from soromox.systems.soft_robot import CrossSectionGeometry
 from soromox.utils.geometry import poses
+
+
+def test_actuator_styles_can_be_selected_by_semantic_kind():
+    style = ActuatorStyleConfig(
+        default_color=(0.1, 0.2, 0.3),
+        default_radius=1e-4,
+        kind_colors={"tendon": (0.8, 0.1, 0.1)},
+        kind_radii={"tendon": 5e-4},
+    )
+
+    assert style.color_for_kind("tendon") == (0.8, 0.1, 0.1)
+    assert style.color_for_kind("muscle") == (0.1, 0.2, 0.3)
+    assert style.radius_for_kind("tendon") == 5e-4
+    assert style.radius_for_kind("muscle") == 1e-4
 
 
 class DummyPlanarRobot:
@@ -117,7 +133,9 @@ class DummyBatchedActuatedSpatialRobot(DummySpatialRobot):
         self.single_calls += 1
         raise AssertionError("single actuator hook should not be used")
 
-    def actuator_visual_layers_batched(self, q_batch, s_points, *, actuator_inputs=None):
+    def actuator_visual_layers_batched(
+        self, q_batch, s_points, *, actuator_inputs=None
+    ):
         self.batched_calls += 1
         num_robots = int(q_batch.shape[0])
         base_paths = jnp.stack(
@@ -202,126 +220,6 @@ class DummyRenderer(BaseSoftRobotRenderer):
         return None
 
 
-class FakeMatplotlib3DAxis:
-    def __init__(self):
-        self.view = None
-
-    def set_xlim(self, *args):
-        return None
-
-    def set_ylim(self, *args):
-        return None
-
-    def set_zlim(self, *args):
-        return None
-
-    def set_xlabel(self, *args):
-        return None
-
-    def set_ylabel(self, *args):
-        return None
-
-    def set_zlabel(self, *args):
-        return None
-
-    def view_init(self, *, elev, azim):
-        self.view = (float(elev), float(azim))
-
-
-class FakeOpen3DVisualizer:
-    def __init__(self):
-        self.reset_view_point_arg = None
-        self.polled = False
-        self.updated = False
-
-    def reset_view_point(self, arg):
-        self.reset_view_point_arg = arg
-
-    def poll_events(self):
-        self.polled = True
-
-    def update_renderer(self):
-        self.updated = True
-
-
-class FakeOpen3DViewControl:
-    def __init__(self):
-        self.front = None
-        self.lookat = None
-        self.up = None
-        self.zoom = None
-
-    def set_front(self, front):
-        self.front = np.asarray(front, dtype=np.float64)
-
-    def set_lookat(self, lookat):
-        self.lookat = np.asarray(lookat, dtype=np.float64)
-
-    def set_up(self, up):
-        self.up = np.asarray(up, dtype=np.float64)
-
-    def set_zoom(self, zoom):
-        self.zoom = float(zoom)
-
-
-class FakeViserCamera:
-    def __init__(self):
-        self.position = None
-        self.look_at = None
-        self.up_direction = None
-        self.fov = None
-
-
-class FakeViserClient:
-    def __init__(self):
-        self.camera = FakeViserCamera()
-
-
-class FakeViserServer:
-    def __init__(self, clients):
-        self._clients = clients
-        self.on_client_connect_callback = None
-
-    def get_clients(self):
-        return self._clients
-
-    def on_client_connect(self, callback):
-        self.on_client_connect_callback = callback
-        return callback
-
-
-class FakeViserLineHandle:
-    def __init__(self, *, name, points, colors, line_width):
-        self.name = name
-        self.points = points
-        self.colors = colors
-        self.line_width = line_width
-        self.remove_count = 0
-
-    def remove(self):
-        self.remove_count += 1
-
-
-class FakeViserScene:
-    def __init__(self):
-        self.line_segments = []
-
-    def add_line_segments(self, *, name, points, colors, line_width):
-        handle = FakeViserLineHandle(
-            name=name,
-            points=points,
-            colors=colors,
-            line_width=line_width,
-        )
-        self.line_segments.append(handle)
-        return handle
-
-
-class FakeViserActuatorServer:
-    def __init__(self):
-        self.scene = FakeViserScene()
-
-
 def test_renderer_exposes_base_pose_transform_and_axis():
     robot = DummyPlanarRobot(jnp.array([jnp.pi / 2, 1.0, 2.0]))
     renderer = DummyRenderer(robot)
@@ -334,12 +232,64 @@ def test_renderer_exposes_base_pose_transform_and_axis():
     )
 
 
+def test_renderer_centralizes_ground_plane_configuration():
+    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    renderer = DummyRenderer(
+        robot,
+        show_ground_plane=True,
+        ground_plane_size=0.4,
+    )
+
+    assert renderer.show_ground_plane is True
+    assert renderer.ground_plane_size == pytest.approx(0.4)
+    assert renderer._resolve_ground_plane_size() == pytest.approx(0.4)
+
+
+def test_renderer_resolves_robot_scaled_ground_plane_size():
+    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    renderer = DummyRenderer(robot)
+
+    assert renderer._resolve_ground_plane_size() == pytest.approx(1.35)
+    assert renderer._resolve_ground_plane_size(2.0) == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("ground_plane_size", [0.0, -0.1])
+def test_renderer_rejects_nonpositive_ground_plane_size(ground_plane_size):
+    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+
+    with pytest.raises(ValueError, match="ground_plane_size must be positive"):
+        DummyRenderer(robot, ground_plane_size=ground_plane_size)
+
+
+def test_open3d_and_viser_ground_plane_arguments_follow_base_plate_arguments():
+    from soromox.rendering.open3d_renderer import Open3DRenderer
+    from soromox.rendering.viser_renderer import ViserRenderer
+
+    for renderer_type in (Open3DRenderer, ViserRenderer):
+        parameter_names = list(signature(renderer_type).parameters)
+        base_plate_index = parameter_names.index("base_plate_thickness")
+        assert parameter_names[base_plate_index + 1 : base_plate_index + 3] == [
+            "show_ground_plane",
+            "ground_plane_size",
+        ]
+
+
+def test_backbone_geometry_sampling_preserves_fk_material_frames():
+    robot = DummySpatialRobot(jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]))
+    renderer = DummyRenderer(robot)
+
+    curves, frames = renderer.compute_backbone_curves_and_frames_batched(
+        jnp.zeros((1, 0)), jnp.array([[1.0, 2.0, 3.0]])
+    )
+
+    assert_allclose(curves[0, 0], jnp.array([1.0, 2.0, 3.0]), atol=1e-7)
+    assert_allclose(frames[0, 0], robot.base_transform[:3, :3], atol=1e-7)
+
+
 def test_camera_auto_position_rotates_default_offset_by_base_pose():
     config = CameraConfig(distance_factor=2.0, position_offset=(1.0, 0.0, 0.0))
     center = np.array([10.0, 20.0, 30.0])
-    base_transform = poses.planar_pose_to_transform(
-        jnp.array([jnp.pi / 2, 1.0, 2.0])
-    )
+    base_transform = poses.planar_pose_to_transform(jnp.array([jnp.pi / 2, 1.0, 2.0]))
 
     camera_pos, look_at = config.compute_auto_position(
         center,
@@ -358,9 +308,7 @@ def test_camera_explicit_position_remains_world_space_with_base_pose():
         position_offset=(1.0, 0.0, 0.0),
     )
     center = np.array([10.0, 20.0, 30.0])
-    base_transform = poses.planar_pose_to_transform(
-        jnp.array([jnp.pi / 2, 1.0, 2.0])
-    )
+    base_transform = poses.planar_pose_to_transform(jnp.array([jnp.pi / 2, 1.0, 2.0]))
 
     camera_pos, look_at = config.compute_auto_position(
         center,
@@ -378,166 +326,6 @@ def test_camera_up_vector_is_world_space():
     up = config.compute_up()
 
     assert_allclose(up, np.array([0.0, 0.0, 1.0]), atol=1e-12)
-
-
-def test_matplotlib_3d_default_camera_uses_base_pose_orientation():
-    robot = DummySpatialRobot(jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]))
-    renderer = MatplotlibRenderer(robot)
-    axis = FakeMatplotlib3DAxis()
-
-    renderer._setup_axes(
-        axis,
-        width_m=3.0,
-        scene_center=np.zeros(3),
-        scene_extent=1.0,
-        camera_config=None,
-    )
-
-    assert axis.view is not None
-    expected_view = np.array(
-        [
-            np.degrees(np.arctan2(8.0, np.hypot(8.0, -5.0))),
-            np.degrees(np.arctan2(-5.0, 8.0)),
-        ]
-    )
-    assert_allclose(np.array(axis.view), expected_view, atol=1e-12)
-
-
-def test_open3d_interactive_camera_front_points_from_eye_to_target():
-    pytest.importorskip("open3d")
-    from soromox.rendering.open3d_renderer import Open3DRenderer
-
-    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-    renderer = Open3DRenderer(robot)
-    vis = FakeOpen3DVisualizer()
-    ctrl = FakeOpen3DViewControl()
-    scene_data = type(
-        "SceneDataStub",
-        (),
-        {"curves": np.array([[[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]])},
-    )()
-
-    renderer._setup_interactive_camera(
-        vis,
-        ctrl,
-        scene_data,
-        camera_config=CameraConfig(distance_factor=1.0, position_offset=(1.0, 0.0, 0.0)),
-    )
-
-    assert_allclose(ctrl.front, np.array([1.0, 0.0, 0.0]), atol=1e-12)
-    assert_allclose(ctrl.lookat, np.array([0.0, 0.5, 0.0]), atol=1e-12)
-    assert_allclose(ctrl.up, np.array([0.0, 0.0, 1.0]), atol=1e-12)
-    assert vis.reset_view_point_arg is True
-    assert vis.polled
-    assert vis.updated
-
-
-def test_viser_camera_uses_shared_up_and_radian_fov():
-    pytest.importorskip("viser")
-    from soromox.rendering.viser_renderer import ViserRenderer
-
-    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-    renderer = ViserRenderer(robot, auto_start=False)
-    client = FakeViserClient()
-    server = FakeViserServer({"client": client})
-    renderer._server = server
-    curves = np.array([[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]])
-
-    renderer._setup_camera(
-        curves,
-        camera_config=CameraConfig(
-            fov=60.0,
-            distance_factor=1.0,
-            position_offset=(1.0, 0.0, 0.0),
-            up=(0.0, 0.0, 1.0),
-        ),
-    )
-
-    assert_allclose(client.camera.position, np.array([1.0, 0.5, 0.0]), atol=1e-12)
-    assert_allclose(client.camera.look_at, np.array([0.0, 0.5, 0.0]), atol=1e-12)
-    assert_allclose(client.camera.up_direction, np.array([0.0, 0.0, 1.0]), atol=1e-12)
-    assert_allclose(client.camera.fov, np.pi / 3.0, atol=1e-12)
-    assert server.on_client_connect_callback is not None
-
-
-def test_viser_camera_accepts_full_trajectory_curves_for_bounds():
-    pytest.importorskip("viser")
-    from soromox.rendering.viser_renderer import ViserRenderer
-
-    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-    renderer = ViserRenderer(robot, auto_start=False)
-    client = FakeViserClient()
-    renderer._server = FakeViserServer({"client": client})
-    curves = np.array(
-        [
-            [
-                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-                [[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]],
-            ]
-        ]
-    )
-
-    renderer._setup_camera(
-        curves,
-        camera_config=CameraConfig(distance_factor=1.0, position_offset=(1.0, 0.0, 0.0)),
-    )
-
-    assert_allclose(client.camera.look_at, np.array([1.0, 0.5, 0.0]), atol=1e-12)
-    assert_allclose(client.camera.position, np.array([3.0, 0.5, 0.0]), atol=1e-12)
-
-
-def test_viser_default_camera_uses_backend_specific_distance():
-    pytest.importorskip("viser")
-    from soromox.rendering.viser_renderer import ViserRenderer
-
-    robot = DummySpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-    renderer = ViserRenderer(robot, auto_start=False)
-    client = FakeViserClient()
-    renderer._server = FakeViserServer({"client": client})
-    curves = np.array([[[0.0, 0.0, 0.0], [2.0, 1.0, 0.0]]])
-
-    renderer._setup_camera(curves, camera_config=None)
-
-    max_extent = 2.0
-    center = np.array([1.0, 0.5, 0.0])
-    expected_position = center + np.array([0.8, -0.8, 0.5]) * max_extent
-    assert_allclose(client.camera.look_at, center, atol=1e-12)
-    assert_allclose(client.camera.position, expected_position, atol=1e-12)
-    assert_allclose(client.camera.fov, np.deg2rad(75.0), atol=1e-12)
-
-
-def test_viser_actuator_geometry_updates_existing_line_handles():
-    pytest.importorskip("viser")
-    from soromox.rendering.viser_renderer import SceneHandles, ViserRenderer
-
-    robot = DummyActuatedSpatialRobot(
-        jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    )
-    renderer = ViserRenderer(robot, auto_start=False)
-    renderer._server = FakeViserActuatorServer()
-    renderer._scene_handles = SceneHandles()
-
-    renderer._build_actuator_geometry(
-        jnp.zeros((1, 0)),
-        np.zeros((1, 3)),
-        1,
-    )
-
-    first_handles = tuple(renderer._scene_handles.actuator_lines)
-    assert len(first_handles) == 3
-    assert len(renderer._server.scene.line_segments) == 3
-
-    renderer._build_actuator_geometry(
-        jnp.zeros((1, 0)),
-        np.array([[1.0, 0.0, 0.0]]),
-        1,
-        actuator_inputs=jnp.array([[1.0, 2.0]]),
-    )
-
-    assert tuple(renderer._scene_handles.actuator_lines) == first_handles
-    assert len(renderer._server.scene.line_segments) == 3
-    assert all(handle.remove_count == 0 for handle in first_handles)
-    assert_allclose(first_handles[0].points[0, 0], np.array([1.0, 0.1, 0.0]))
 
 
 def test_renderer_normalizes_base_offsets_to_curve_dimension():
@@ -582,9 +370,7 @@ def test_renderer_rejects_extra_explicit_base_offsets_by_default():
 
 
 def test_renderer_computes_actuator_visual_layers_single_and_batched():
-    robot = DummyActuatedSpatialRobot(
-        jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    )
+    robot = DummyActuatedSpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
     renderer = DummyRenderer(robot, num_points=5)
 
     single = renderer.compute_actuator_visual_layers(jnp.array([]))
@@ -636,9 +422,7 @@ def test_renderer_uses_batched_actuator_visual_fast_path():
 
 
 def test_renderer_computes_trajectory_actuator_visual_layers():
-    robot = DummyActuatedSpatialRobot(
-        jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    )
+    robot = DummyActuatedSpatialRobot(jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
     renderer = DummyRenderer(robot, num_points=4)
 
     layers = renderer.compute_actuator_visual_layers_trajectory(
@@ -676,19 +460,6 @@ def test_renderer_uses_trajectory_actuator_visual_fast_path():
     )
 
 
-def test_matplotlib_actuator_overlay_changes_rendered_frame():
-    robot = DummyActuatedSpatialRobot(
-        jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    )
-    renderer = MatplotlibRenderer(robot, width=240, height=180, num_points=8)
-
-    without_actuators = renderer.render_frame(jnp.array([]), render_actuators=False)
-    with_actuators = renderer.render_frame(jnp.array([]), render_actuators=True)
-
-    assert without_actuators.shape == with_actuators.shape
-    assert np.any(without_actuators != with_actuators)
-
-
 def test_opencv_planar_actuator_overlay_draws_configured_color():
     robot = DummyActuatedPlanarRobot(jnp.array([0.0, 0.0, 0.0]))
     renderer = OpenCVPlanarRenderer(
@@ -705,34 +476,6 @@ def test_opencv_planar_actuator_overlay_draws_configured_color():
     img = renderer.render_frame(jnp.array([]), render_actuators=True)
 
     assert np.any(np.all(img == np.array([0, 0, 255], dtype=np.uint8), axis=-1))
-
-
-def test_matplotlib_2d_base_marker_is_perpendicular_to_base_tangent():
-    base = np.array([1.0, 2.0])
-    tangent = np.array([0.0, 1.0])
-
-    marker = MatplotlibRenderer._base_plate_marker_points(
-        base, tangent, marker_diameter=0.4, dim=2
-    )
-
-    assert marker.shape == (2, 2)
-    assert_allclose(marker.mean(axis=0), base)
-    assert_allclose(marker[1] - marker[0], np.array([-0.4, 0.0]))
-    assert_allclose(np.dot(marker[1] - marker[0], tangent), 0.0, atol=1e-12)
-
-
-def test_matplotlib_3d_base_marker_lies_in_plate_face_plane():
-    base = np.array([1.0, 2.0, 3.0])
-    normal = np.array([1.0, 0.0, 0.0])
-
-    marker = MatplotlibRenderer._base_plate_marker_points(
-        base, normal, marker_diameter=0.4, dim=3
-    )
-
-    assert marker.shape == (65, 3)
-    assert_allclose(marker[0], marker[-1], atol=1e-12)
-    assert_allclose((marker - base) @ normal, np.zeros(marker.shape[0]), atol=1e-12)
-    assert_allclose(np.linalg.norm(marker - base, axis=1), 0.2, atol=1e-12)
 
 
 def test_opencv_planar_base_marker_uses_base_pose_and_offset():

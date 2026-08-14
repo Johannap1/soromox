@@ -21,7 +21,9 @@ the open-loop system with constant tendon tensions until steady-state, then use
 the final configuration as the setpoint for the closed-loop regulation.
 """
 
+import argparse
 import warnings
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -29,6 +31,7 @@ import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)  # Double precision
 
+from soromox.actuation import ThreadlikeActuator, ThreadlikeRouting
 from soromox.control import PIDControl, PIDControllerState, ReferenceTrajectory
 from soromox.control.actuation_space import (
     GravityCancellationRegulator,
@@ -39,15 +42,15 @@ from soromox.control.actuation_space import (
 from soromox.coordinate_transformations.actuation_space import ActuationSpaceDynamics
 from soromox.rendering import Open3DRenderer
 from soromox.systems import (
-    LinearTendonRoutingParams,
+    PCS,
     PCSParams,
     SystemState,
-    TendonActuatedPCS,
-    TendonActuatedPCSParams,
 )
 
+FIGURES_DIR = Path(__file__).resolve().parent / "figures"
 
-def create_robot() -> tuple[TendonActuatedPCS, int]:
+
+def create_robot() -> tuple[PCS, int]:
     """
     Create a one-segment Tendon-Actuated PCS robot with 3 tendons.
 
@@ -57,7 +60,7 @@ def create_robot() -> tuple[TendonActuatedPCS, int]:
         - All attached to the end of the single segment
 
     Returns:
-        robot: The TendonActuatedPCS instance.
+        robot: The PCS instance with threadlike tendon actuation.
         num_dofs: Number of degrees of freedom.
     """
     num_segments = 1
@@ -65,15 +68,7 @@ def create_robot() -> tuple[TendonActuatedPCS, int]:
     rho = 1070 * jnp.ones((num_segments,))  # Volumetric density [kg/m^3]
 
     segment_lengths = 1e-1 * jnp.ones((num_segments,))
-    # Damping matrix
-    damping_matrix = 1e-3 * jnp.diag(
-        (
-            jnp.repeat(
-                jnp.array([[1e0, 1e0, 1e0, 1e3, 1e3, 1e3]]), num_segments, axis=0
-            )
-            * segment_lengths[:, None]
-        ).flatten()
-    )
+    material_damping_coefficient = 362.0
     body_params = PCSParams(
         base_pose=jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0]),
         length=segment_lengths,
@@ -82,7 +77,7 @@ def create_robot() -> tuple[TendonActuatedPCS, int]:
         gravity=jnp.array([0.0, 0.0, 9.81]),
         young_modulus=2e3 * jnp.ones((num_segments,)),
         shear_modulus=1e3 * jnp.ones((num_segments,)),
-        damping_matrix=damping_matrix,
+        material_damping_coefficient=material_damping_coefficient,
         reference_strain=jnp.tile(
             jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), num_segments
         ),
@@ -95,19 +90,19 @@ def create_robot() -> tuple[TendonActuatedPCS, int]:
     angles_deg = jnp.array([0.0, 120.0, 240.0])
     angles_rad = jnp.deg2rad(angles_deg)
 
-    active_tendon_routing = LinearTendonRoutingParams(
-        y_intercept=tendon_offset_radius * jnp.sin(angles_rad),
-        z_intercept=tendon_offset_radius * jnp.cos(angles_rad),
-        y_slope=jnp.zeros(3),
-        z_slope=jnp.zeros(3),
-        attachment_segment_index=jnp.array([0, 0, 0]),
+    active_tendon_routing = ThreadlikeRouting.linear(
+        intercept=tendon_offset_radius
+        * jnp.stack(
+            (jnp.zeros_like(angles_rad), jnp.sin(angles_rad), jnp.cos(angles_rad)),
+            axis=-1,
+        ),
+        start_segment_index=0,
+        end_segment_index=(0, 0, 0),
     )
 
-    robot = TendonActuatedPCS(
-        params=TendonActuatedPCSParams(
-            body=body_params,
-            active_tendon_routing=active_tendon_routing,
-        ),
+    robot = PCS(
+        params=body_params,
+        actuators=ThreadlikeActuator.tendons(active_tendon_routing),
     )
 
     num_dofs = robot.num_active_strains
@@ -116,7 +111,7 @@ def create_robot() -> tuple[TendonActuatedPCS, int]:
 
 
 def find_steady_state_configuration(
-    robot: TendonActuatedPCS,
+    robot: PCS,
     u_constant: jnp.ndarray,
     sim_duration: float = 10.0,
     solver_dt: float = 1e-4,
@@ -128,7 +123,7 @@ def find_steady_state_configuration(
     become negligible, indicating steady-state has been reached.
 
     Args:
-        robot: The TendonActuatedPCS robot.
+        robot: The PCS robot with threadlike tendon actuation.
         u_constant: Constant tendon tensions to apply.
         sim_duration: Duration of the simulation.
         solver_dt: Time step for the solver.
@@ -224,7 +219,7 @@ def create_setpoint_trajectory(
 
 
 def run_simulation(
-    robot: TendonActuatedPCS,
+    robot: PCS,
     controller,
     num_actuators: int,
     t0: float,
@@ -298,7 +293,12 @@ def compute_metrics(results: dict, q_des: jnp.ndarray, strain_indices: list) -> 
     }
 
 
-def main():
+def main(
+    *,
+    show: bool = True,
+    render: bool = True,
+    figures_dir: Path = FIGURES_DIR,
+):
     # =========================================================================
     # Setup
     # =========================================================================
@@ -316,9 +316,9 @@ def main():
     # =========================================================================
     print("\nFinding steady-state configuration under constant actuation...")
 
-    # Apply constant tendon tensions (negative = pulling)
+    # Apply positive tendon tensions.
     # Use asymmetric tensions to create an interesting configuration
-    u_constant = jnp.array([-0.05, -0.02, -0.01])
+    u_constant = jnp.array([0.05, 0.02, 0.01])
     print(f"  Applied tendon tensions: {u_constant}")
 
     q_des = find_steady_state_configuration(robot, u_constant, sim_duration=10.0)
@@ -476,8 +476,16 @@ def main():
     axes[0].set_title("Actuation-Space Setpoint Regulation: Strain Tracking Comparison")
 
     plt.tight_layout()
-    plt.savefig("actuation_space_regulation_tracking.pdf", dpi=200, bbox_inches="tight")
-    plt.show()
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(
+        figures_dir / "setpoint_regulation_comparison_tracking.pdf",
+        dpi=200,
+        bbox_inches="tight",
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     # Create figure for tracking errors
     fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
@@ -508,8 +516,15 @@ def main():
     axes[0].set_title("Actuation-Space Setpoint Regulation: Tracking Error Comparison")
 
     plt.tight_layout()
-    plt.savefig("actuation_space_regulation_errors.pdf", dpi=200, bbox_inches="tight")
-    plt.show()
+    plt.savefig(
+        figures_dir / "setpoint_regulation_comparison_errors.pdf",
+        dpi=200,
+        bbox_inches="tight",
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     # Create figure for control inputs (tendon tensions)
     fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
@@ -549,8 +564,15 @@ def main():
     )
 
     plt.tight_layout()
-    plt.savefig("actuation_space_regulation_inputs.pdf", dpi=200, bbox_inches="tight")
-    plt.show()
+    plt.savefig(
+        figures_dir / "setpoint_regulation_comparison_inputs.pdf",
+        dpi=200,
+        bbox_inches="tight",
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     # Create bar chart for RMSE comparison
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -577,15 +599,24 @@ def main():
     ax.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
-    plt.savefig("actuation_space_regulation_rmse.pdf", dpi=200, bbox_inches="tight")
-    plt.show()
+    plt.savefig(
+        figures_dir / "setpoint_regulation_comparison_rmse.pdf",
+        dpi=200,
+        bbox_inches="tight",
+    )
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
     print("\nPlots saved to:")
-    print("  - actuation_space_regulation_tracking.pdf")
-    print("  - actuation_space_regulation_errors.pdf")
-    print("  - actuation_space_regulation_inputs.pdf")
-    print("  - actuation_space_regulation_rmse.pdf")
+    print("  - figures/setpoint_regulation_comparison_tracking.pdf")
+    print("  - figures/setpoint_regulation_comparison_errors.pdf")
+    print("  - figures/setpoint_regulation_comparison_inputs.pdf")
+    print("  - figures/setpoint_regulation_comparison_rmse.pdf")
 
+    if not render:
+        return
     if Open3DRenderer is None:
         print("Open3DRenderer unavailable. Install open3d to view the animation.")
     else:
@@ -603,4 +634,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-show", action="store_true")
+    parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--figures-dir", type=Path, default=FIGURES_DIR)
+    args = parser.parse_args()
+    main(
+        show=not args.no_show,
+        render=not args.no_render,
+        figures_dir=args.figures_dir,
+    )
