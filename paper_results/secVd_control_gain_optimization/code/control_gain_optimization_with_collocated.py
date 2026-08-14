@@ -1,6 +1,6 @@
 import argparse
 import pickle
-import time
+import sys
 from pathlib import Path
 
 import jax
@@ -10,6 +10,12 @@ import optax
 import scipy.io as sio
 from jax import Array, jit, value_and_grad, vmap
 from jax import numpy as jnp
+
+CODE_DIR = Path(__file__).resolve().parent
+if str(CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(CODE_DIR))
+
+from gain_optimization_loop import run_gain_optimization  # noqa: E402
 
 from soromox.actuation import ThreadlikeActuator, ThreadlikeRouting
 from soromox.control import PIDControl, PIDControllerState, ReferenceTrajectory
@@ -50,10 +56,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--debug-nans",
+        action="store_true",
+        help=(
+            "Enable jax_debug_nans. Slower, and the ODE solve runs inside a "
+            "lax.while_loop, so it flags the rollout output rather than the "
+            "failing step. The per-iteration finiteness check is always on."
+        ),
+    )
     return parser.parse_args()
 
 
 ARGS = parse_args()
+if ARGS.debug_nans:
+    jax.config.update("jax_debug_nans", True)
 RESULT_DIR = ARGS.result_dir.resolve()
 OUTPUTS_DIR = ARGS.output_dir.resolve()
 if ARGS.num_iters < 1:
@@ -96,10 +113,11 @@ def evaluate_closed_loop_system(
     # Compute loss
     settling_idx = int(len(t_ts) / 2)
 
-    e_ts = jnp.linalg.norm(x_des_ts - q_ts, axis=1)
+    # Track the configuration-space setpoint the controller regulates
+    e_sq_ts = jnp.sum((x_des_ts - q_ts) ** 2, axis=1)
 
-    loss1 = jnp.trapezoid(e_ts[:settling_idx] ** 2, t_ts[:settling_idx])
-    loss2 = jnp.trapezoid(e_ts[settling_idx:] ** 2, t_ts[settling_idx:])
+    loss1 = jnp.trapezoid(e_sq_ts[:settling_idx], t_ts[:settling_idx])
+    loss2 = jnp.trapezoid(e_sq_ts[settling_idx:], t_ts[settling_idx:])
 
     loss = 1e3 * loss1 + 5e3 * loss2
 
@@ -304,123 +322,38 @@ optimizer = optax.multi_transform(
     },
     param_labels,
 )
-opt_state = optimizer.init(opt_vars)
 
 # Gradient function
 gradient_fn = jit(value_and_grad(evaluate_closed_loop_system, 0, has_aux=True))
 
-
-# Update function of the optimization variables
-def update(opt_vars, opt_state):
-    # Compute gradient
-    (loss, aux), grad = gradient_fn(opt_vars, controller)
-
-    # Compute the update of the optimization variables
-    updates, opt_state = optimizer.update(grad, opt_state, params=opt_vars)
-
-    # Apply the update
-    opt_vars = optax.apply_updates(opt_vars, updates)
-
-    return opt_vars, opt_state, loss, aux
-
-
 print("Optimization variables = ", list(opt_vars.keys()))
-
-# Optimization loop
-num_iters = ARGS.num_iters
-
-# Optimization-wise variables
-time_iter = []
-loss_tot = []
-opt_vars_tot = []
-
-# Simulation-wise variables
-t_ts_tot = []
-q_ts_tot = []
-qd_ts_tot = []
-u_ts_tot = []
-
 print("\nStarting optimization...")
 
-# Track time
-compile_start = time.time()
-
-# Step
-opt_vars, opt_state, loss, aux = update(opt_vars, opt_state)
-jax.block_until_ready(aux)
-
-compile_end = time.time()
-print(
-    f"\n[INFO] Compilation + first execution time = {compile_end - compile_start:.2f} s"
+# Optimization loop
+history = run_gain_optimization(
+    gradient_fn=lambda variables: gradient_fn(variables, controller),
+    optimizer=optimizer,
+    opt_vars=opt_vars,
+    num_iters=ARGS.num_iters,
+    progress_label="Collocated",
 )
 
-# Store data
-time_iter.append(compile_end - compile_start)
-loss_tot.append(loss)
-t_ts_tot.append(aux["t_ts"])
-q_ts_tot.append(aux["q_ts"])
-qd_ts_tot.append(aux["qd_ts"])
-u_ts_tot.append(aux["u_ts"])
-opt_vars_tot.append(opt_vars)
-
-i = 1
-while i < num_iters:
-    # Start of iteration
-    iter_start = time.time()
-
-    # Step
-    opt_vars, opt_state, loss, aux = update(opt_vars, opt_state)
-    jax.block_until_ready(aux)
-
-    # End of iteration
-    iter_end = time.time()
-    iter_duration = iter_end - iter_start
-
-    # Check validity
-    if jnp.isnan(aux["q_ts"]).any():
-        print(f"\n[WARNING] NaN detected at iteration {i}. Stopping.")
-        break
-
-    # Store data
-    time_iter.append(iter_duration)
-    loss_tot.append(loss)
-    t_ts_tot.append(aux["t_ts"])
-    q_ts_tot.append(aux["q_ts"])
-    qd_ts_tot.append(aux["qd_ts"])
-    u_ts_tot.append(aux["u_ts"])
-    opt_vars_tot.append(opt_vars)
-
-    # Log
-    t_left = (num_iters - i - 1) * sum(time_iter[1:]) / len(time_iter[1:])  # [s]
-    eta = time.localtime(time.time() + t_left)
-    print(
-        f"Completion: {100 * (i + 1) / num_iters:3.1f} %  |  iteration {i + 1:>4d} of "
-        + f"{num_iters:<4d}  |  iter time = {iter_duration:>.2f} s  |  ETA = {eta.tm_mday:02d}"
-        + f"/{eta.tm_mon:02d}/{eta.tm_year} {eta.tm_hour:02d}:{eta.tm_min:02d}",
-        end="\r",
-    )
-
-    # Update counter
-    i += 1
-
-# Log
-print(
-    f"Completion: {100 * i / num_iters:3.1f} %  |  iteration {i:>4d} of {num_iters:<4d}"
-    f"  |  iter time = {float(time_iter[-1]):>.4f} s"
-)
+num_iters = len(history)
 
 # Cast to Array type
-time_iter = jnp.array(time_iter)  # (num_iters,)
-loss_tot = jnp.array(loss_tot)  # (num_iters,)
-t_ts_tot = jnp.array(t_ts_tot)  # (num_iters, num_ts)
-q_ts_tot = jnp.array(q_ts_tot)  # (num_iters, num_ts, num_dofs)
-qd_ts_tot = jnp.array(qd_ts_tot)  # (num_iters, num_ts, num_dofs)
-u_ts_tot = jnp.array(u_ts_tot)  # (num_iters, num_ts, num_actuators)
+time_iter = jnp.array(history.time_iter)  # (num_iters,)
+loss_tot = jnp.array(history.loss)  # (num_iters,)
+t_ts_tot = history.stacked_aux("t_ts")  # (num_iters, num_ts)
+q_ts_tot = history.stacked_aux("q_ts")  # (num_iters, num_ts, num_dofs)
+qd_ts_tot = history.stacked_aux("qd_ts")  # (num_iters, num_ts, num_dofs)
+u_ts_tot = history.stacked_aux("u_ts")  # (num_iters, num_ts, num_actuators)
+opt_vars_tot = history.opt_vars
 
 # Chosen iteration to display
-best_idx_opt = int(jnp.argmin(loss_tot))
+best_idx_opt = history.best_index()
 print(
-    "Optimization Finished. Best optimization variables:\n", opt_vars_tot[best_idx_opt]
+    "Optimization Finished. Best optimization variables:\n",
+    opt_vars_tot[best_idx_opt],
 )
 
 # Extract results for comparison
