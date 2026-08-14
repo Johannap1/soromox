@@ -15,7 +15,7 @@ from soromox.utils.basic import (
     compute_strain_basis,
     concatenate_params_syms,
 )
-from soromox.utils.numerics import safe_divide
+from soromox.utils.lie_algebra import se2
 
 __all__ = ["PlanarHSA"]
 
@@ -1382,44 +1382,10 @@ class PlanarHSA(SoftRobot):
         # compute the transformation from the proximal to the distal end of the virtual backbone
         T_pe_to_de = jnp.linalg.inv(T_b_to_pe) @ T_b_to_ee @ jnp.linalg.inv(T_de_to_ee)
 
-        # compute the SE(2) pose from the transformation matrix
-        vchi_pe_to_de = jnp.array(
-            [
-                jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
-                T_pe_to_de[0, 2],
-                T_pe_to_de[1, 2],
-            ]
-        )
-
-        # extract the x and y position and the orientation
-        th, px, py = vchi_pe_to_de[0], vchi_pe_to_de[1], vchi_pe_to_de[2]
-
-        # The closed form divides by ``cos(th) - 1``, which vanishes at the
-        # straight configuration; use the analytic limit ``[0, px, py] / Lmax``.
-        straight = jnp.abs(th) < self.global_eps
-
-        def _straight_branch(_: None) -> Array:
-            return jnp.stack(
-                [
-                    jnp.zeros((), dtype=th.dtype),
-                    safe_divide(px, self.Lmax, self.global_eps),
-                    safe_divide(py, self.Lmax, self.global_eps),
-                ]
-            )
-
-        def _curved_branch(_: None) -> Array:
-            divisor = jnp.cos(th) - 1
-            sin_ratio = safe_divide(jnp.sin(th), divisor, self.global_eps)
-            return safe_divide(th, 2 * self.Lmax, self.global_eps) * jnp.stack(
-                [
-                    2 * jnp.ones((), dtype=th.dtype),
-                    py - px * sin_ratio,
-                    -px - py * sin_ratio,
-                ]
-            )
-
-        # compute the inverse kinematics for the virtual backbone
-        vxi = lax.cond(straight, _straight_branch, _curved_branch, operand=None)
+        # Compute the constant strain via the stable SE(2) logarithm. Its
+        # half-angle inverse Jacobian avoids cancellation in ``1 - cos(theta)``
+        # for both exactly straight and tiny-but-nonzero configurations.
+        vxi = se2.log(T_pe_to_de, eps=self.global_eps) / self.Lmax
 
         # reference strains of the virtual backbone
         vxi_ref = self.ref_strains()

@@ -5,14 +5,15 @@ so it lives here and each generator supplies only its own loss and optimizer.
 
 The loop records the parameters each loss was measured at, not the ones the
 subsequent update produced, so ``argmin`` over the losses indexes the matching
-gains. The parameters produced by the final update are not recorded, since no
-loss was evaluated at them.
+gains. No unused update is computed after the final requested evaluation.
 
 A candidate is stored only when its loss, trajectory, gradient and parameters
 are all finite. The first non-finite candidate stops the loop without being
 stored, which keeps the saved history and the best-candidate selection clean.
 Checking the gradient matters as much as the trajectory: a forward rollout can
-stay healthy while the reverse pass produces ``NaN``.
+stay healthy while the reverse pass produces ``NaN``. If only an optimizer
+update is non-finite, its finite input iterate remains available as the best
+fallback and the loop stops before adopting the invalid next state.
 """
 
 from __future__ import annotations
@@ -143,22 +144,17 @@ def run_gain_optimization(
     for iteration in range(num_iters):
         iter_start = time.time()
 
-        # Keep the parameters the loss belongs to before the update moves them
+        # Keep the parameters the loss belongs to before the update moves them.
         opt_vars_evaluated = opt_vars
         (loss, aux), grad = gradient_fn(opt_vars)
-        updates, opt_state = optimizer.update(grad, opt_state, params=opt_vars)
-        opt_vars = optax.apply_updates(opt_vars, updates)
-        jax.block_until_ready((loss, aux, grad, opt_vars))
+        jax.block_until_ready((loss, aux, grad, opt_vars_evaluated))
 
-        iter_duration = time.time() - iter_start
-
-        # Reject the candidate if anything about it is non-finite
+        # Reject an invalid evaluation without poisoning the history.
         candidate = {
             "loss": loss,
             "aux": aux,
             "gradient": grad,
             "opt_vars": opt_vars_evaluated,
-            "opt_vars_next": opt_vars,
         }
         report = nonfinite_leaves(candidate)
         if report:
@@ -169,10 +165,44 @@ def run_gain_optimization(
             print(f"\n[WARNING] {history.stop_reason}. Stopping without recording.")
             break
 
+        # Do not compute an update after the final requested evaluation. For
+        # earlier iterations, validate the entire next optimizer state before
+        # adopting it. A failed update must not discard this finite evaluation.
+        next_report = []
+        if iteration < num_iters - 1:
+            updates, opt_state_next = optimizer.update(
+                grad, opt_state, params=opt_vars_evaluated
+            )
+            opt_vars_next = optax.apply_updates(opt_vars_evaluated, updates)
+            jax.block_until_ready((updates, opt_state_next, opt_vars_next))
+            next_report = nonfinite_leaves(
+                {
+                    "updates": updates,
+                    "opt_state_next": opt_state_next,
+                    "opt_vars_next": opt_vars_next,
+                }
+            )
+            if not next_report:
+                opt_state = opt_state_next
+                opt_vars = opt_vars_next
+
+        iter_duration = time.time() - iter_start
+
         history.loss.append(loss)
         history.opt_vars.append(opt_vars_evaluated)
         history.aux.append(aux)
         history.time_iter.append(iter_duration)
+
+        if next_report:
+            history.stopped_early = True
+            history.stop_reason = format_nonfinite_report(
+                f"iteration {iteration} next optimizer state", next_report
+            )
+            print(
+                f"\n[WARNING] {history.stop_reason}. "
+                "Stopping after recording the finite evaluation."
+            )
+            break
 
         if iteration == 0:
             print(

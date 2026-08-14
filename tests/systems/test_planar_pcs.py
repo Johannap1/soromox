@@ -462,6 +462,20 @@ def test_inverse_kinematics_straight_configuration(num_segments):
     )
 
 
+@pytest.mark.parametrize("theta", [1e-10, 1e-8])
+def test_inverse_kinematics_tiny_nonzero_rotation(theta):
+    """Tiny bends must retain the translational inverse-Jacobian terms."""
+    model, _ = make_planar_pcs(num_segments=1, th0=0.0)
+    expected_strain = jnp.array([theta / model.L[0], 1.1, 0.2], dtype=jnp.float64)
+    relative_transform = jax.scipy.linalg.expm(se2.hat(expected_strain * model.L[0]))
+    chi_tips = poses.planar_pose_from_transform(relative_transform, eps=EPS)[None, :]
+
+    recovered_q = model.inverse_kinematics(chi_tips)
+    recovered_strain = model.strain(recovered_q)
+
+    assert_allclose(recovered_strain, expected_strain, rtol=1e-11, atol=1e-12)
+
+
 def test_inverse_kinematics_relative_pose_computation():
     """
     Test the relative pose computation method used in inverse kinematics.

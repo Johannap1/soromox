@@ -23,8 +23,10 @@ survives as ``0 * NaN``::
     x_safe = jnp.where(x > 0, x, 1.0)        # safe: no branch is ever singular
     jnp.where(x > 0, jnp.sqrt(x_safe), 0.0)
 
-``lax.cond`` does not have this problem: it differentiates only the taken
-branch, including under ``vmap``.
+For a scalar predicate, ``lax.cond`` evaluates and differentiates only the
+taken branch. Under ``vmap``, however, batched predicates may lower to a
+select operation and both branch computations can execute. Branch inputs must
+therefore still be sanitized when a condition is vectorized.
 
 The fallbacks hide *where* a model reaches a singular configuration. To find
 that out, wrap the call in ``soromox.autodiff.strict_singularities_mode()``: the

@@ -193,6 +193,50 @@ def test_accessors_report_the_stop_reason_when_nothing_was_recorded():
             access()
 
 
+def test_finite_iterate_is_recorded_before_a_non_finite_update_stops_the_loop():
+    """A failed update must not discard the finite baseline it was based on."""
+
+    def gradient_fn(opt_vars):
+        x = opt_vars["x"]
+        loss = jnp.sum(x**2)
+        aux = {"q_ts": jnp.full((4,), x[0]), "t_ts": jnp.arange(4.0)}
+        return (loss, aux), {"x": jnp.full_like(x, 1e308)}
+
+    initial_vars = {"x": jnp.array([1.0], dtype=jnp.float64)}
+    history = run_gain_optimization(
+        gradient_fn=gradient_fn,
+        optimizer=optax.sgd(learning_rate=2.0),
+        opt_vars=initial_vars,
+        num_iters=3,
+    )
+
+    assert len(history) == 1
+    assert history.stopped_early
+    assert history.stop_reason is not None
+    assert "next" in history.stop_reason
+    assert_allclose(history.opt_vars[0]["x"], initial_vars["x"], atol=0.0)
+    assert_allclose(history.loss[0], 1.0, atol=0.0)
+    assert history.best_index() == 0
+
+
+def test_final_evaluation_does_not_compute_an_unused_non_finite_update():
+    def gradient_fn(opt_vars):
+        x = opt_vars["x"]
+        aux = {"q_ts": jnp.full((4,), x[0]), "t_ts": jnp.arange(4.0)}
+        return (jnp.sum(x**2), aux), {"x": jnp.full_like(x, 1e308)}
+
+    history = run_gain_optimization(
+        gradient_fn=gradient_fn,
+        optimizer=optax.sgd(learning_rate=2.0),
+        opt_vars={"x": jnp.array([1.0], dtype=jnp.float64)},
+        num_iters=1,
+    )
+
+    assert len(history) == 1
+    assert not history.stopped_early
+    assert history.stop_reason is None
+
+
 def test_num_iters_must_be_positive():
     with pytest.raises(ValueError, match="at least 1"):
         run_gain_optimization(

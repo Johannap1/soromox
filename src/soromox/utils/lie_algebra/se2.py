@@ -11,6 +11,8 @@ __all__ = [
 import jax.numpy as jnp
 from jax import Array, lax
 
+from soromox.utils.numerics import safe_divide
+
 from . import so2
 
 
@@ -104,8 +106,8 @@ def log(g: Array, eps: float | Array) -> Array:
     Args:
         g: Homogeneous ``SE(2)`` transform with shape ``(3, 3)``. The rotation
             is read from ``g[:2, :2]`` and the translation from ``g[:2, 2]``.
-        eps: Small positive scalar threshold. Angles with magnitude below this
-            threshold use the small-angle inverse-Jacobian series.
+        eps: Small positive scalar threshold used to regularize the removable
+            singularity in the inverse left Jacobian at zero rotation.
 
     Returns:
         Array with shape ``(3,)`` containing twist coordinates
@@ -116,18 +118,14 @@ def log(g: Array, eps: float | Array) -> Array:
 
     theta = so2.log(R, eps=eps)
     J = so2.skew(jnp.ones((), dtype=R.dtype))
-    omega = so2.skew(theta)
-
-    def _small(_: None) -> Array:
-        omega_sq = omega @ omega
-        return jnp.eye(2, dtype=R.dtype) - 0.5 * omega + (1.0 / 12.0) * omega_sq
-
-    def _general(_: None) -> Array:
-        a = jnp.sin(theta) / theta
-        b = (1.0 - jnp.cos(theta)) / theta
-        return (a * jnp.eye(2, dtype=R.dtype) - b * J) / (a**2 + b**2)
-
-    V_inv = lax.cond(jnp.abs(theta) <= eps, _small, _general, operand=None)
+    half_theta = 0.5 * theta
+    half_theta_cotangent = safe_divide(
+        half_theta,
+        jnp.tan(half_theta),
+        eps,
+        fallback=jnp.ones((), dtype=R.dtype),
+    )
+    V_inv = half_theta_cotangent * jnp.eye(2, dtype=R.dtype) - half_theta * J
     v = V_inv @ p
 
     return jnp.concatenate([jnp.array([theta], dtype=R.dtype), v.reshape(-1)])

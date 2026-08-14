@@ -60,6 +60,19 @@ def test_log_se2_inverts_exp_se2():
     assert_allclose(recovered, vec, rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.parametrize("theta", [1e-10, 1e-8])
+def test_log_se2_recovers_translation_at_tiny_nonzero_rotation(theta):
+    """Avoid cancellation in ``1 - cos(theta)`` just above the zero branch."""
+    expected = jnp.array([theta, 0.7, -0.4], dtype=jnp.float64)
+    transform = expm(se2.hat(expected))
+
+    recovered = se2.log(transform, eps=EPS)
+    jacobian = jax.jacrev(lambda g: se2.log(g, eps=EPS))(transform)
+
+    assert_allclose(recovered, expected, rtol=1e-12, atol=1e-13)
+    assert jnp.isfinite(jacobian).all()
+
+
 @pytest.mark.parametrize(
     "vec",
     [

@@ -845,33 +845,9 @@ class PlanarPCS(SoftRobot):
             Returns:
                 xi_i (Array): strain parameters of shape (3,) : [kappa_z, sigma_x, sigma_y]
             """
-            th, px, py = chi_rel_i
-
-            # The closed form divides by ``cos(th) - 1``, which vanishes at
-            # the straight configuration; use the analytic limit there.
-            straight = jnp.abs(th) < self.global_eps
-
-            def _straight_branch(_: None) -> Array:
-                return jnp.stack(
-                    [
-                        jnp.zeros((), dtype=th.dtype),
-                        safe_divide(px, s_i, self.global_eps),
-                        safe_divide(py, s_i, self.global_eps),
-                    ]
-                )
-
-            def _curved_branch(_: None) -> Array:
-                divisor = jnp.cos(th) - 1
-                sin_ratio = safe_divide(jnp.sin(th), divisor, self.global_eps)
-                return safe_divide(th, 2 * s_i, self.global_eps) * jnp.stack(
-                    [
-                        2 * jnp.ones((), dtype=th.dtype),
-                        py - px * sin_ratio,
-                        -px - py * sin_ratio,
-                    ]
-                )
-
-            return lax.cond(straight, _straight_branch, _curved_branch, operand=None)
+            transform = poses.planar_pose_to_transform(chi_rel_i)
+            integrated_strain = se2.log(transform, eps=self.global_eps)
+            return safe_divide(integrated_strain, s_i, self.global_eps)
 
         # define the local arc-length positions of each segment tip
         s_local = self.L
