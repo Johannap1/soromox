@@ -12,14 +12,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reverse-mode-safe numerical primitives, strict singularity diagnostics, and
   pytree finiteness reporting for locating and handling degenerate model
   configurations.
+- Shared, dtype-aware scalar coefficients for forward and inverse Lie-group
+  Jacobians, together with a reproducible Lie-algebra benchmark covering
+  primal, Jacobian, Hessian, and analytic constant-strain derivative paths.
 
 ### Changed
 
 - Consolidated the Section Vd control-gain optimization scripts around a shared,
   testable optimization loop and aligned the synergistic objective with its
   operational-space pose controller.
+- Reworked ``SO(3)``, ``SE(2)``, and ``SE(3)`` exponential/logarithmic maps,
+  constant-strain adjoint and tangent operators, and PlanarPCS pose integration
+  around stable closed forms and high-order near-zero series. Constant-strain
+  tangent derivatives remain explicit analytic production paths; runtime
+  autodiff is used only as a test oracle.
 - Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
   PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
+- Compared with ``main`` on CPU/JAX 0.11.0, the 40-case Lie benchmark reduced
+  geometric-mean steady-state time by 18.9% with effectively unchanged aggregate
+  compile time; exponential-map Jacobian/Hessian cases improved by 54.1%, while
+  the more complete constant-strain Hessian series increased that four-case
+  subgroup by 45.6%. Across 52 downstream system-method cases, steady-state time
+  was effectively neutral (-1.3%) and compile time increased 9.5%; eight short
+  compiled rollouts increased geometric-mean execution and compile time by
+  9.0% and 4.7%, respectively.
 
 ### Fixed
 
@@ -30,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected Section Vd loss/parameter history pairing, rejected non-finite
   optimization candidates, and selected the best collocated and synergistic
   plotting batches independently.
+- Kept Lie exponential/logarithmic values, first derivatives, and Hessians
+  finite and accurate at zero and small rotations, including batched SE(2) and
+  arbitrary-axis SE(3) inputs, without adding autodiff to production paths.
+- Made simulation benchmark timing treat Python solver/save parameters as static
+  JAX arguments so the existing rollout benchmark can compile and run.
 
 ## [0.2.2] - 2026-08-11
 
