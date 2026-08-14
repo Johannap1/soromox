@@ -2011,6 +2011,95 @@ def test_strain_basis_consistency_dynamics_and_forces_planar(num_segments: int):
     assert_allclose(qdd_full_out, qdd_full_expected, rtol=RTOL, atol=ATOL)
 
 
+def test_reverse_mode_inverse_kinematics_at_zero_configuration() -> None:
+    """Inverse kinematics must stay differentiable at the straight configuration.
+
+    The closed-form branch divides by ``cos(theta) - 1``, which is exactly zero
+    when the segment is straight. The pre-existing straight-configuration test
+    only checks values, so it cannot catch a gradient that has gone NaN.
+    """
+    for num_segments in (1, 2, 3):
+        model, _ = make_planar_pcs(
+            num_segments=num_segments, total_length=PLANAR_TOTAL_LENGTH
+        )
+        dof = int(model.num_active_strains.item())
+        q = jnp.zeros((dof,), dtype=jnp.float64)
+        chi_tips = model.forward_kinematics_tips(q)
+
+        dq_dchi = jacrev(model.inverse_kinematics)(chi_tips)
+
+        assert not jnp.isnan(dq_dchi).any(), (
+            f"dq/dchi_tips contains NaN at the straight configuration "
+            f"for {num_segments} segments!"
+        )
+        assert jnp.isfinite(dq_dchi).all(), (
+            f"dq/dchi_tips is not finite at the straight configuration "
+            f"for {num_segments} segments!"
+        )
+
+
+def test_reverse_mode_of_vmap_at_zero_configuration() -> None:
+    """Differentiate a batch that contains the exactly-straight configuration.
+
+    ``vmap`` rewrites the small-angle ``lax.cond`` guards into ``select_n``, a
+    lowering that bare ``jacrev`` never exercises, so this covers a path the
+    other zero-configuration tests cannot reach.
+    """
+    model, _ = make_planar_pcs(num_segments=1, total_length=PLANAR_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    s_ps = jnp.array([0.5, 1.0]) * PLANAR_TOTAL_LENGTH
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.full((dof,), 0.3)])
+    qd_batch = jnp.zeros_like(q_batch)
+
+    for name, fn in (
+        (
+            "forward_kinematics_batched",
+            lambda q: jnp.sum(model.forward_kinematics_batched(q, s_ps)),
+        ),
+        ("inertia_matrix", lambda q: jnp.sum(model.inertia_matrix(q))),
+        ("gravitational_force", lambda q: jnp.sum(model.gravitational_force(q))),
+        ("elastic_force", lambda q: jnp.sum(model.elastic_force(q))),
+        ("actuation_matrix", lambda q: jnp.sum(model.actuation_matrix(q))),
+    ):
+        grad = jax.grad(lambda batch, fn=fn: jnp.sum(jax.vmap(fn)(batch)))(q_batch)
+        assert not jnp.isnan(grad).any(), f"d(vmap({name}))/dq contains NaN!"
+
+    coriolis = jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(lambda q, qd: jnp.sum(model.coriolis_matrix(q, qd)))(
+                batch, qd_batch
+            )
+        )
+    )(q_batch)
+    assert not jnp.isnan(coriolis).any(), "d(vmap(coriolis_matrix))/dq contains NaN!"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Pre-existing: the SoftRobot forward_kinematics custom-JVP wrapper "
+        "produces NaN under grad-of-vmap at the straight configuration. The "
+        "underlying _forward_kinematics and forward_kinematics_batched are both "
+        "clean, and disabling custom JVPs via soromox.autodiff.custom_jvp_mode "
+        "also makes it clean, so the defect is in the wrapper rather than in the "
+        "kinematics. Tracked separately; remove this marker once fixed."
+    ),
+)
+def test_reverse_mode_of_vmap_over_forward_kinematics_at_zero_configuration() -> None:
+    model, _ = make_planar_pcs(num_segments=1, total_length=PLANAR_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    s = model.L_cum[-1]
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.full((dof,), 0.3)])
+
+    grad = jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(lambda q: jnp.sum(model.forward_kinematics(q, s)))(batch)
+        )
+    )(q_batch)
+
+    assert not jnp.isnan(grad).any(), "d(vmap(forward_kinematics))/dq contains NaN!"
+
+
 if __name__ == "__main__":
     # run pytest with activated stdout
     pytest.main([__file__])
