@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidated the Section Vd control-gain optimization scripts around a shared,
   testable optimization loop and aligned the synergistic objective with its
   operational-space pose controller.
+- Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
+  PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
 
 ### Fixed
 
