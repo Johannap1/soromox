@@ -9,9 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reverse-mode-safe numerical primitives, strict singularity diagnostics, and
+  pytree finiteness reporting for locating and handling degenerate model
+  configurations.
+
 ### Changed
 
+- Consolidated the Section Vd control-gain optimization scripts around a shared,
+  testable optimization loop and aligned the synergistic objective with its
+  operational-space pose controller.
+
 ### Fixed
+
+- Kept values and reverse-mode gradients finite at degenerate normalization,
+  division, square-root, inverse-kinematics, and thread-routing sites across
+  PCS, GVS, Planar HSA, articulated, McKibben, rotation, and reference-trajectory
+  code paths.
+- Corrected Section Vd loss/parameter history pairing, rejected non-finite
+  optimization candidates, and selected the best collocated and synergistic
+  plotting batches independently.
 
 ## [0.2.2] - 2026-08-11
 
