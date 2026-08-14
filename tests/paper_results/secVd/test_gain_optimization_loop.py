@@ -168,7 +168,14 @@ def test_non_finite_gradient_is_detected_even_when_the_forward_pass_is_clean():
     assert "gradient" in history.stop_reason
 
 
-def test_best_index_raises_when_nothing_was_recorded():
+def test_accessors_report_the_stop_reason_when_nothing_was_recorded():
+    """An empty history must explain itself rather than fail obscurely.
+
+    ``stacked_aux`` is reached before ``best_index`` in both generators, so an
+    unguarded ``jnp.stack`` there would bury the diagnostic the loop just
+    printed under a bare "Need at least one array to stack".
+    """
+
     def gradient_fn(opt_vars):
         aux = {"q_ts": jnp.full((4,), jnp.nan), "t_ts": jnp.arange(4.0)}
         return (jnp.array(jnp.nan), aux), {"x": jnp.zeros(1)}
@@ -181,8 +188,9 @@ def test_best_index_raises_when_nothing_was_recorded():
     )
 
     assert len(history) == 0
-    with pytest.raises(RuntimeError, match="No finite optimization iterate"):
-        history.best_index()
+    for access in (history.best_index, lambda: history.stacked_aux("t_ts")):
+        with pytest.raises(RuntimeError, match="No finite optimization iterate"):
+            access()
 
 
 def test_num_iters_must_be_positive():

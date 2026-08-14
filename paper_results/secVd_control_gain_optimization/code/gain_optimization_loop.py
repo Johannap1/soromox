@@ -62,6 +62,21 @@ class OptimizationHistory:
         """Return the number of recorded iterations."""
         return len(self.loss)
 
+    def _require_recorded(self, action: str) -> None:
+        """Raise if no iterate was recorded, reporting why the loop stopped.
+
+        Args:
+            action: What the caller was trying to do, used in the message.
+
+        Raises:
+            RuntimeError: If no finite iterate was recorded.
+        """
+        if not self.loss:
+            raise RuntimeError(
+                f"No finite optimization iterate was recorded; nothing to {action}. "
+                f"Stop reason: {self.stop_reason}"
+            )
+
     def best_index(self) -> int:
         """Return the index of the lowest recorded loss.
 
@@ -71,11 +86,7 @@ class OptimizationHistory:
         Raises:
             RuntimeError: If no finite iterate was recorded.
         """
-        if not self.loss:
-            raise RuntimeError(
-                "No finite optimization iterate was recorded; nothing to select. "
-                f"Stop reason: {self.stop_reason}"
-            )
+        self._require_recorded("select")
         return int(jnp.argmin(jnp.asarray(self.loss)))
 
     def stacked_aux(self, key: str) -> Array:
@@ -86,7 +97,11 @@ class OptimizationHistory:
 
         Returns:
             Array with a leading iteration axis.
+
+        Raises:
+            RuntimeError: If no finite iterate was recorded.
         """
+        self._require_recorded("stack")
         return jnp.stack([entry[key] for entry in self.aux], axis=0)
 
 

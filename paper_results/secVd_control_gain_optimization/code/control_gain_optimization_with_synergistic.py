@@ -380,6 +380,11 @@ history = run_gain_optimization(
 
 num_iters = len(history)
 
+if num_iters == 0:
+    print(f"\n[ERROR] {history.stop_reason}")
+    print("No finite iterate was recorded, so there is nothing to save or plot.")
+    sys.exit(1)
+
 # Cast to Array type
 time_iter = jnp.array(history.time_iter)  # (num_iters,)
 loss_tot = jnp.array(history.loss)  # (num_iters,)
