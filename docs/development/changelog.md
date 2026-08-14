@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Set the Section Vd collocated and synergistic optimization defaults to the
+  100 iterations used by the paper-result histories, and document that setting
+  in the reproduction commands.
 - Kept values and reverse-mode gradients finite at degenerate normalization,
   division, square-root, inverse-kinematics, and thread-routing sites across
   PCS, GVS, Planar HSA, articulated, McKibben, rotation, and reference-trajectory

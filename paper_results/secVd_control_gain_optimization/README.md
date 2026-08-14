@@ -8,9 +8,9 @@ Run the two optimizations without GUI rendering:
 
 ```bash
 uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_collocated.py \
-  --result-dir /tmp/soromox-secVd/collocated --no-show --no-render
+  --result-dir /tmp/soromox-secVd/collocated --num-iters 100 --no-show --no-render
 uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_synergistic.py \
-  --result-dir /tmp/soromox-secVd/synergistic --no-show --no-render
+  --result-dir /tmp/soromox-secVd/synergistic --num-iters 100 --no-show --no-render
 ```
 
 To replace the canonical case-local data, omit `--result-dir` and pass

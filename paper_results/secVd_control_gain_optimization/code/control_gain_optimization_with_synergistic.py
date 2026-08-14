@@ -55,7 +55,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUTS_DIR / "synergistic_diagnostics",
         help="Directory for optional diagnostic figures.",
     )
-    parser.add_argument("--num-iters", type=int, default=2)
+    parser.add_argument(
+        "--num-iters",
+        type=int,
+        default=100,
+        help="Number of optimization iterations (paper-result default: 100).",
+    )
     parser.add_argument("--save-figures", action="store_true")
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--no-render", action="store_true")
