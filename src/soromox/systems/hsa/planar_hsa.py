@@ -11,6 +11,7 @@ from jax import numpy as jnp
 from soromox.systems.hsa.params import PlanarHSAParams
 from soromox.systems.hsa.structures import PlanarHSAStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils._numerics import safe_divide
 from soromox.utils.basic import (
     compute_strain_basis,
     concatenate_params_syms,
@@ -1393,25 +1394,32 @@ class PlanarHSA(SoftRobot):
         # extract the x and y position and the orientation
         th, px, py = vchi_pe_to_de[0], vchi_pe_to_de[1], vchi_pe_to_de[2]
 
-        # add small eps for numerical stability
-        th_sign = jnp.sign(th)
-        # set zero sign to 1 (i.e. positive)
-        th_sign = jnp.where(th_sign == 0, 1, th_sign)
-        # add eps to the bending strain (i.e. the first column)
-        th_epsed = th + th_sign * self.global_eps
+        # The closed form divides by ``cos(th) - 1``, which vanishes at the
+        # straight configuration; use the analytic limit ``[0, px, py] / Lmax``.
+        straight = jnp.abs(th) < self.global_eps
 
-        # compute the inverse kinematics for the virtual backbone
-        vxi = (
-            th_epsed
-            / (2 * self.Lmax)
-            * jnp.array(
+        def _straight_branch(_: None) -> Array:
+            return jnp.stack(
                 [
-                    2,
-                    py - (px * jnp.sin(th_epsed)) / (jnp.cos(th_epsed) - 1),
-                    -px - (py * jnp.sin(th_epsed)) / (jnp.cos(th_epsed) - 1),
+                    jnp.zeros((), dtype=th.dtype),
+                    safe_divide(px, self.Lmax, self.global_eps),
+                    safe_divide(py, self.Lmax, self.global_eps),
                 ]
             )
-        )
+
+        def _curved_branch(_: None) -> Array:
+            divisor = jnp.cos(th) - 1
+            sin_ratio = safe_divide(jnp.sin(th), divisor, self.global_eps)
+            return safe_divide(th, 2 * self.Lmax, self.global_eps) * jnp.stack(
+                [
+                    2 * jnp.ones((), dtype=th.dtype),
+                    py - px * sin_ratio,
+                    -px - py * sin_ratio,
+                ]
+            )
+
+        # compute the inverse kinematics for the virtual backbone
+        vxi = lax.cond(straight, _straight_branch, _curved_branch, operand=None)
 
         # reference strains of the virtual backbone
         vxi_ref = self.ref_strains()

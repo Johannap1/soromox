@@ -15,6 +15,7 @@ from soromox.actuation.threadlike import (
 from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils._numerics import safe_divide, safe_norm, safe_normalize
 from soromox.utils.array_math import blk_diag
 from soromox.utils.basic import (
     compute_strain_basis,
@@ -778,12 +779,7 @@ class PCS(SoftRobot):
                 xi (Array): strain twist of shape (6,).
             """
             xi_mag = se3.log(g_rel_i, eps=self.global_eps)
-            xi = jnp.where(
-                jnp.abs(length_i) < self.global_eps,
-                jnp.zeros_like(xi_mag),
-                xi_mag / length_i,
-            )
-            return xi
+            return safe_divide(xi_mag, length_i, self.global_eps)
 
         # Convert every relative transform to segment twist parameters
         xi_segments = vmap(_segment_inverse)(g_rel, self.L)
@@ -2414,7 +2410,7 @@ class PCS(SoftRobot):
         offset = jnp.append(routing.offset(path_params, s), 1.0)
         offset_derivative = jnp.append(routing.derivative(path_params, s), 1.0)
         tangent_unnormalized = (offset_derivative + se3.hat(strain) @ offset)[:-1]
-        tangent = tangent_unnormalized / jnp.linalg.norm(tangent_unnormalized)
+        tangent = safe_normalize(tangent_unnormalized, eps=self.global_eps)
         basis = jnp.hstack([so3.skew(offset[:-1]) @ tangent, tangent])
         return active * basis
 
@@ -2490,7 +2486,7 @@ class PCS(SoftRobot):
                     tangent = (derivative + se3.hat(strains[segment_index]) @ offset)[
                         :-1
                     ]
-                    return active * jnp.linalg.norm(tangent)
+                    return active * safe_norm(tangent)
 
                 density = vmap(path_density)(
                     params,

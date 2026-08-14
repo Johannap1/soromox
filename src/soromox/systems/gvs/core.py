@@ -49,6 +49,7 @@ from soromox.systems.gvs.structures import (
     GVSStructure,
 )
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils._numerics import safe_divide, safe_norm, safe_normalize
 from soromox.utils.geometry import poses
 from soromox.utils.integration import gauss_quadrature
 from soromox.utils.lie_algebra import constant_strain, se3, so3
@@ -308,7 +309,7 @@ class GVS(SoftRobot):
         """Evaluate the configured circular, rectangular, or elliptical section."""
         segment_idx, s_local = self.classify_segment(s)
         length_i = self.segment_lengths[segment_idx]
-        x = jnp.where(length_i > self.global_eps, s_local / length_i, 0.0)
+        x = safe_divide(s_local, length_i, self.global_eps)
         cross_section_geometry_idx = self.cross_section_geometry_index[segment_idx]
         cross_section_geometry_int = int(cross_section_geometry_idx)
         if cross_section_geometry_int == CrossSectionGeometry.CIRCULAR:
@@ -4674,7 +4675,7 @@ class GVS(SoftRobot):
         offset = jnp.append(routing.offset(path_params, s), 1.0)
         derivative = jnp.append(routing.derivative(path_params, s), 1.0)
         tangent_unnormalized = (derivative + se3.hat(strain) @ offset)[:-1]
-        tangent = tangent_unnormalized / jnp.linalg.norm(tangent_unnormalized)
+        tangent = safe_normalize(tangent_unnormalized, eps=self.global_eps)
         local = jnp.hstack([so3.skew(offset[:-1]) @ tangent, tangent])
         return active * local
 
@@ -4760,7 +4761,7 @@ class GVS(SoftRobot):
                     offset = jnp.append(routing.offset(path_params, s), 1.0)
                     derivative = jnp.append(routing.derivative(path_params, s), 1.0)
                     tangent = (derivative + se3.hat(strain) @ offset)[:-1]
-                    return active * jnp.linalg.norm(tangent)
+                    return active * safe_norm(tangent)
 
                 density = vmap(path_density)(
                     params,

@@ -10,7 +10,7 @@ __all__ = ["skew", "vee", "exp", "log"]
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils._numerics import eps_for_dtype
+from soromox.utils._numerics import eps_for_dtype, safe_norm, safe_sqrt
 
 
 def _rotation_magnitude(omega: Array, eps: float | Array) -> Array:
@@ -73,9 +73,9 @@ def _normalize_vector(vec: Array, eps: float | Array) -> Array:
         Vector with shape ``(3,)``. Nonzero vectors are unit length; near-zero
         vectors remain finite.
     """
-    norm = jnp.linalg.norm(vec)
-    safe_norm = jnp.where(norm > eps, norm, jnp.ones((), dtype=vec.dtype))
-    return jnp.where(norm > eps, vec / safe_norm, vec)
+    norm = safe_norm(vec)
+    denominator = jnp.where(norm > eps, norm, jnp.ones((), dtype=vec.dtype))
+    return jnp.where(norm > eps, vec / denominator, vec)
 
 
 def _axis_near_pi(R: Array, eps: float | Array) -> Array:
@@ -97,7 +97,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
     """
 
     def _x_axis(_: None) -> Array:
-        x = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[0, 0] - R[1, 1] - R[2, 2]))
+        x = 0.5 * safe_sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
         denom = jnp.maximum(4.0 * x, eps)
         return jnp.array(
             [x, (R[0, 1] + R[1, 0]) / denom, (R[0, 2] + R[2, 0]) / denom],
@@ -105,7 +105,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
         )
 
     def _y_axis(_: None) -> Array:
-        y = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[1, 1] - R[0, 0] - R[2, 2]))
+        y = 0.5 * safe_sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
         denom = jnp.maximum(4.0 * y, eps)
         return jnp.array(
             [(R[0, 1] + R[1, 0]) / denom, y, (R[1, 2] + R[2, 1]) / denom],
@@ -113,7 +113,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
         )
 
     def _z_axis(_: None) -> Array:
-        z = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[2, 2] - R[0, 0] - R[1, 1]))
+        z = 0.5 * safe_sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
         denom = jnp.maximum(4.0 * z, eps)
         return jnp.array(
             [(R[0, 2] + R[2, 0]) / denom, (R[1, 2] + R[2, 1]) / denom, z],

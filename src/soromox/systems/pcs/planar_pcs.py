@@ -15,6 +15,7 @@ from soromox.actuation.threadlike import (
 from soromox.systems.pcs.params import PlanarPCSParams
 from soromox.systems.pcs.structures import PlanarPCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.utils._numerics import safe_divide, safe_norm
 from soromox.utils.array_math import blk_diag
 from soromox.utils.basic import (
     compute_strain_basis,
@@ -846,24 +847,31 @@ class PlanarPCS(SoftRobot):
             """
             th, px, py = chi_rel_i
 
-            # compute the inverse kinematics for the virtual backbone
-            divisor = jnp.cos(th) - 1
-            xi = lax.select(
-                jnp.abs(th) < self.global_eps,
-                jnp.array([0.0, px / s_i, py / s_i]),
-                (
-                    th
-                    / (2 * s_i)
-                    * jnp.stack(
-                        [
-                            2 * jnp.ones((), dtype=th.dtype),
-                            py - (px * jnp.sin(th)) / divisor,
-                            -px - (py * jnp.sin(th)) / divisor,
-                        ]
-                    )
-                ),
-            )
-            return xi
+            # The closed form divides by ``cos(th) - 1``, which vanishes at
+            # the straight configuration; use the analytic limit there.
+            straight = jnp.abs(th) < self.global_eps
+
+            def _straight_branch(_: None) -> Array:
+                return jnp.stack(
+                    [
+                        jnp.zeros((), dtype=th.dtype),
+                        safe_divide(px, s_i, self.global_eps),
+                        safe_divide(py, s_i, self.global_eps),
+                    ]
+                )
+
+            def _curved_branch(_: None) -> Array:
+                divisor = jnp.cos(th) - 1
+                sin_ratio = safe_divide(jnp.sin(th), divisor, self.global_eps)
+                return safe_divide(th, 2 * s_i, self.global_eps) * jnp.stack(
+                    [
+                        2 * jnp.ones((), dtype=th.dtype),
+                        py - px * sin_ratio,
+                        -px - py * sin_ratio,
+                    ]
+                )
+
+            return lax.cond(straight, _straight_branch, _curved_branch, operand=None)
 
         # define the local arc-length positions of each segment tip
         s_local = self.L
@@ -2465,8 +2473,10 @@ class PlanarPCS(SoftRobot):
         offset_derivative = routing.derivative(path_params, s)[1]
         axial = strain[1] + offset * strain[0]
         shear = strain[2] + offset_derivative
-        norm = jnp.sqrt(axial**2 + shear**2)
-        return active * jnp.asarray([offset * axial / norm, axial / norm, shear / norm])
+        norm = safe_norm(jnp.stack([axial, shear]))
+        axial_ratio = safe_divide(axial, norm, self.global_eps)
+        shear_ratio = safe_divide(shear, norm, self.global_eps)
+        return active * jnp.asarray([offset * axial_ratio, axial_ratio, shear_ratio])
 
     def _threadlike_moment_matrix(self, q: Array, routing: ThreadlikeRouting) -> Array:
         """Integrate raw routed-length moment arms in the planar PCS basis."""
@@ -2541,7 +2551,7 @@ class PlanarPCS(SoftRobot):
                         strains[segment_index, 1] + offset * strains[segment_index, 0]
                     )
                     shear = strains[segment_index, 2] + derivative
-                    return active * jnp.sqrt(axial**2 + shear**2)
+                    return active * safe_norm(jnp.stack([axial, shear]))
 
                 density = vmap(path_density)(
                     params,
