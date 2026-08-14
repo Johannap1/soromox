@@ -193,7 +193,7 @@ print("\nFinding steady-state configuration under constant actuation...")
 
 # Apply positive tendon tensions.
 # Use asymmetric tensions to create an interesting configuration
-u_constant = jnp.array([1.2, 0.6, 0.05])
+u_constant = jnp.array([0.5, 0.2, 0.1])
 print(f"  Applied tendon tensions: {u_constant}")
 
 # Define simulation parameters
@@ -223,9 +223,11 @@ q_final, qd_final = jnp.split(trajectory.y[-1], 2)
 velocity_norm = jnp.linalg.norm(qd_final)
 print(f"  Final velocity norm: {velocity_norm:.2e}")
 if velocity_norm > 1e-3:
-    print(
-        "  Warning: Steady-state may not have been reached. "
-        "Consider increasing sim_duration."
+    raise RuntimeError(
+        "Setpoint generation did not reach steady state "
+        f"(final velocity norm {float(velocity_norm):.3e}). Refusing to optimize "
+        "gains for a transient target; increase sim_duration or choose an "
+        "actuation away from routing degeneracies."
     )
 
 q_des = q_final
@@ -235,6 +237,21 @@ print(f"  Steady-state configuration (q_des): {q_des}")
 # Compute the corresponding tendon lengths at steady-state
 y_des = asd.actuated_unactuated_coordinates(q_des)
 print(f"  Actuation-space coordinates (y_des): {y_des}")
+
+# A collapsed tendon has a nondifferentiable length coordinate: its first
+# derivative is direction-dependent and its second derivative grows like the
+# inverse path length. Reverse-mode sensitivities can therefore overflow even
+# while the forward trajectory stays finite. Keep the generated reference well
+# away from that geometric singularity.
+minimum_tendon_length = jnp.min(jnp.abs(y_des[:num_actuators]))
+minimum_tendon_length_threshold = 1e-2 * total_length
+if minimum_tendon_length <= minimum_tendon_length_threshold:
+    raise RuntimeError(
+        "Setpoint generation placed a tendon too close to path collapse "
+        f"(minimum length {float(minimum_tendon_length):.3e} m; required above "
+        f"{minimum_tendon_length_threshold:.3e} m). Choose smaller reference "
+        "tensions before differentiating the rollout."
+    )
 
 # Time parameters for closed-loop control
 t0, t1 = 0.0, 5.0
