@@ -53,8 +53,8 @@ from typing import Literal
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils._numerics import eps_for_dtype, safe_sqrt
 from soromox.utils.lie_algebra import so3
+from soromox.utils.numerics import eps_for_dtype, safe_sqrt
 
 
 class RotationRepresentation(Enum):

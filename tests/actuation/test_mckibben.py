@@ -7,6 +7,8 @@ displacement vector is zero, and taking ``jnp.linalg.norm`` of it -- or dividing
 by that norm to obtain a direction -- differentiates to ``NaN``.
 """
 
+from types import SimpleNamespace
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -102,3 +104,24 @@ def test_effective_lengths_match_the_analytic_values():
     lengths = degenerate.effective_lengths(jnp.zeros(2))
     assert_allclose(float(lengths[0]), -0.1, atol=1e-12)
     assert_allclose(float(lengths[1]), 0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("coincident", [False, True])
+def test_coordinate_gradient_is_finite(coincident: bool):
+    """Exercise the public work-coordinate path built on effective lengths."""
+    transmission = make_transmission(coincident)
+
+    jacobian = jax.jacrev(lambda q: transmission.coordinates(None, q))(jnp.zeros(2))
+
+    assert jnp.isfinite(jacobian).all()
+
+
+@pytest.mark.parametrize("coincident", [False, True])
+def test_moment_matrix_gradient_is_finite(coincident: bool):
+    """Exercise the public moment-matrix path through normalized directions."""
+    transmission = make_transmission(coincident)
+    robot = SimpleNamespace(num_dofs=2)
+
+    jacobian = jax.jacrev(lambda q: transmission.moment_matrix(robot, q))(jnp.zeros(2))
+
+    assert jnp.isfinite(jacobian).all()

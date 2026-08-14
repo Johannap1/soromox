@@ -49,10 +49,10 @@ from soromox.systems.gvs.structures import (
     GVSStructure,
 )
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
-from soromox.utils._numerics import safe_divide, safe_norm, safe_normalize
 from soromox.utils.geometry import poses
 from soromox.utils.integration import gauss_quadrature
 from soromox.utils.lie_algebra import constant_strain, se3, so3
+from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 
 __all__ = ["GVS"]
 

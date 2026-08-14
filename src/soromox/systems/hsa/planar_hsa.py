@@ -11,11 +11,11 @@ from jax import numpy as jnp
 from soromox.systems.hsa.params import PlanarHSAParams
 from soromox.systems.hsa.structures import PlanarHSAStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
-from soromox.utils._numerics import safe_divide
 from soromox.utils.basic import (
     compute_strain_basis,
     concatenate_params_syms,
 )
+from soromox.utils.numerics import safe_divide
 
 __all__ = ["PlanarHSA"]
 

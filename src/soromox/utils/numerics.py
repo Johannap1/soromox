@@ -1,4 +1,4 @@
-"""Internal numerical helpers shared across JAX utilities.
+"""Numerical helpers shared across JAX utilities.
 
 Singular-point conventions used by the ``safe_*`` helpers:
 
@@ -206,6 +206,12 @@ def safe_divide(
     Returns:
         Array containing ``numerator / denominator`` away from the singularity
         and ``fallback`` at it.
+
+    Notes:
+        The two ``jnp.where`` calls are safe here because the denominator is
+        sanitized *before* division. Thus both evaluated branches remain
+        finite. ``lax.cond`` is not a replacement for this elementwise API: it
+        requires a scalar predicate, while ``denominator`` may be an array.
     """
     numerator = jnp.asarray(numerator)
     denominator = jnp.asarray(denominator)

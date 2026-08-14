@@ -20,11 +20,11 @@ from jax import Array
 from jax import numpy as jnp
 
 from soromox.systems.params import BaseSystemParams
-from soromox.utils._numerics import safe_norm, safe_normalize
 from soromox.utils.geometry.rotations import (
     principal_axis_rotation_matrix,
     principal_axis_rotation_matrix_derivative,
 )
+from soromox.utils.numerics import safe_norm, safe_normalize
 
 from .core import Actuator, ActuatorMetadata, DirectEffort, Transmission
 

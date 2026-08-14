@@ -15,7 +15,6 @@ from soromox.actuation.threadlike import (
 from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
-from soromox.utils._numerics import safe_divide, safe_norm, safe_normalize
 from soromox.utils.array_math import blk_diag
 from soromox.utils.basic import (
     compute_strain_basis,
@@ -27,6 +26,7 @@ from soromox.utils.integration import (
     scale_interior_gaussian_quadrature,
 )
 from soromox.utils.lie_algebra import constant_strain, se3, so3
+from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 
 
 class PCS(SoftRobot):

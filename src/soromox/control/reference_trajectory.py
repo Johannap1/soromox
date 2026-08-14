@@ -7,8 +7,8 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from soromox.utils._numerics import safe_divide
 from soromox.utils.geometry.rotations import RotationRepresentation
+from soromox.utils.numerics import safe_divide
 from soromox.utils.twist import twist_callable_from_pose_callable_factory
 
 

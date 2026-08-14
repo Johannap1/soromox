@@ -1,5 +1,6 @@
 import jax
 import pytest
+from jax import Array
 from jax import numpy as jnp
 from jax.scipy.linalg import expm
 from numpy.testing import assert_allclose
@@ -366,6 +367,82 @@ def test_se3_helpers_are_autodiff_finite_at_zero():
     log_at_identity = log_fn(g_identity)
     assert not jnp.isnan(log_at_identity).any()
     assert_allclose(log_at_identity, jnp.zeros((6,)), rtol=RTOL, atol=ATOL)
+
+
+# These branch-safety tests live with the existing spatial Lie-algebra tests so
+# that changes to the small-angle implementations and their transform behavior
+# are reviewed together.
+BRANCH_EPS = 1e1 * float(jnp.finfo(jnp.float64).eps)
+TANGENT_BRANCH_EPS = float(jnp.sqrt(jnp.asarray(BRANCH_EPS)))
+XI_STRAIGHT = jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+ARC_LENGTH = jnp.array(0.1)
+
+
+def _batched_grad(fn, x: Array, batch: int = 3) -> Array:
+    """Differentiate ``sum(vmap(fn)(x))`` to exercise batched branch lowering."""
+    stacked = jnp.broadcast_to(x, (batch,) + x.shape)
+    return jax.grad(lambda v: jnp.sum(jax.vmap(fn)(v)))(stacked)
+
+
+BRANCH_SAFETY_CASES = {
+    "se3.exp": (lambda xi: se3.exp(xi, BRANCH_EPS), XI_STRAIGHT),
+    "so3.exp": (lambda xi: so3.exp(xi[:3], BRANCH_EPS), XI_STRAIGHT),
+    "constant_strain.tangent_se3": (
+        lambda xi: constant_strain.tangent_se3(xi, ARC_LENGTH, TANGENT_BRANCH_EPS),
+        XI_STRAIGHT,
+    ),
+    "constant_strain.adjoint_se3": (
+        lambda xi: constant_strain.adjoint_se3(xi, ARC_LENGTH, BRANCH_EPS),
+        XI_STRAIGHT,
+    ),
+    "constant_strain.adjoint_inverse_se3": (
+        lambda xi: constant_strain.adjoint_inverse_se3(xi, ARC_LENGTH, BRANCH_EPS),
+        XI_STRAIGHT,
+    ),
+    "constant_strain.tangent_derivative_se3": (
+        lambda xi: constant_strain.tangent_derivative_se3(
+            xi, jnp.zeros(6), ARC_LENGTH, TANGENT_BRANCH_EPS
+        ),
+        XI_STRAIGHT,
+    ),
+    "se3.log": (lambda g: se3.log(g, BRANCH_EPS), jnp.eye(4)),
+    "so3.log": (lambda R: so3.log(R, BRANCH_EPS), jnp.eye(3)),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BRANCH_SAFETY_CASES))
+def test_grad_of_vmap_is_finite_at_zero_rotation(name: str):
+    """The batched lowering of every small-angle branch stays finite."""
+    fn, arg = BRANCH_SAFETY_CASES[name]
+
+    grad = _batched_grad(lambda x: jnp.sum(fn(x)), arg)
+
+    assert jnp.isfinite(grad).all(), f"{name} produced a non-finite batched gradient"
+
+
+def test_where_would_regress_what_cond_gets_right():
+    """Pin why the Lie-algebra small-angle guards deliberately use ``lax.cond``."""
+
+    def singular(x: Array) -> Array:
+        return (1.0 - jnp.cos(x)) / x**2
+
+    def with_cond(x: Array) -> Array:
+        return jax.lax.cond(
+            x <= 0.0, lambda _: jnp.zeros_like(x), lambda _: singular(x), None
+        )
+
+    def with_where(x: Array) -> Array:
+        return jnp.where(x <= 0.0, jnp.zeros_like(x), singular(x))
+
+    zeros = jnp.zeros(2)
+    cond_grad = jax.grad(lambda v: jnp.sum(jax.vmap(with_cond)(v)))(zeros)
+    where_grad = jax.grad(lambda v: jnp.sum(jax.vmap(with_where)(v)))(zeros)
+
+    assert jnp.isfinite(cond_grad).all(), "lax.cond must not leak the dead branch"
+    assert jnp.isnan(where_grad).any(), (
+        "jnp.where is expected to leak the dead branch; if this now passes, the "
+        "safety argument in utils/numerics.py needs revisiting"
+    )
 
 
 if __name__ == "__main__":

@@ -75,6 +75,19 @@ def test_end_effector_kinematics(seed: int = 0):
             raise ValueError("q != q_rec")
 
 
+def test_inverse_kinematics_is_reverse_mode_finite_when_straight():
+    """Cover the analytic straight branch where ``cos(theta) - 1`` is zero."""
+    robot = _create_robot()
+    q = jnp.zeros(robot.num_dofs)
+    chiee = robot.forward_kinematics_end_effector(q)
+
+    recovered = robot.inverse_kinematics_end_effector(chiee)
+    jacobian = jax.jacrev(robot.inverse_kinematics_end_effector)(chiee)
+
+    assert jnp.isfinite(recovered).all()
+    assert jnp.isfinite(jacobian).all()
+
+
 def test_planar_hsa_exposes_phi_max():
     robot = _create_robot()
 

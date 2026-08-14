@@ -10,7 +10,7 @@ __all__ = ["skew", "vee", "exp", "log"]
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils._numerics import eps_for_dtype, safe_norm, safe_sqrt
+from soromox.utils.numerics import eps_for_dtype, safe_norm, safe_sqrt
 
 
 def _rotation_magnitude(omega: Array, eps: float | Array) -> Array:

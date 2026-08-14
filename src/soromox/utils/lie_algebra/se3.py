@@ -11,7 +11,7 @@ __all__ = [
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils._numerics import eps_for_dtype
+from soromox.utils.numerics import eps_for_dtype
 
 from . import so3
 
