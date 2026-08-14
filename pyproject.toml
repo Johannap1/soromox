@@ -111,7 +111,7 @@ dependencies = [
   "diffrax>=0.7.2",
   "dill",
   "equinox",
-  "jax[cuda13]>=0.10.0",
+  "jax>=0.10.0",
   "numpy",
   "scipy",
   "sympy",
@@ -127,6 +127,10 @@ dependencies = [
 # Similar to `dependencies` above, these must be valid existing
 # projects.
 [project.optional-dependencies] # Optional
+cuda13 = [
+    "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
+    "torch>=2.13.0; sys_platform == 'linux'",
+]
 dev = [
     "bump2version",
     "check-manifest",
