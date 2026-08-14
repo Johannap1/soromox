@@ -8,7 +8,7 @@ from numpy.testing import assert_allclose
 from soromox.autodiff import strict_singularities_mode
 from soromox.utils.geometry import poses
 from soromox.utils.lie_algebra import constant_strain, se2, se3, so3
-from soromox.utils.lie_algebra._left_jacobian import (
+from soromox.utils.lie_algebra._jacobian_coefficients import (
     inverse_left_jacobian_series_threshold,
 )
 from soromox.utils.tolerance import Tolerance

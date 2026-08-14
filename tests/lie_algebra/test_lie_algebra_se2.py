@@ -6,7 +6,7 @@ from numpy.testing import assert_allclose
 
 from soromox.utils.geometry import poses
 from soromox.utils.lie_algebra import constant_strain, se2
-from soromox.utils.lie_algebra._left_jacobian import (
+from soromox.utils.lie_algebra._jacobian_coefficients import (
     inverse_left_jacobian_series_threshold,
 )
 from soromox.utils.tolerance import Tolerance
@@ -330,12 +330,18 @@ def test_tangent_gi_se2_derivative_zero_without_motion():
     assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
 
 
-def test_tangent_derivative_gi_se2_zero_theta_matches_truncated_series():
+def test_tangent_derivative_gi_se2_zero_theta_matches_exact_series():
     xi = jnp.array([0.0, 0.5, -0.1])
     xid = jnp.array([0.1, -0.4, 0.2])
     s = jnp.array(0.2)
 
-    expected = 0.5 * s**2 * se2.small_adjoint(xid)
+    ad_xi = se2.small_adjoint(xi)
+    ad_xid = se2.small_adjoint(xid)
+    expected = (
+        0.5 * s**2 * ad_xid
+        + (1.0 / 6.0) * s**3 * (ad_xid @ ad_xi + ad_xi @ ad_xid)
+        + (1.0 / 24.0) * s**4 * ad_xi @ ad_xid @ ad_xi
+    )
 
     result = constant_strain.tangent_derivative_se2(xi, xid, s, eps=EPS)
 

@@ -12,6 +12,11 @@ from jax import Array, lax
 
 from soromox.utils.numerics import eps_for_dtype, safe_norm, safe_sqrt
 
+from ._jacobian_coefficients import (
+    one_minus_cosine_over_angle_squared,
+    sine_over_angle,
+)
+
 
 def _rotation_magnitude(omega: Array, eps: float | Array) -> Array:
     """Return a differentiability-aware norm of a rotation vector.
@@ -173,19 +178,15 @@ def exp(omega: Array, eps: float | Array = 1e-10) -> Array:
     omega = jnp.asarray(omega).reshape(-1)
     theta = _rotation_magnitude(omega, eps)
     omega_hat = skew(omega)
+    return _exp_from_skew(omega_hat, theta, eps)
+
+
+def _exp_from_skew(omega_hat: Array, theta: Array, eps: float | Array) -> Array:
+    """Evaluate Rodrigues' formula from a precomputed skew matrix and angle."""
     omega_hat_sq = omega_hat @ omega_hat
-
-    def _series(_: None) -> Array:
-        return jnp.eye(3, dtype=omega.dtype) + omega_hat + 0.5 * omega_hat_sq
-
-    def _general(theta_val: Array) -> Array:
-        return (
-            jnp.eye(3, dtype=omega.dtype)
-            + (jnp.sin(theta_val) / theta_val) * omega_hat
-            + ((1.0 - jnp.cos(theta_val)) / theta_val**2) * omega_hat_sq
-        )
-
-    return lax.cond(theta <= eps, _series, _general, theta)
+    sinc = sine_over_angle(theta, eps)
+    cosc = one_minus_cosine_over_angle_squared(theta, eps)
+    return jnp.eye(3, dtype=omega_hat.dtype) + sinc * omega_hat + cosc * omega_hat_sq
 
 
 def log(R: Array, eps: float | Array = 1e-10) -> Array:

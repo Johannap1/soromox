@@ -537,46 +537,8 @@ class PlanarPCS(SoftRobot):
 
         # Iteration function
         def chi_i(chi_prev: Array, i: Array) -> tuple[Array, Array]:
-            th_prev = chi_prev[0]
-            p_prev = chi_prev[1:]
-
-            # rotational/bending strain of the current segment
-            kappa_i = xi[i, 0]
-            # linear strains of the current segment
-            sigmas_i = xi[i, 1:]
-
             l_i = jnp.where(i == segment_idx, s_local, self.L[i])
-
-            # classify whether it is a small strain
-            small_strain = jnp.abs(kappa_i * l_i) < self.global_eps
-
-            # compute the orientation
-            th = th_prev + kappa_i * l_i
-
-            # compute the components of the rotation matrix
-            int_cos_th = lax.cond(
-                small_strain,
-                lambda _: l_i * jnp.cos(th_prev),
-                lambda _: (jnp.sin(th) - jnp.sin(th_prev)) / kappa_i,
-                operand=None,
-            )
-            int_sin_th = lax.cond(
-                small_strain,
-                lambda _: l_i * jnp.sin(th_prev),
-                lambda _: -(jnp.cos(th) - jnp.cos(th_prev)) / kappa_i,
-                operand=None,
-            )
-
-            R = jnp.stack(
-                [
-                    jnp.stack([int_cos_th, -int_sin_th]),
-                    jnp.stack([int_sin_th, int_cos_th]),
-                ]
-            )
-
-            p = p_prev + R @ sigmas_i
-
-            chi = jnp.concatenate([th[None], p])
+            chi = self._integrate_planar_pose(chi_prev, xi[i], l_i)
 
             return chi, chi
 
@@ -652,43 +614,8 @@ class PlanarPCS(SoftRobot):
 
         def integrate_segment(chi_prev: Array, i: Array) -> tuple[Array, Array]:
             xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
-            kappa_i = xi_i[0]  # rotational/bending strain of the current segment
-            sigmas_i = xi_i[1:]  # linear strains of the current segment
-
             L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
-
-            th_prev = chi_prev[0]
-            p_prev = chi_prev[1:]
-
-            # classify whether it is a small strain
-            small_strain = jnp.abs(kappa_i * L_i) < self.global_eps
-
-            # compute the orientation
-            th = th_prev + kappa_i * L_i
-
-            # compute the components of the rotation matrix
-            int_cos_th = lax.cond(
-                small_strain,
-                lambda _: L_i * jnp.cos(th_prev),
-                lambda _: (jnp.sin(th) - jnp.sin(th_prev)) / kappa_i,
-                operand=None,
-            )
-            int_sin_th = lax.cond(
-                small_strain,
-                lambda _: L_i * jnp.sin(th_prev),
-                lambda _: -(jnp.cos(th) - jnp.cos(th_prev)) / kappa_i,
-                operand=None,
-            )
-
-            R = jnp.stack(
-                [
-                    jnp.stack([int_cos_th, -int_sin_th]),
-                    jnp.stack([int_sin_th, int_cos_th]),
-                ]
-            )
-
-            p = p_prev + R @ sigmas_i
-            chi_tip = jnp.concatenate([th[None], p])
+            chi_tip = self._integrate_planar_pose(chi_prev, xi_i, L_i)
 
             return chi_tip, chi_tip
 
@@ -721,42 +648,7 @@ class PlanarPCS(SoftRobot):
         chi_base_ps = chi_bases[segment_indices]
 
         def integrate_point(chi_prev: Array, xi_i: Array, arc_len: Array) -> Array:
-            th_prev = chi_prev[0]
-            p_prev = chi_prev[1:]
-
-            kappa_i = xi_i[0]  # rotational/bending strain of the current segment
-            sigmas_i = xi_i[1:]  # linear strains of the current segment
-
-            # classify whether it is a small strain
-            small_strain = jnp.abs(kappa_i * arc_len) < self.global_eps
-
-            # compute the orientation
-            th = th_prev + kappa_i * arc_len
-
-            # compute the components of the rotation matrix
-            int_cos_th = lax.cond(
-                small_strain,
-                lambda _: arc_len * jnp.cos(th_prev),
-                lambda _: (jnp.sin(th) - jnp.sin(th_prev)) / kappa_i,
-                operand=None,
-            )
-            int_sin_th = lax.cond(
-                small_strain,
-                lambda _: arc_len * jnp.sin(th_prev),
-                lambda _: -(jnp.cos(th) - jnp.cos(th_prev)) / kappa_i,
-                operand=None,
-            )
-
-            R = jnp.stack(
-                [
-                    jnp.stack([int_cos_th, -int_sin_th]),
-                    jnp.stack([int_sin_th, int_cos_th]),
-                ]
-            )
-
-            p = p_prev + R @ sigmas_i
-
-            return jnp.concatenate([th[None], p])
+            return self._integrate_planar_pose(chi_prev, xi_i, arc_len)
 
         chi_ps = vmap(integrate_point)(chi_base_ps, xi_ps, s_local_ps)
 
@@ -1066,81 +958,19 @@ class PlanarPCS(SoftRobot):
         dT_ds = constant_strain.adjoint_se2(xi_i, arc_len, eps=self.global_eps)
         return Ad_inv, T, dAd_inv_ds, dT_ds
 
-    def _pcs_relative_pose(self, xi_i: Array, arc_len: Array) -> Array:
-        """
-        Compute the relative SE(2) transform for one segment slice.
-
-        Args:
-            xi_i: Constant planar strain of segment ``i``, shape ``(3,)``.
-            arc_len: Local arc length of the slice.
-
-        Returns:
-            Relative SE(2) transform with the translation obtained by
-            analytically integrating the constant planar strain over
-            ``arc_len``.
-        """
-        kappa_i = xi_i[0]
-        sigmas_i = xi_i[1:]
-        theta = kappa_i * arc_len
-        small_strain = jnp.abs(theta) < self.global_eps
-
-        int_cos = lax.cond(
-            small_strain,
-            lambda _: arc_len,
-            lambda _: jnp.sin(theta) / kappa_i,
-            operand=None,
-        )
-        int_sin = lax.cond(
-            small_strain,
-            lambda _: jnp.zeros((), dtype=theta.dtype),
-            lambda _: (1.0 - jnp.cos(theta)) / kappa_i,
-            operand=None,
-        )
-
-        R = jnp.array(
+    def _integrate_planar_pose(self, chi: Array, xi_i: Array, arc_len: Array) -> Array:
+        """Integrate one constant-strain slice into an absolute planar pose."""
+        theta = chi[0]
+        cos_theta = jnp.cos(theta)
+        sin_theta = jnp.sin(theta)
+        p_step = se2._exp_translation(arc_len * xi_i, eps=self.global_eps)
+        theta_next = theta + arc_len * xi_i[0]
+        p_next = chi[1:] + jnp.stack(
             [
-                [jnp.cos(theta), -jnp.sin(theta)],
-                [jnp.sin(theta), jnp.cos(theta)],
-            ],
-            dtype=xi_i.dtype,
-        )
-        V = jnp.array(
-            [
-                [int_cos, -int_sin],
-                [int_sin, int_cos],
-            ],
-            dtype=xi_i.dtype,
-        )
-        p = V @ sigmas_i
-        return jnp.block(
-            [
-                [R, p[:, None]],
-                [
-                    jnp.zeros((1, 2), dtype=xi_i.dtype),
-                    jnp.ones((1, 1), dtype=xi_i.dtype),
-                ],
+                cos_theta * p_step[0] - sin_theta * p_step[1],
+                sin_theta * p_step[0] + cos_theta * p_step[1],
             ]
         )
-
-    def _compose_planar_pose(self, chi: Array, g_step: Array) -> Array:
-        """
-        Compose a planar pose vector with a relative SE(2) transform.
-
-        Args:
-            chi: Current absolute planar pose ``[theta, x, y]``.
-            g_step: Relative SE(2) transform to apply from ``chi``.
-
-        Returns:
-            Absolute planar pose after the relative step, again represented as
-            ``[theta, x, y]``.
-        """
-        theta = chi[0]
-        R = jnp.array(
-            [[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]],
-            dtype=chi.dtype,
-        )
-        theta_next = theta + jnp.arctan2(g_step[1, 0], g_step[0, 0])
-        p_next = chi[1:] + R @ g_step[:2, 2]
         return jnp.concatenate([theta_next[None], p_next])
 
     def _base_planar_pose(self, dtype: jnp.dtype) -> Array:
@@ -1268,9 +1098,7 @@ class PlanarPCS(SoftRobot):
                 arc_len = jnp.where(i == segment_idx, s_local, L_i)
 
                 Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, arc_len)
-                chi_next = self._compose_planar_pose(
-                    chi_prev, self._pcs_relative_pose(xi_i, arc_len)
-                )
+                chi_next = self._integrate_planar_pose(chi_prev, xi_i, arc_len)
                 J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
                 is_target = i == segment_idx
@@ -1325,9 +1153,7 @@ class PlanarPCS(SoftRobot):
                 Ad_inv, T, dAd_inv_ds, dT_ds = self._pcs_jacobian_arc_length_step_terms(
                     xi_i, arc_len
                 )
-                chi_next = self._compose_planar_pose(
-                    chi_prev, self._pcs_relative_pose(xi_i, arc_len)
-                )
+                chi_next = self._integrate_planar_pose(chi_prev, xi_i, arc_len)
                 J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
                 Js_next = self._update_body_jacobian_arc_length_derivative_step(
                     J_prev, i, Ad_inv, T, dAd_inv_ds, dT_ds
@@ -1397,9 +1223,7 @@ class PlanarPCS(SoftRobot):
                 Td = constant_strain.tangent_derivative_se2(
                     xi_i, xid_i, arc_len, eps=self.global_eps
                 )
-                chi_next = self._compose_planar_pose(
-                    chi_prev, self._pcs_relative_pose(xi_i, arc_len)
-                )
+                chi_next = self._integrate_planar_pose(chi_prev, xi_i, arc_len)
                 J_next, Jd_next = self._update_body_jacobian_time_derivative_step(
                     J_prev, Jd_prev, i, xid_i, Ad_inv, T, Td
                 )

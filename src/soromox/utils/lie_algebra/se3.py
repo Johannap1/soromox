@@ -12,7 +12,11 @@ import jax.numpy as jnp
 from jax import Array, lax
 
 from . import so3
-from ._left_jacobian import inverse_left_jacobian_quadratic_coefficient
+from ._jacobian_coefficients import (
+    angle_minus_sine_over_angle_cubed,
+    inverse_left_jacobian_quadratic_coefficient,
+    one_minus_cosine_over_angle_squared,
+)
 
 
 def _rotational_strain_magnitude(xi: Array, eps: float | Array) -> Array:
@@ -125,39 +129,28 @@ def exp(xi: Array, eps: float | Array) -> Array:
     Args:
         xi: Spatial twist with shape ``(6,)`` or ``(6, 1)`` in
             ``[omega_x, omega_y, omega_z, v_x, v_y, v_z]`` order.
-        eps: Small positive scalar threshold. If ``norm(omega) <= eps``, a
-            truncated Taylor series is used to avoid singular divisions and
-            keep derivatives finite near zero rotation.
+        eps: Minimum small-angle series threshold. A dtype-aware threshold may
+            select the series over a larger interval to preserve Hessian
+            accuracy near zero rotation.
 
     Returns:
         Homogeneous ``SE(3)`` transform with shape ``(4, 4)``.
     """
     xi = jnp.asarray(xi).reshape(-1)
     theta = _rotational_strain_magnitude(xi, eps)
-    xi_hat = hat(xi)
+    omega_hat = so3.skew(xi[:3])
+    omega_hat_sq = omega_hat @ omega_hat
+    cosc = one_minus_cosine_over_angle_squared(theta, eps)
+    tanc = angle_minus_sine_over_angle_cubed(theta, eps)
+    V = jnp.eye(3, dtype=xi.dtype) + cosc * omega_hat + tanc * omega_hat_sq
+    p = V @ xi[3:]
+    R = so3._exp_from_skew(omega_hat, theta, eps)
 
-    costheta = jnp.cos(theta)
-    sintheta = jnp.sin(theta)
-
-    return lax.cond(
-        theta <= eps,
-        lambda _: (
-            jnp.eye(4, dtype=xi.dtype)
-            + xi_hat
-            + 0.5 * jnp.linalg.matrix_power(xi_hat, 2)
-            + (1.0 / 6.0) * jnp.linalg.matrix_power(xi_hat, 3)
-        ),
-        lambda _: (
-            jnp.eye(4, dtype=xi.dtype)
-            + xi_hat
-            + (1.0 - costheta)
-            / jnp.power(theta, 2)
-            * jnp.linalg.matrix_power(xi_hat, 2)
-            + (theta - sintheta)
-            / jnp.power(theta, 3)
-            * jnp.linalg.matrix_power(xi_hat, 3)
-        ),
-        operand=None,
+    return jnp.block(
+        [
+            [R, p.reshape((3, 1))],
+            [jnp.zeros((1, 3), dtype=xi.dtype), jnp.ones((1, 1), dtype=xi.dtype)],
+        ]
     )
 
 
