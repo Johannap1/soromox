@@ -68,20 +68,13 @@ LIE_CASES = {
 
 
 @pytest.mark.parametrize("name", sorted(LIE_CASES))
-def test_reverse_mode_is_finite_at_zero_rotation(name: str):
-    fn, arg = LIE_CASES[name]
-
-    grad = jax.grad(lambda x: jnp.sum(fn(x)))(arg)
-
-    assert jnp.isfinite(grad).all(), f"{name} produced a non-finite gradient"
-
-
-@pytest.mark.parametrize("name", sorted(LIE_CASES))
 def test_grad_of_vmap_is_finite_at_zero_rotation(name: str):
     """The batched lowering rewrites ``lax.cond`` into ``select_n``.
 
-    Bare ``jacrev`` never exercises that path, which is why the pre-existing
-    zero-configuration tests could not have caught a regression here.
+    Only the batched order is checked: unbatched, ``lax.cond`` stays a ``cond``
+    and is the easier case, so an unbatched gradient can only be non-finite if
+    the batched one is too. The unbatched path is also already covered by the
+    ``*_at_zero_configuration`` tests in ``tests/systems``.
     """
     fn, arg = LIE_CASES[name]
 

@@ -90,20 +90,15 @@ def test_length_jacobian_gradient_is_finite(coincident: bool):
     )
 
 
-def test_coincident_endpoints_collapse_to_minus_reference_length():
-    transmission = make_transmission(coincident=True)
+def test_effective_lengths_match_the_analytic_values():
+    # Well-formed: both actuators span exactly the 0.1 m reference length at q = 0.
+    well_formed = make_transmission(coincident=False)
+    assert_allclose(
+        well_formed.effective_lengths(jnp.zeros(2)), jnp.zeros(2), atol=1e-12
+    )
 
-    lengths = transmission.effective_lengths(jnp.zeros(2))
-
-    # First actuator collapsed: raw length 0, so effective length is -reference.
+    # Collapsed: first actuator has raw length 0, so effective length is -reference.
+    degenerate = make_transmission(coincident=True)
+    lengths = degenerate.effective_lengths(jnp.zeros(2))
     assert_allclose(float(lengths[0]), -0.1, atol=1e-12)
     assert_allclose(float(lengths[1]), 0.0, atol=1e-12)
-
-
-def test_well_formed_geometry_matches_the_analytic_length():
-    transmission = make_transmission(coincident=False)
-
-    lengths = transmission.effective_lengths(jnp.zeros(2))
-
-    # Both actuators span exactly the 0.1 m reference length at q = 0.
-    assert_allclose(lengths, jnp.zeros(2), atol=1e-12)

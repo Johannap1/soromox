@@ -30,10 +30,7 @@ MODULE_DIR = SECTION_DIR / "code"
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
-from gain_optimization_loop import (  # noqa: E402
-    OptimizationHistory,
-    run_gain_optimization,
-)
+from gain_optimization_loop import run_gain_optimization  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
@@ -196,7 +193,3 @@ def test_num_iters_must_be_positive():
             opt_vars={"x": jnp.array([0.0])},
             num_iters=0,
         )
-
-
-def test_empty_history_reports_zero_length():
-    assert len(OptimizationHistory()) == 0

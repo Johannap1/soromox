@@ -19,6 +19,7 @@ def test_clean_tree_reports_nothing():
 
     assert nonfinite_leaves(tree) == []
     assert is_all_finite(tree)
+    assert_all_finite(tree, "gradient")
 
 
 def test_nan_leaf_is_reported_with_its_path():
@@ -28,13 +29,10 @@ def test_nan_leaf_is_reported_with_its_path():
     assert not is_all_finite(tree)
 
 
-def test_inf_leaf_is_distinguished_from_nan():
+def test_each_kind_of_non_finite_leaf_gets_its_own_label():
     tree = {"a": jnp.array([jnp.inf]), "b": jnp.array([jnp.nan])}
 
     assert dict(nonfinite_leaves(tree)) == {"a": "inf", "b": "nan"}
-
-
-def test_leaf_holding_both_is_labelled_nan_plus_inf():
     assert nonfinite_leaves({"m": jnp.array([jnp.nan, jnp.inf])}) == [("m", "nan+inf")]
 
 
@@ -55,10 +53,6 @@ def test_format_report_is_readable():
     assert "opt_ctr_params.Kp (nan)" in message
     assert "q_ts (inf)" in message
     assert "all leaves finite" in format_nonfinite_report("iteration 3", [])
-
-
-def test_assert_all_finite_passes_on_a_clean_tree():
-    assert_all_finite({"Kp": jnp.ones(3)}, "gradient")
 
 
 def test_assert_all_finite_names_the_offending_leaves():
