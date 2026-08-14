@@ -209,9 +209,7 @@ def safe_divide(
 
     Notes:
         The two ``jnp.where`` calls are safe here because the denominator is
-        sanitized *before* division. Thus both evaluated branches remain
-        finite. ``lax.cond`` is not a replacement for this elementwise API: it
-        requires a scalar predicate, while ``denominator`` may be an array.
+        sanitized *before* division. Thus both evaluated branches remain finite.
     """
     numerator = jnp.asarray(numerator)
     denominator = jnp.asarray(denominator)
