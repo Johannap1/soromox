@@ -11,9 +11,8 @@ __all__ = [
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils.numerics import eps_for_dtype
-
 from . import so3
+from ._left_jacobian import inverse_left_jacobian_quadratic_coefficient
 
 
 def _rotational_strain_magnitude(xi: Array, eps: float | Array) -> Array:
@@ -86,8 +85,8 @@ def log(g: Array, eps: float | Array) -> Array:
         g: Homogeneous ``SE(3)`` transform with shape ``(4, 4)``. The rotation
             is read from ``g[:3, :3]`` and the translation from ``g[:3, 3]``.
         eps: Small positive scalar threshold passed to ``so3.log`` for
-            rotation extraction. The inverse Jacobian uses a conservatively
-            scaled threshold to avoid cancellation in ``1 - cos(theta)``.
+            rotation extraction. The inverse Jacobian uses a dtype-aware
+            Taylor series near zero rotation.
 
     Returns:
         Array with shape ``(6,)`` in
@@ -105,31 +104,9 @@ def log(g: Array, eps: float | Array) -> Array:
         lambda _: jnp.sqrt(theta_sq),
         operand=None,
     )
-    jacobian_eps = 1e8 * eps_for_dtype(eps, R.dtype)
-    is_small_angle = theta <= jacobian_eps
-
-    def _compute_V_inv_small(args):
-        omega_local, _ = args
-        omega_sq = omega_local @ omega_local
-        return jnp.eye(3, dtype=R.dtype) - 0.5 * omega_local + (1.0 / 12.0) * omega_sq
-
-    def _compute_V_inv_general(args):
-        omega_local, angle = args
-        sin_theta = jnp.sin(angle)
-        cos_theta_local = jnp.cos(angle)
-        omega_sq = omega_local @ omega_local
-        A = jnp.eye(3, dtype=R.dtype) - 0.5 * omega_local
-        B = (1.0 / (angle**2)) * (
-            1.0 - (angle * sin_theta) / (2.0 * (1.0 - cos_theta_local))
-        )
-        return A + B * omega_sq
-
-    V_inv = lax.cond(
-        is_small_angle,
-        _compute_V_inv_small,
-        _compute_V_inv_general,
-        (omega_hat, theta),
-    )
+    B = inverse_left_jacobian_quadratic_coefficient(theta)
+    omega_sq = omega_hat @ omega_hat
+    V_inv = jnp.eye(3, dtype=R.dtype) - 0.5 * omega_hat + B * omega_sq
 
     v = V_inv @ p
 

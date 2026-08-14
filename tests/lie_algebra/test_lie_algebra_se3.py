@@ -5,8 +5,12 @@ from jax import numpy as jnp
 from jax.scipy.linalg import expm
 from numpy.testing import assert_allclose
 
+from soromox.autodiff import strict_singularities_mode
 from soromox.utils.geometry import poses
 from soromox.utils.lie_algebra import constant_strain, se2, se3, so3
+from soromox.utils.lie_algebra._left_jacobian import (
+    inverse_left_jacobian_series_threshold,
+)
 from soromox.utils.tolerance import Tolerance
 
 jax.config.update("jax_enable_x64", True)
@@ -156,6 +160,144 @@ def test_log_se3_forward_and_reverse_mode_autodiff_is_finite(xi):
         lambda g_flat: se3.log(g_flat.reshape((4, 4)), eps=EPS),
         g.reshape(-1),
     )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "theta", "rtol", "atol"),
+    [
+        (jnp.float64, 3e-8, 1e-9, 1e-10),
+        (jnp.float32, 1e-4, 1e-5, 2e-7),
+    ],
+)
+def test_log_se3_matches_analytic_reverse_mode_derivative_near_identity(
+    dtype, theta, rtol, atol
+):
+    """Compare autodiff with the planar closed-form SE(3) log derivative."""
+    translation = jnp.array([0.7, -0.4, 0.2], dtype=dtype)
+    theta = jnp.asarray(theta, dtype=dtype)
+    eps = jnp.asarray(EPS, dtype=dtype)
+    skew_basis = jnp.array([[0.0, -1.0], [1.0, 0.0]], dtype=dtype)
+
+    def transform_from_angle(angle):
+        rotation = jnp.array(
+            [
+                [jnp.cos(angle), -jnp.sin(angle), 0.0],
+                [jnp.sin(angle), jnp.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=dtype,
+        )
+        transform = jnp.eye(4, dtype=dtype).at[:3, :3].set(rotation)
+        return transform.at[:3, 3].set(translation)
+
+    actual = jax.jacrev(lambda angle: se3.log(transform_from_angle(angle), eps=eps))(
+        theta
+    )
+
+    coefficient_derivative = -theta / 6.0 - theta**3 / 180.0 - theta**5 / 5040.0
+    translation_wrt_theta = (
+        coefficient_derivative * jnp.eye(2, dtype=dtype) - 0.5 * skew_basis
+    ) @ translation[:2]
+    expected = jnp.concatenate(
+        [
+            jnp.array([0.0, 0.0, 1.0], dtype=dtype),
+            translation_wrt_theta,
+            jnp.zeros((1,), dtype=dtype),
+        ]
+    )
+
+    assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("branch_scale", [1.0, 1.25])
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        (jnp.float64, 2e-8, 2e-10),
+        (jnp.float32, 3e-4, 3e-6),
+    ],
+)
+def test_log_se3_arbitrary_axis_hessian_at_series_boundary(
+    dtype, rtol, atol, branch_scale
+):
+    """Check analytic first and second derivatives for an arbitrary axis."""
+    axis = jnp.array([1.0, -2.0, 0.5], dtype=dtype)
+    axis = axis / jnp.sqrt(jnp.dot(axis, axis))
+    axis_hat = so3.skew(axis)
+    axis_hat_sq = axis_hat @ axis_hat
+    translation = jnp.array([0.7, -0.4, 0.2], dtype=dtype)
+    theta = branch_scale * inverse_left_jacobian_series_threshold(dtype)
+    eps = jnp.asarray(EPS, dtype=dtype)
+
+    def log_from_angle(angle):
+        rotation = (
+            jnp.eye(3, dtype=dtype)
+            + jnp.sin(angle) * axis_hat
+            + (1.0 - jnp.cos(angle)) * axis_hat_sq
+        )
+        transform = jnp.eye(4, dtype=dtype).at[:3, :3].set(rotation)
+        transform = transform.at[:3, 3].set(translation)
+        return se3.log(transform, eps=eps)
+
+    first_actual = jax.jacrev(log_from_angle)(theta)
+    second_actual = jax.jacrev(jax.jacrev(log_from_angle))(theta)
+
+    coefficient_first = (
+        -theta / 6.0 - theta**3 / 180.0 - theta**5 / 5040.0 - theta**7 / 151200.0
+    )
+    coefficient_second = (
+        -1.0 / 6.0 - theta**2 / 60.0 - theta**4 / 1008.0 - theta**6 / 21600.0
+    )
+    first_expected = jnp.concatenate(
+        [
+            axis,
+            (-0.5 * axis_hat - coefficient_first * axis_hat_sq) @ translation,
+        ]
+    )
+    second_expected = jnp.concatenate(
+        [
+            jnp.zeros((3,), dtype=dtype),
+            -coefficient_second * axis_hat_sq @ translation,
+        ]
+    )
+
+    assert_allclose(first_actual, first_expected, rtol=rtol, atol=atol)
+    assert_allclose(second_actual, second_expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        (jnp.float64, 1e-8, 1e-10),
+        (jnp.float32, 3e-4, 3e-6),
+    ],
+)
+def test_log_se3_arbitrary_axis_round_trip_jacobian(dtype, rtol, atol):
+    """The full log-after-exp Jacobian is identity for an arbitrary twist."""
+    axis = jnp.array([1.0, -2.0, 0.5], dtype=dtype)
+    axis = axis / jnp.sqrt(jnp.dot(axis, axis))
+    theta = 0.5 * inverse_left_jacobian_series_threshold(dtype)
+    xi = jnp.concatenate(
+        [
+            theta * axis,
+            jnp.array([0.7, -0.4, 0.2], dtype=dtype),
+        ]
+    )
+    eps = jnp.asarray(EPS, dtype=dtype)
+
+    actual = jax.jacrev(lambda twist: se3.log(expm(se3.hat(twist)), eps=eps))(xi)
+
+    assert_allclose(actual, jnp.eye(6, dtype=dtype), rtol=rtol, atol=atol)
+
+
+def test_se2_and_se3_log_share_strict_singularity_policy():
+    """Both logarithms expose their removable identity quotient in strict mode."""
+    with strict_singularities_mode():
+        planar = se2.log(jnp.eye(3), eps=EPS)
+        spatial = se3.log(jnp.eye(4), eps=EPS)
+
+    assert not jnp.isfinite(planar).all()
+    assert not jnp.isfinite(spatial).all()
 
 
 def test_log_se3_exact_pi_rotation_is_finite_value_only():

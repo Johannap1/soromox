@@ -11,9 +11,8 @@ __all__ = [
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils.numerics import safe_divide
-
 from . import so2
+from ._left_jacobian import half_angle_cotangent
 
 
 def hat(xi: Array) -> Array:
@@ -106,8 +105,9 @@ def log(g: Array, eps: float | Array) -> Array:
     Args:
         g: Homogeneous ``SE(2)`` transform with shape ``(3, 3)``. The rotation
             is read from ``g[:2, :2]`` and the translation from ``g[:2, 2]``.
-        eps: Small positive scalar threshold used to regularize the removable
-            singularity in the inverse left Jacobian at zero rotation.
+        eps: Small positive scalar threshold forwarded to :func:`so2.log`.
+            Recovered angles with magnitude below this threshold are rounded
+            to zero.
 
     Returns:
         Array with shape ``(3,)`` containing twist coordinates
@@ -119,12 +119,7 @@ def log(g: Array, eps: float | Array) -> Array:
     theta = so2.log(R, eps=eps)
     J = so2.skew(jnp.ones((), dtype=R.dtype))
     half_theta = 0.5 * theta
-    half_theta_cotangent = safe_divide(
-        half_theta,
-        jnp.tan(half_theta),
-        eps,
-        fallback=jnp.ones((), dtype=R.dtype),
-    )
+    half_theta_cotangent = half_angle_cotangent(theta)
     V_inv = half_theta_cotangent * jnp.eye(2, dtype=R.dtype) - half_theta * J
     v = V_inv @ p
 

@@ -6,6 +6,9 @@ from numpy.testing import assert_allclose
 
 from soromox.utils.geometry import poses
 from soromox.utils.lie_algebra import constant_strain, se2
+from soromox.utils.lie_algebra._left_jacobian import (
+    inverse_left_jacobian_series_threshold,
+)
 from soromox.utils.tolerance import Tolerance
 
 jax.config.update("jax_enable_x64", True)
@@ -71,6 +74,124 @@ def test_log_se2_recovers_translation_at_tiny_nonzero_rotation(theta):
 
     assert_allclose(recovered, expected, rtol=1e-12, atol=1e-13)
     assert jnp.isfinite(jacobian).all()
+
+
+@pytest.mark.parametrize(
+    ("dtype", "theta", "rtol", "atol"),
+    [
+        (jnp.float64, 1e-12, 1e-10, 1e-12),
+        (jnp.float32, 1e-5, 1e-5, 2e-7),
+    ],
+)
+def test_log_se2_matches_analytic_reverse_mode_jacobian_near_identity(
+    dtype, theta, rtol, atol
+):
+    """Compare autodiff with the closed-form small-angle log Jacobian."""
+    translation = jnp.array([0.7, -0.4], dtype=dtype)
+    theta = jnp.asarray(theta, dtype=dtype)
+    eps = jnp.asarray(jnp.finfo(dtype).eps, dtype=dtype)
+    identity = jnp.eye(2, dtype=dtype)
+    skew_basis = jnp.array([[0.0, -1.0], [1.0, 0.0]], dtype=dtype)
+    rotation = jnp.array(
+        [
+            [jnp.cos(theta), -jnp.sin(theta)],
+            [jnp.sin(theta), jnp.cos(theta)],
+        ],
+        dtype=dtype,
+    )
+    transform = jnp.block(
+        [
+            [rotation, translation.reshape((2, 1))],
+            [jnp.zeros((1, 2), dtype=dtype), jnp.ones((1, 1), dtype=dtype)],
+        ]
+    )
+
+    actual = jax.jacrev(lambda g_flat: se2.log(g_flat.reshape((3, 3)), eps=eps))(
+        transform.reshape(-1)
+    )
+
+    recovered_theta = jnp.arctan2(rotation[1, 0], rotation[0, 0])
+    theta_sq = recovered_theta**2
+    coefficient = 1.0 - theta_sq / 12.0 - theta_sq**2 / 720.0
+    coefficient_derivative = -recovered_theta / 6.0 - recovered_theta**3 / 180.0
+    inverse_left_jacobian = coefficient * identity - 0.5 * recovered_theta * skew_basis
+    translation_wrt_theta = (
+        coefficient_derivative * identity - 0.5 * skew_basis
+    ) @ translation
+
+    rotation_norm_sq = rotation[0, 0] ** 2 + rotation[1, 0] ** 2
+    theta_wrt_r00 = -rotation[1, 0] / rotation_norm_sq
+    theta_wrt_r10 = rotation[0, 0] / rotation_norm_sq
+
+    expected = jnp.zeros((3, 9), dtype=dtype)
+    expected = expected.at[0, 0].set(theta_wrt_r00)
+    expected = expected.at[0, 3].set(theta_wrt_r10)
+    expected = expected.at[1:, 0].set(translation_wrt_theta * theta_wrt_r00)
+    expected = expected.at[1:, 3].set(translation_wrt_theta * theta_wrt_r10)
+    expected = expected.at[1:, 2].set(inverse_left_jacobian[:, 0])
+    expected = expected.at[1:, 5].set(inverse_left_jacobian[:, 1])
+
+    assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("branch_scale", [1.0, 1.25])
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        (jnp.float64, 1e-8, 1e-10),
+        (jnp.float32, 2e-4, 2e-6),
+    ],
+)
+def test_log_se2_reverse_mode_hessian_at_series_boundary(
+    dtype, rtol, atol, branch_scale
+):
+    """Check first and second derivatives at and above the series cutoff."""
+    translation = jnp.array([0.7, -0.4], dtype=dtype)
+    skew_basis = jnp.array([[0.0, -1.0], [1.0, 0.0]], dtype=dtype)
+    theta = branch_scale * inverse_left_jacobian_series_threshold(dtype)
+    eps = jnp.zeros((), dtype=dtype)
+
+    def log_from_angle(angle):
+        rotation = jnp.array(
+            [
+                [jnp.cos(angle), -jnp.sin(angle)],
+                [jnp.sin(angle), jnp.cos(angle)],
+            ],
+            dtype=dtype,
+        )
+        transform = jnp.block(
+            [
+                [rotation, translation.reshape((2, 1))],
+                [jnp.zeros((1, 2), dtype=dtype), jnp.ones((1, 1), dtype=dtype)],
+            ]
+        )
+        return se2.log(transform, eps=eps)
+
+    first_actual = jax.jacrev(log_from_angle)(theta)
+    second_actual = jax.jacrev(jax.jacrev(log_from_angle))(theta)
+
+    coefficient_first = (
+        -theta / 6.0 - theta**3 / 180.0 - theta**5 / 5040.0 - theta**7 / 151200.0
+    )
+    coefficient_second = (
+        -1.0 / 6.0 - theta**2 / 60.0 - theta**4 / 1008.0 - theta**6 / 21600.0
+    )
+    first_expected = jnp.concatenate(
+        [
+            jnp.ones((1,), dtype=dtype),
+            (coefficient_first * jnp.eye(2, dtype=dtype) - 0.5 * skew_basis)
+            @ translation,
+        ]
+    )
+    second_expected = jnp.concatenate(
+        [
+            jnp.zeros((1,), dtype=dtype),
+            coefficient_second * translation,
+        ]
+    )
+
+    assert_allclose(first_actual, first_expected, rtol=rtol, atol=atol)
+    assert_allclose(second_actual, second_expected, rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize(
