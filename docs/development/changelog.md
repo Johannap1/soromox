@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared, dtype-aware scalar coefficients for forward and inverse Lie-group
   Jacobians, together with a reproducible Lie-algebra benchmark covering
   primal, Jacobian, Hessian, and analytic constant-strain derivative paths.
+- Public ``operators_se2`` and ``operators_se3`` constant-strain bundles with a
+  fixed named result for callers that need adjoints, tangents, and an optional
+  analytic tangent derivative at the same strain and arclength.
 
 ### Changed
 
@@ -26,16 +29,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   around stable closed forms and high-order near-zero series. Constant-strain
   tangent derivatives remain explicit analytic production paths; runtime
   autodiff is used only as a test oracle.
+- Fused repeated constant-strain operator evaluation in PlanarPCS, PCS, and
+  GVS. The planar path uses direct SE(2) blocks; the spatial paths share the
+  exact fourth-order matrix powers and tangent coefficients while omitting
+  operators a recurrence does not consume.
 - Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
   PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
-- Compared with ``main`` on CPU/JAX 0.11.0, the 40-case Lie benchmark reduced
-  geometric-mean steady-state time by 18.9% with effectively unchanged aggregate
-  compile time; exponential-map Jacobian/Hessian cases improved by 54.1%, while
-  the more complete constant-strain Hessian series increased that four-case
-  subgroup by 45.6%. Across 52 downstream system-method cases, steady-state time
-  was effectively neutral (-1.3%) and compile time increased 9.5%; eight short
-  compiled rollouts increased geometric-mean execution and compile time by
-  9.0% and 4.7%, respectively.
+- Compared with ``main`` on CPU/JAX 0.11.0 across five fresh processes, the
+  40-case Lie benchmark reduced geometric-mean steady-state and compile time by
+  24.3% and 5.3%. The current fused implementation made compiled PlanarPCS
+  rollouts 22.1% faster on aggregate. For the SE(3) systems, PCS/GVS method
+  execution improved by 1.8%/2.1% while compilation increased 6.5%/8.1%; PCS
+  one-second rollouts remained 16.0% slower, whereas GVS rollouts improved by
+  3.7% in an interleaved five-pair comparison.
 
 ### Fixed
 

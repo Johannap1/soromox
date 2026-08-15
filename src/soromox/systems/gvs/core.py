@@ -1348,11 +1348,8 @@ class GVS(SoftRobot):
         Magnusd = B_Magnus @ qd_i
 
         g_step = se3.exp(Magnus, self.global_eps)
-        T_step = constant_strain.tangent_se3(
-            Magnus, jnp.array(1.0), eps=self.tangent_eps
-        )
-        Td_step = constant_strain.tangent_derivative_se3(
-            Magnus, Magnusd, jnp.array(1.0), eps=self.tangent_eps
+        T_step, Td_step = constant_strain._tangent_and_derivative_se3(
+            Magnus, Magnusd, jnp.array(1.0), self.tangent_eps
         )
         Ad_step_inv = se3.adjoint_inverse(g_step)
         return g_step, T_step, Td_step, Ad_step_inv, B_Magnus, B_Magnus_dot
@@ -1417,11 +1414,8 @@ class GVS(SoftRobot):
         )
 
         g_step = se3.exp(Magnus, self.global_eps)
-        T_step = constant_strain.tangent_se3(
-            Magnus, jnp.array(1.0), eps=self.tangent_eps
-        )
-        T_step_H = constant_strain.tangent_derivative_se3(
-            Magnus, Magnus_H, jnp.array(1.0), eps=self.tangent_eps
+        T_step, T_step_H = constant_strain._tangent_and_derivative_se3(
+            Magnus, Magnus_H, jnp.array(1.0), self.tangent_eps
         )
         Ad_step_inv = se3.adjoint_inverse(g_step)
         eta_step_H = Ad_step_inv @ (T_step @ Magnus_H)
@@ -1502,11 +1496,8 @@ class GVS(SoftRobot):
         xi_joint = B_joint @ q_joint + xi_ref_joint
         xid_joint = B_joint @ qd_joint
         g_joint = se3.exp(xi_joint, self.global_eps)
-        T_joint = constant_strain.tangent_se3(
-            xi_joint, jnp.array(1.0), eps=self.tangent_eps
-        )
-        Td_joint = constant_strain.tangent_derivative_se3(
-            xi_joint, xid_joint, jnp.array(1.0), eps=self.tangent_eps
+        T_joint, Td_joint = constant_strain._tangent_and_derivative_se3(
+            xi_joint, xid_joint, jnp.array(1.0), self.tangent_eps
         )
         T_joint_B = T_joint @ B_joint
         joint_velocity = T_joint_B @ qd_joint

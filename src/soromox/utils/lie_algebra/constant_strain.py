@@ -11,12 +11,20 @@ For a constant body strain ``xi`` and arclength ``s``, let
         &= D_\xi T(s, \xi)[\dot\xi].
 
 The minimal polynomials of ``se(2)`` and ``se(3)`` adjoint matrices reduce all
-three expressions exactly to powers through ``B**4``. Their scalar
-trigonometric coefficients nevertheless contain removable singularities at
-zero rotation. The implementation therefore uses closed forms away from zero
-and even Taylor series through ``z**8`` near zero, where ``z = s * theta``.
-The coefficients are expressed through ``x = z**2`` so neither the primal nor
-the explicit tangent derivative divides by ``theta = norm(omega)``.
+three expressions exactly to powers through ``B**4``. The spatial path uses
+that reduced polynomial directly and can bundle related operators so PCS and
+GVS evaluate the matrix powers and tangent coefficients only once. The planar
+path further reduces the polynomial to exact ``2 x 2`` rotation/translation
+blocks, avoiding generic ``3 x 3`` matrix powers. Public
+``operators_se2``/``operators_se3`` bundles expose this sharing through a fixed
+named result; private selective bundles let system recurrences omit outputs
+they already have or do not consume.
+
+The scalar trigonometric coefficients contain removable singularities at zero
+rotation. Both paths therefore use closed forms away from zero and even Taylor
+series through ``z**8`` near zero, where ``z = s * theta``. The coefficients
+are expressed through ``x = z**2`` so neither the primal nor the explicit
+tangent derivative divides by ``theta = norm(omega)``.
 
 The default branch policy is designed to keep values, reverse-mode gradients,
 and Hessians finite under scalar and batched JAX transformations. Under
@@ -27,22 +35,60 @@ directional derivatives.
 """
 
 __all__ = [
+    "ConstantStrainOperators",
     "adjoint_se2",
     "adjoint_inverse_se2",
+    "operators_se2",
     "tangent_se2",
     "tangent_derivative_se2",
     "adjoint_se3",
     "adjoint_inverse_se3",
+    "operators_se3",
     "tangent_se3",
     "tangent_derivative_se3",
 ]
+
+from typing import NamedTuple
 
 import jax.numpy as jnp
 from jax import Array
 
 from soromox.autodiff import strict_singularities_enabled
 
-from . import se2, se3
+from . import se3
+from ._jacobian_coefficients import (
+    _forward_coefficients_and_x_derivatives,
+    one_minus_cosine_over_angle_squared,
+    sine_over_angle,
+)
+
+
+class ConstantStrainOperators(NamedTuple):
+    """Related constant-strain Lie operators evaluated as one shared bundle.
+
+    Attributes:
+        adjoint: Forward adjoint ``exp(s * ad_xi)``.
+        adjoint_inverse: Inverse of ``adjoint`` assembled from Lie-group
+            blocks rather than a dense matrix inverse.
+        tangent: Integrated adjoint
+            ``integral_0^s exp(sigma * ad_xi) d sigma``.
+        tangent_derivative: Analytic directional derivative
+            ``D_xi tangent[xid]``. This is ``None`` when the bundle was
+            requested without ``xid``.
+
+    Notes:
+        The named result gives the public bundled evaluators a fixed interface;
+        unlike the private selective helpers, its field layout never depends
+        on which values an internal system recurrence happens to consume.
+    """
+
+    adjoint: Array
+    adjoint_inverse: Array
+    tangent: Array
+    tangent_derivative: Array | None
+
+
+# Shared reduced-polynomial coefficients and matrix-power recurrences.
 
 
 def _constant_strain_series_threshold(dtype: jnp.dtype) -> Array:
@@ -324,12 +370,7 @@ def _constant_strain_adjoint(
         Taylor and trigonometric representations.
     """
     powers = _matrix_powers(s * ad_xi)
-    result = powers[0]
-    for coefficient, power in zip(
-        _adjoint_coefficients(angle_sq, s, eps), powers[1:], strict=True
-    ):
-        result = result + coefficient * power
-    return result
+    return _reduced_adjoint_from_powers(powers, angle_sq, s, eps)
 
 
 def _constant_strain_tangent(
@@ -357,10 +398,7 @@ def _constant_strain_tangent(
     """
     powers = _matrix_powers(s * ad_xi)
     coefficients, _ = _tangent_coefficients_and_x_derivatives(angle_sq, s, eps)
-    result = powers[0]
-    for coefficient, power in zip(coefficients, powers[1:], strict=True):
-        result = result + coefficient * power
-    return s * result
+    return _reduced_tangent_from_powers(powers, coefficients, s)
 
 
 def _constant_strain_tangent_derivative(
@@ -401,13 +439,334 @@ def _constant_strain_tangent_derivative(
     coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
         angle_sq, s, eps
     )
+    return _reduced_tangent_derivative_from_powers(
+        powers, dot_powers, coefficients, derivatives, angle_sq_dot, s
+    )
+
+
+def _reduced_adjoint_from_powers(
+    powers: list[Array], angle_sq: Array, s: Array, eps: float | Array
+) -> Array:
+    r"""Assemble the exact reduced adjoint from precomputed powers of ``B``.
+
+    ``powers`` must contain ``[I, B, ..., B**4]`` for
+    ``B = s * ad_xi``. Supplying the powers lets a bundled evaluator reuse
+    them for the tangent and its derivative. Only the scalar coefficients are
+    selected here; this helper performs no additional matrix multiplication.
+    """
+    result = powers[0]
+    for coefficient, power in zip(
+        _adjoint_coefficients(angle_sq, s, eps), powers[1:], strict=True
+    ):
+        result = result + coefficient * power
+    return result
+
+
+def _reduced_tangent_from_powers(
+    powers: list[Array],
+    coefficients: tuple[Array, ...],
+    s: Array,
+) -> Array:
+    r"""Assemble the exact reduced tangent from shared powers and coefficients.
+
+    The result is ``s * (I + sum_k coefficients[k-1] * B**k)``. The caller is
+    responsible for providing coefficients computed from the same ``xi`` and
+    ``s`` as the powers, which allows ``T`` and ``Td`` to share both objects.
+    """
+    result = powers[0]
+    for coefficient, power in zip(coefficients, powers[1:], strict=True):
+        result = result + coefficient * power
+    return s * result
+
+
+def _reduced_tangent_derivative_from_powers(
+    powers: list[Array],
+    dot_powers: list[Array],
+    coefficients: tuple[Array, ...],
+    derivatives: tuple[Array, ...],
+    angle_sq_dot: Array,
+    s: Array,
+) -> Array:
+    r"""Assemble the analytic tangent derivative from shared intermediates.
+
+    Each term applies the product rule to its scalar coefficient and matrix
+    power. ``derivatives`` are with respect to ``x = (s theta)**2`` and
+    ``dot_powers[k]`` is ``D(B**k)[B_dot]``. Consequently no rotational norm
+    or runtime autodiff transform is required at zero rotation.
+    """
     x_dot = s**2 * angle_sq_dot
-    result = jnp.zeros_like(ad_xi)
+    result = jnp.zeros_like(powers[0])
     for coefficient, derivative, power, dot_power in zip(
         coefficients, derivatives, powers[1:], dot_powers[1:], strict=True
     ):
         result = result + derivative * x_dot * power + coefficient * dot_power
     return s * result
+
+
+# Direct SE(2) block implementation and bundled evaluator.
+
+
+def _se2_forward_cutoff(s: Array, eps: float | Array, dtype: jnp.dtype) -> Array:
+    """Return the accumulated-angle cutoff for forward SE(2) coefficients.
+
+    ``eps`` is expressed in rotational-strain units, whereas the scalar
+    coefficients depend on ``z = s * theta``. Multiplication by ``abs(s)``
+    converts the requested threshold to accumulated-angle units before it is
+    combined with the dtype-aware ``u**(1/14)`` lower bound.
+    """
+    requested = jnp.abs(s) * jnp.abs(jnp.asarray(eps, dtype=dtype))
+    return jnp.maximum(requested, _constant_strain_series_threshold(dtype))
+
+
+def _se2_forward_coefficients(
+    theta: Array, s: Array, eps: float | Array
+) -> tuple[Array, tuple[Array, Array, Array]]:
+    r"""Return ``z`` and the stable forward coefficient triple.
+
+    The coefficients are ``sinc(z)``, ``cosc(z)``, and ``tanc(z)`` with
+    ``z = s * theta``. They are evaluated together so their shared branch
+    predicate and trigonometric work can be reused by the direct tangent-block
+    assembler.
+    """
+    z = s * theta
+    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    coefficients, _ = _forward_coefficients_and_x_derivatives(z, cutoff)
+    return z, coefficients
+
+
+def _se2_adjoint_coefficients(
+    theta: Array, s: Array, eps: float | Array
+) -> tuple[Array, Array, Array]:
+    r"""Return ``z``, ``sinc(z)``, and ``cosc(z)`` for an SE(2) adjoint.
+
+    The adjoint does not depend on ``tanc``. Avoiding its evaluation keeps the
+    single-operator public adjoint functions smaller than the full bundled
+    tangent path while retaining the same cutoff policy.
+    """
+    z = s * theta
+    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    return (
+        z,
+        sine_over_angle(z, cutoff),
+        one_minus_cosine_over_angle_squared(z, cutoff),
+    )
+
+
+def _se2_forward_coefficients_and_derivatives(
+    theta: Array, s: Array, eps: float | Array
+) -> tuple[
+    Array,
+    tuple[Array, Array, Array],
+    tuple[Array, Array, Array],
+]:
+    r"""Return forward coefficients and their analytic ``z**2`` derivatives.
+
+    The derivative triple is ``d(sinc, cosc, tanc) / d(z**2)``. Representing
+    these even functions in ``z**2`` avoids dividing by ``theta`` at zero and
+    lets :func:`_se2_tangent_derivative_from_coefficients` apply the chain rule
+    using ``d(z**2)/dt = 2 z s xid[0]``.
+    """
+    z = s * theta
+    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    coefficients, derivatives = _forward_coefficients_and_x_derivatives(z, cutoff)
+    return z, coefficients, derivatives
+
+
+def _se2_adjoint_components(
+    xi: Array, s: Array, eps: float | Array
+) -> tuple[Array, Array, Array]:
+    r"""Evaluate the shared translation and rotation components of an adjoint.
+
+    For ``xi = [theta, v]``, ``z = s * theta``, and
+    ``a = -J v``, the lower blocks of the forward adjoint are
+
+    .. math::
+
+        q = s\left(\operatorname{sinc}(z)a
+            + z\operatorname{cosc}(z)v\right),
+        \qquad R = \exp(zJ).
+
+    Returns:
+        Tuple ``(q, sin_z, cos_z)``. These values are sufficient to assemble
+        both the forward block ``[q, R]`` and inverse block ``[-R.T @ q, R.T]``
+        without reevaluating a coefficient.
+
+    Notes:
+        This exact form replaces four generic ``3 x 3`` matrix products. The
+        helper deliberately returns components rather than either matrix so a
+        public operator bundle can construct both adjoints with shared work.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    theta = xi[0]
+    v = xi[1:]
+    z, sinc, cosc = _se2_adjoint_coefficients(theta, s, eps)
+    z_cosc = z * cosc
+    minus_j_v = jnp.stack([v[1], -v[0]])
+    q = s * (sinc * minus_j_v + z_cosc * v)
+
+    return q, jnp.sin(z), jnp.cos(z)
+
+
+def _se2_adjoint_from_components(
+    q: Array, sin_z: Array, cos_z: Array, *, inverse: bool
+) -> Array:
+    r"""Assemble an SE(2) adjoint from precomputed scalar/block components.
+
+    Args:
+        q: Forward-adjoint translation column with shape ``(2,)``.
+        sin_z: Sine of the signed accumulated rotation.
+        cos_z: Cosine of the signed accumulated rotation.
+        inverse: Select ``[-R.T @ q, R.T]`` instead of ``[q, R]``.
+
+    Returns:
+        Forward or inverse planar adjoint with shape ``(3, 3)``.
+    """
+    zero = jnp.zeros((), dtype=q.dtype)
+    one = jnp.ones((), dtype=q.dtype)
+    if inverse:
+        q = -jnp.stack([cos_z * q[0] + sin_z * q[1], -sin_z * q[0] + cos_z * q[1]])
+        return jnp.stack(
+            [
+                jnp.stack([one, zero, zero]),
+                jnp.stack([q[0], cos_z, sin_z]),
+                jnp.stack([q[1], -sin_z, cos_z]),
+            ]
+        )
+    return jnp.stack(
+        [
+            jnp.stack([one, zero, zero]),
+            jnp.stack([q[0], cos_z, -sin_z]),
+            jnp.stack([q[1], sin_z, cos_z]),
+        ]
+    )
+
+
+def _se2_adjoint_block(
+    xi: Array, s: Array, eps: float | Array, *, inverse: bool
+) -> Array:
+    """Evaluate one planar adjoint while sharing its component assembly."""
+    return _se2_adjoint_from_components(
+        *_se2_adjoint_components(xi, s, eps), inverse=inverse
+    )
+
+
+def _se2_tangent_from_coefficients(
+    xi: Array,
+    s: Array,
+    z: Array,
+    coefficients: tuple[Array, Array, Array],
+) -> Array:
+    r"""Assemble the exact planar tangent from scalar coefficient blocks.
+
+    For ``xi = [theta, v]`` and ``z = s * theta``, the lower-right block is
+    ``s * (sinc(z) I + z cosc(z) J)`` and the lower-left column is
+    ``s**2 * (cosc(z) (-J v) + z tanc(z) v)``. This block formula is exactly
+    equal to the reduced matrix polynomial, including pure translation.
+    """
+    sinc, cosc, tanc = coefficients
+    v = xi[1:]
+    minus_j_v = jnp.stack([v[1], -v[0]])
+    z_cosc = z * cosc
+    z_tanc = z * tanc
+    lower_left = s**2 * (cosc * minus_j_v + z_tanc * v)
+    zero = jnp.zeros((), dtype=xi.dtype)
+    return jnp.stack(
+        [
+            jnp.stack([s, zero, zero]),
+            jnp.stack([lower_left[0], s * sinc, -s * z_cosc]),
+            jnp.stack([lower_left[1], s * z_cosc, s * sinc]),
+        ]
+    )
+
+
+def _se2_tangent_derivative_from_coefficients(
+    xi: Array,
+    xid: Array,
+    s: Array,
+    z: Array,
+    coefficients: tuple[Array, Array, Array],
+    derivatives: tuple[Array, Array, Array],
+) -> Array:
+    r"""Assemble ``D_xi T[xid]`` from analytic scalar derivatives.
+
+    The chain rule is applied to the stable coefficient representation in
+    ``x = z**2``. Both curvature-rate and translation-rate contributions are
+    retained explicitly, so the result remains linear in ``xid`` and finite at
+    zero curvature without invoking a JAX differentiation transform.
+    """
+    sinc, cosc, tanc = coefficients
+    sinc_x, cosc_x, tanc_x = derivatives
+    v = xi[1:]
+    vd = xid[1:]
+    minus_j_v = jnp.stack([v[1], -v[0]])
+    minus_j_vd = jnp.stack([vd[1], -vd[0]])
+    z_dot = s * xid[0]
+    x = z**2
+    sinc_dot = 2.0 * z * sinc_x * z_dot
+    cosc_dot = 2.0 * z * cosc_x * z_dot
+    z_cosc_dot = z_dot * (cosc + 2.0 * x * cosc_x)
+    z_tanc = z * tanc
+    z_tanc_dot = z_dot * (tanc + 2.0 * x * tanc_x)
+    lower_left_dot = s**2 * (
+        cosc_dot * minus_j_v + cosc * minus_j_vd + z_tanc_dot * v + z_tanc * vd
+    )
+    zero = jnp.zeros((), dtype=xi.dtype)
+    return jnp.stack(
+        [
+            jnp.stack([zero, zero, zero]),
+            jnp.stack([lower_left_dot[0], s * sinc_dot, -s * z_cosc_dot]),
+            jnp.stack([lower_left_dot[1], s * z_cosc_dot, s * sinc_dot]),
+        ]
+    )
+
+
+def _operators_se2(
+    xi: Array,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+    xid: Array | None = None,
+) -> tuple[Array, Array] | tuple[Array, Array, Array]:
+    r"""Evaluate an internal SE(2) operator bundle with shared scalar work.
+
+    The returned operators are ``(Ad_inv, T)`` when ``xid`` is omitted and
+    ``(Ad_inv, T, Td)`` otherwise. The latter path evaluates the tangent
+    coefficients only once and reuses them for the tangent and its explicit
+    directional derivative. Separate adjoint and tangent epsilon arguments
+    preserve the threshold policies of internal system recurrences.
+
+    This helper is private because it is an execution optimization for callers
+    that need several public operators together; it is not a new Lie-algebra
+    API. No automatic-differentiation transform is used in either path.
+
+    Args:
+        xi: Planar strain in angular-first order.
+        s: Scalar arclength.
+        adjoint_eps: Threshold for the inverse-adjoint coefficients.
+        tangent_eps: Threshold for tangent coefficients and their derivatives.
+        xid: Optional strain direction/rate. Supplying it requests ``Td``.
+
+    Returns:
+        ``(Ad_inv, T)`` or ``(Ad_inv, T, Td)``. Users who want a stable public
+        named result should call :func:`operators_se2` instead.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    adjoint_inverse = _se2_adjoint_block(xi, s, adjoint_eps, inverse=True)
+    if xid is None:
+        z, coefficients = _se2_forward_coefficients(xi[0], s, tangent_eps)
+        return adjoint_inverse, _se2_tangent_from_coefficients(xi, s, z, coefficients)
+
+    xid = jnp.asarray(xid).reshape(-1)
+    z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+        xi[0], s, tangent_eps
+    )
+    tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
+    tangent_derivative = _se2_tangent_derivative_from_coefficients(
+        xi, xid, s, z, coefficients, derivatives
+    )
+    return adjoint_inverse, tangent, tangent_derivative
 
 
 def adjoint_se2(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -433,14 +792,14 @@ def adjoint_se2(xi: Array, s: Array, eps: float | Array) -> Array:
         adjoint at arclength ``s``.
 
     Notes:
-        The implementation uses the exact reduced fourth-order polynomial, not
-        a truncated matrix-exponential series. At zero curvature it retains
-        the complete translation/shear dependence of ``exp(s * ad_xi)``. The
-        Taylor branch affects only removable scalar coefficient quotients.
+        The implementation uses the exact SE(2) rotation/translation block
+        form, not a truncated matrix-exponential series. At zero curvature it
+        retains the complete translation/shear dependence of
+        ``exp(s * ad_xi)``. The Taylor branch affects only removable scalar
+        coefficient quotients.
     """
     xi = jnp.asarray(xi).reshape(-1)
-    angle_sq = xi[0] ** 2
-    return _constant_strain_adjoint(se2.small_adjoint(xi), angle_sq, s, eps)
+    return _se2_adjoint_block(xi, s, eps, inverse=False)
 
 
 def adjoint_inverse_se2(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -464,25 +823,12 @@ def adjoint_inverse_se2(xi: Array, s: Array, eps: float | Array) -> Array:
         Array with shape ``(3, 3)`` representing the inverse segment adjoint.
 
     Notes:
-        This path reuses the stabilized forward adjoint, so forward and inverse
-        transport share one near-zero policy. It is intended for body-frame
-        PCS/GVS recurrences rather than inversion of arbitrary matrices.
+        This path shares the stabilized forward-adjoint block assembler, so
+        forward and inverse transport have one near-zero policy. The inverse
+        translation is formed explicitly as ``-R.T @ q`` without a generic
+        matrix inverse. It is intended for body-frame PCS/GVS recurrences.
     """
-    Ad = adjoint_se2(xi, s, eps=eps)
-
-    R = Ad[1:, 1:]
-    mJt = Ad[1:, 0].reshape(-1, 1)
-    R_inv = jnp.transpose(R)
-
-    return jnp.concatenate(
-        [
-            jnp.concatenate(
-                [jnp.ones((1, 1), dtype=Ad.dtype), jnp.zeros((1, 2), dtype=Ad.dtype)],
-                axis=1,
-            ),
-            jnp.concatenate([-R_inv @ mJt, R_inv], axis=1),
-        ]
-    )
+    return _se2_adjoint_block(xi, s, eps, inverse=True)
 
 
 def tangent_se2(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -515,8 +861,9 @@ def tangent_se2(xi: Array, s: Array, eps: float | Array) -> Array:
         require a separate curvature-zero formula.
     """
     xi = jnp.asarray(xi).reshape(-1)
-    angle_sq = xi[0] ** 2
-    return _constant_strain_tangent(se2.small_adjoint(xi), angle_sq, s, eps)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    z, coefficients = _se2_forward_coefficients(xi[0], s, eps)
+    return _se2_tangent_from_coefficients(xi, s, z, coefficients)
 
 
 def tangent_derivative_se2(
@@ -542,23 +889,225 @@ def tangent_derivative_se2(
         Array with shape ``(3, 3)`` containing ``d/dt tangent_se2(xi, s)``.
 
     Notes:
-        Both the reduced matrix powers and scalar coefficients are
+        The SE(2) rotation/translation blocks and scalar coefficients are
         differentiated explicitly. No ``jvp``, ``grad``, or Jacobian transform
         is invoked in this production path. The result is linear in ``xid``
         and is exactly zero when either ``s == 0`` or ``xid == 0``.
     """
     xi = jnp.asarray(xi).reshape(-1)
     xid = jnp.asarray(xid).reshape(-1)
-    angle_sq = xi[0] ** 2
-    angle_sq_dot = 2.0 * xi[0] * xid[0]
-    return _constant_strain_tangent_derivative(
-        se2.small_adjoint(xi),
-        se2.small_adjoint(xid),
-        angle_sq,
+    s = jnp.asarray(s, dtype=xi.dtype)
+    z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+        xi[0], s, eps
+    )
+    return _se2_tangent_derivative_from_coefficients(
+        xi, xid, s, z, coefficients, derivatives
+    )
+
+
+def operators_se2(
+    xi: Array,
+    s: Array,
+    eps: float | Array,
+    xid: Array | None = None,
+) -> ConstantStrainOperators:
+    r"""Return the related SE(2) constant-strain operators as one bundle.
+
+    Use this function when a caller needs more than one of
+    :func:`adjoint_se2`, :func:`adjoint_inverse_se2`,
+    :func:`tangent_se2`, and :func:`tangent_derivative_se2` at the same
+    ``(xi, s)``. The bundled evaluation shares stabilized scalar coefficients
+    and adjoint components instead of repeating them in separate public calls.
+
+    Args:
+        xi: Constant planar strain with shape ``(3,)`` or ``(3, 1)`` in
+            ``[theta, v_x, v_y]`` order.
+        s: Scalar arclength position measured from the segment base.
+        eps: Minimum rotational-strain threshold used consistently by all
+            returned operators.
+        xid: Optional strain direction/rate with the same shape as ``xi``.
+            When supplied, ``tangent_derivative`` contains
+            ``D_xi T(s, xi)[xid]``; otherwise that field is ``None``.
+
+    Returns:
+        :class:`ConstantStrainOperators` containing the forward and inverse
+        adjoints, tangent, and optional analytic tangent derivative.
+
+    Notes:
+        The result has a fixed named-field interface and is compatible with
+        JAX transformations. No autodiff operation is executed internally.
+        Call a single-operator function when only one expression is needed;
+        this avoids assembling unused matrices.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    adjoint_components = _se2_adjoint_components(xi, s, eps)
+    adjoint = _se2_adjoint_from_components(*adjoint_components, inverse=False)
+    adjoint_inverse = _se2_adjoint_from_components(
+        *adjoint_components, inverse=True
+    )
+    if xid is None:
+        z, coefficients = _se2_forward_coefficients(xi[0], s, eps)
+        tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
+        tangent_derivative = None
+    else:
+        xid = jnp.asarray(xid).reshape(-1)
+        z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+            xi[0], s, eps
+        )
+        tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
+        tangent_derivative = _se2_tangent_derivative_from_coefficients(
+            xi, xid, s, z, coefficients, derivatives
+        )
+    return ConstantStrainOperators(
+        adjoint, adjoint_inverse, tangent, tangent_derivative
+    )
+
+
+# Reduced-polynomial SE(3) implementation and bundled evaluators.
+
+
+def _inverse_adjoint_se3_from_forward(adjoint: Array) -> Array:
+    r"""Construct an inverse SE(3) adjoint from stabilized forward blocks.
+
+    For ``Ad = [[R, 0], [hat(t) R, R]]``, this assembles
+    ``Ad^-1 = [[R.T, 0], [-R.T hat(t), R.T]]``. It avoids a dense inverse and
+    guarantees that forward and inverse operators use identical stabilized
+    coefficients.
+    """
+    rotation = adjoint[:3, :3]
+    translation_hat_rotation = adjoint[3:, :3]
+    rotation_inverse = jnp.transpose(rotation)
+    translation_hat = translation_hat_rotation @ rotation_inverse
+    zero = jnp.zeros((3, 3), dtype=adjoint.dtype)
+    return jnp.block(
+        [
+            [rotation_inverse, zero],
+            [-rotation_inverse @ translation_hat, rotation_inverse],
+        ]
+    )
+
+
+def _operators_se3(
+    xi: Array,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+    xid: Array | None = None,
+    *,
+    return_adjoint: bool = False,
+) -> (
+    tuple[Array, Array]
+    | tuple[Array, Array, Array]
+    | tuple[Array, Array, Array, Array]
+):
+    r"""Evaluate related SE(3) constant-strain operators with shared work.
+
+    The standard result is ``(Ad_inv, T)``. Supplying ``xid`` adds ``Td``;
+    requesting ``return_adjoint`` adds the forward adjoint as the final
+    element. Matrix powers through ``B**4`` are built once, while ``T`` and
+    ``Td`` also share their scalar coefficients. Separate adjoint and tangent
+    thresholds preserve the caller's existing numerical policy.
+
+    This private execution helper mirrors :func:`_operators_se2` while keeping
+    the spatial fourth-order polynomial. It performs no autodiff operation.
+
+    Args:
+        xi: Spatial strain in angular-first order.
+        s: Scalar arclength.
+        adjoint_eps: Threshold for forward/inverse adjoint coefficients.
+        tangent_eps: Threshold for tangent coefficients and derivatives.
+        xid: Optional strain direction/rate. Supplying it requests ``Td``.
+        return_adjoint: Append the already-computed forward adjoint. This is
+            used by arc-length derivatives and the public named bundle.
+
+    Returns:
+        Selective tuple beginning with ``(Ad_inv, T)`` and followed by ``Td``
+        and/or ``Ad`` according to the two optional arguments. The public
+        :func:`operators_se3` function provides a fixed named return type.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    ad_xi = se3.small_adjoint(xi)
+    angle_sq = jnp.dot(xi[:3], xi[:3])
+
+    if xid is None:
+        powers = _matrix_powers(s * ad_xi)
+        dot_powers = None
+    else:
+        xid = jnp.asarray(xid).reshape(-1)
+        powers, dot_powers = _matrix_powers_with_derivatives(
+            s * ad_xi, s * se3.small_adjoint(xid)
+        )
+
+    adjoint = _reduced_adjoint_from_powers(powers, angle_sq, s, adjoint_eps)
+    adjoint_inverse = _inverse_adjoint_se3_from_forward(adjoint)
+    coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
+        angle_sq, s, tangent_eps
+    )
+    tangent = _reduced_tangent_from_powers(powers, coefficients, s)
+
+    outputs = (adjoint_inverse, tangent)
+    if xid is not None:
+        assert dot_powers is not None
+        angle_sq_dot = 2.0 * jnp.dot(xi[:3], xid[:3])
+        tangent_derivative = _reduced_tangent_derivative_from_powers(
+            powers,
+            dot_powers,
+            coefficients,
+            derivatives,
+            angle_sq_dot,
+            s,
+        )
+        outputs += (tangent_derivative,)
+    if return_adjoint:
+        outputs += (adjoint,)
+    return outputs
+
+
+def _tangent_and_derivative_se3(
+    xi: Array,
+    xid: Array,
+    s: Array,
+    eps: float | Array,
+) -> tuple[Array, Array]:
+    r"""Evaluate spatial ``T`` and ``Td`` while sharing powers and coefficients.
+
+    This is the selective GVS counterpart to :func:`_operators_se3`: it does
+    not construct an unused adjoint because GVS already obtains that operator
+    from the relative pose required by its kinematic recurrence.
+
+    Args:
+        xi: Spatial strain in angular-first order.
+        xid: Strain direction/rate.
+        s: Scalar arclength held fixed during differentiation.
+        eps: Tangent coefficient threshold.
+
+    Returns:
+        Tuple ``(T, Td)`` with both arrays having shape ``(6, 6)``.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    xid = jnp.asarray(xid).reshape(-1)
+    s = jnp.asarray(s, dtype=xi.dtype)
+    ad_xi = se3.small_adjoint(xi)
+    powers, dot_powers = _matrix_powers_with_derivatives(
+        s * ad_xi, s * se3.small_adjoint(xid)
+    )
+    angle_sq = jnp.dot(xi[:3], xi[:3])
+    angle_sq_dot = 2.0 * jnp.dot(xi[:3], xid[:3])
+    coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
+        angle_sq, s, eps
+    )
+    tangent = _reduced_tangent_from_powers(powers, coefficients, s)
+    tangent_derivative = _reduced_tangent_derivative_from_powers(
+        powers,
+        dot_powers,
+        coefficients,
+        derivatives,
         angle_sq_dot,
         s,
-        eps,
     )
+    return tangent, tangent_derivative
 
 
 def adjoint_se3(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -616,16 +1165,8 @@ def adjoint_inverse_se3(xi: Array, s: Array, eps: float | Array) -> Array:
         and stable-default behavior aligned with :func:`adjoint_se3` and avoids
         the cost and conditioning of a dense solve.
     """
-    Ad = adjoint_se3(xi, s, eps=eps)
-
-    R = Ad[:3, :3]
-    t_hat_R = Ad[3:, :3]
-    R_inv = jnp.transpose(R)
-    t_hat = t_hat_R @ R_inv
-
-    return jnp.block(
-        [[R_inv, jnp.zeros((3, 3), dtype=Ad.dtype)], [-R_inv @ t_hat, R_inv]]
-    )
+    adjoint = adjoint_se3(xi, s, eps=eps)
+    return _inverse_adjoint_se3_from_forward(adjoint)
 
 
 def tangent_se3(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -704,4 +1245,51 @@ def tangent_derivative_se3(
         angle_sq_dot,
         s,
         eps,
+    )
+
+
+def operators_se3(
+    xi: Array,
+    s: Array,
+    eps: float | Array,
+    xid: Array | None = None,
+) -> ConstantStrainOperators:
+    r"""Return the related SE(3) constant-strain operators as one bundle.
+
+    This is the spatial counterpart of :func:`operators_se2`. It is intended
+    for users who require multiple expressions at the same constant strain and
+    arclength. Matrix powers through ``B**4`` are constructed once; the
+    tangent and its optional derivative also share their stable coefficients.
+
+    Args:
+        xi: Constant spatial strain with shape ``(6,)`` or ``(6, 1)`` in
+            ``[omega_x, omega_y, omega_z, v_x, v_y, v_z]`` order.
+        s: Scalar arclength position measured from the segment base.
+        eps: Minimum rotational-strain threshold used consistently by all
+            returned operators.
+        xid: Optional strain direction/rate with the same shape as ``xi``.
+            When supplied, ``tangent_derivative`` contains
+            ``D_xi T(s, xi)[xid]``; otherwise that field is ``None``.
+
+    Returns:
+        :class:`ConstantStrainOperators` containing the forward and inverse
+        adjoints, tangent, and optional analytic tangent derivative.
+
+    Notes:
+        The fixed named result is JAX-transformable. The implementation uses
+        explicit matrix-power and coefficient derivatives and performs no
+        runtime autodiff. For one expression, prefer the corresponding
+        single-operator function to avoid unused assembly.
+    """
+    if xid is None:
+        adjoint_inverse, tangent, adjoint = _operators_se3(
+            xi, s, eps, eps, return_adjoint=True
+        )
+        tangent_derivative = None
+    else:
+        adjoint_inverse, tangent, tangent_derivative, adjoint = _operators_se3(
+            xi, s, eps, eps, xid, return_adjoint=True
+        )
+    return ConstantStrainOperators(
+        adjoint, adjoint_inverse, tangent, tangent_derivative
     )

@@ -827,8 +827,9 @@ class PCS(SoftRobot):
             xi_i = lax.dynamic_index_in_dim(xi, i, axis=0, keepdims=False)
             L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
 
-            Ad_inv = constant_strain.adjoint_inverse_se3(xi_i, L_i, eps=self.global_eps)
-            T = constant_strain.tangent_se3(xi_i, L_i, eps=self.tangent_eps)
+            Ad_inv, T = constant_strain._operators_se3(
+                xi_i, L_i, self.global_eps, self.tangent_eps
+            )
 
             J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
@@ -884,10 +885,9 @@ class PCS(SoftRobot):
             s_local: Array,
             J_base: Array,
         ) -> Array:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, s_local, eps=self.global_eps
+            Ad_inv, T = constant_strain._operators_se3(
+                xi_i, s_local, self.global_eps, self.tangent_eps
             )
-            T = constant_strain.tangent_se3(xi_i, s_local, eps=self.tangent_eps)
 
             return self._update_body_jacobian_step(J_base, i, Ad_inv, T)
 
@@ -924,10 +924,9 @@ class PCS(SoftRobot):
             xi_i: Array,
             arc_len: Array,
         ) -> Array:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, arc_len, eps=self.global_eps
+            Ad_inv, T = constant_strain._operators_se3(
+                xi_i, arc_len, self.global_eps, self.global_eps
             )
-            T = constant_strain.tangent_se3(xi_i, arc_len, eps=self.global_eps)
 
             return self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
 
@@ -985,9 +984,9 @@ class PCS(SoftRobot):
             local segment transform and ``T`` is the SE(3) tangent operator.
             Both arrays have shape ``(6, 6)``.
         """
-        Ad_inv = constant_strain.adjoint_inverse_se3(xi_i, arc_len, eps=self.global_eps)
-        T = constant_strain.tangent_se3(xi_i, arc_len, eps=self.global_eps)
-        return Ad_inv, T
+        return constant_strain._operators_se3(
+            xi_i, arc_len, self.global_eps, self.global_eps
+        )
 
     def _pcs_jacobian_arc_length_step_terms(
         self, xi_i: Array, arc_len: Array
@@ -1004,10 +1003,15 @@ class PCS(SoftRobot):
             the primal Jacobian step terms; ``dAd_inv_ds`` and ``dT_ds`` are the
             analytical derivatives with respect to local arc length.
         """
-        Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, arc_len)
+        Ad_inv, T, adjoint = constant_strain._operators_se3(
+            xi_i,
+            arc_len,
+            self.global_eps,
+            self.global_eps,
+            return_adjoint=True,
+        )
         dAd_inv_ds = -se3.small_adjoint(xi_i) @ Ad_inv
-        dT_ds = constant_strain.adjoint_se3(xi_i, arc_len, eps=self.global_eps)
-        return Ad_inv, T, dAd_inv_ds, dT_ds
+        return Ad_inv, T, dAd_inv_ds, adjoint
 
     def _pcs_relative_pose(self, xi_i: Array, arc_len: Array) -> Array:
         """
@@ -1253,9 +1257,12 @@ class PCS(SoftRobot):
                 L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
                 arc_len = jnp.where(i == segment_idx, s_local, L_i)
 
-                Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, arc_len)
-                Td = constant_strain.tangent_derivative_se3(
-                    xi_i, xid_i, arc_len, eps=self.global_eps
+                Ad_inv, T, Td = constant_strain._operators_se3(
+                    xi_i,
+                    arc_len,
+                    self.global_eps,
+                    self.global_eps,
+                    xid_i,
                 )
                 g_next = g_prev @ self._pcs_relative_pose(xi_i, arc_len)
 
@@ -1321,36 +1328,6 @@ class PCS(SoftRobot):
         zeros = jnp.zeros((self.num_segments, 6, 6), dtype=xi.dtype)
         zero_slice = jnp.zeros((6, 6), dtype=xi.dtype)
 
-        def integrate_segment(
-            J_prev: Array,
-            i: Array,
-            xi_i: Array,
-            arc_len: Array,
-        ) -> Array:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, arc_len, eps=self.global_eps
-            )
-            T = constant_strain.tangent_se3(xi_i, arc_len, eps=self.global_eps)
-
-            return self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
-
-        def integrate_segment_arc_length_derivative(
-            J_base: Array,
-            i: Array,
-            xi_i: Array,
-            arc_len: Array,
-        ) -> Array:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, arc_len, eps=self.global_eps
-            )
-            T = constant_strain.tangent_se3(xi_i, arc_len, eps=self.global_eps)
-            dAd_inv_ds = -se3.small_adjoint(xi_i) @ Ad_inv
-            dT_ds = constant_strain.adjoint_se3(xi_i, arc_len, eps=self.global_eps)
-
-            return self._update_body_jacobian_arc_length_derivative_step(
-                J_base, i, Ad_inv, T, dAd_inv_ds, dT_ds
-            )
-
         def scan_body(
             carry: tuple[Array, Array, Array, Array],
             i: Array,
@@ -1364,9 +1341,12 @@ class PCS(SoftRobot):
                 L_i = lax.dynamic_index_in_dim(self.L, i, axis=0, keepdims=False)
                 arc_len = jnp.where(i == segment_idx, s_local, L_i)
 
-                J_next = integrate_segment(J_prev, i, xi_i, arc_len)
-                Js_next = integrate_segment_arc_length_derivative(
-                    J_prev, i, xi_i, arc_len
+                Ad_inv, T, dAd_inv_ds, dT_ds = (
+                    self._pcs_jacobian_arc_length_step_terms(xi_i, arc_len)
+                )
+                J_next = self._update_body_jacobian_step(J_prev, i, Ad_inv, T)
+                Js_next = self._update_body_jacobian_arc_length_derivative_step(
+                    J_prev, i, Ad_inv, T, dAd_inv_ds, dT_ds
                 )
 
                 is_target = i == segment_idx
@@ -1562,20 +1542,14 @@ class PCS(SoftRobot):
         xi = self.strain(q).reshape(self.num_segments, 6)
         xid = (self.B_xi @ qd).reshape(self.num_segments, 6)
 
-        # precompute the Lie algebra expressions for all segment tips
-        Ad_inv_tips = vmap(
-            lambda xi_i, L_i: constant_strain.adjoint_inverse_se3(
-                xi_i, L_i, eps=self.global_eps
-            )
-        )(xi, self.L)
-        T_tips = vmap(
-            lambda xi_i, L_i: constant_strain.tangent_se3(
-                xi_i, L_i, eps=self.tangent_eps
-            )
-        )(xi, self.L)
-        Td_tips = vmap(
-            lambda xi_i, xid_i, L_i: constant_strain.tangent_derivative_se3(
-                xi_i, xid_i, L_i, eps=self.tangent_eps
+        # precompute the fused Lie-algebra expressions for all segment tips
+        Ad_inv_tips, T_tips, Td_tips = vmap(
+            lambda xi_i, xid_i, L_i: constant_strain._operators_se3(
+                xi_i,
+                L_i,
+                self.global_eps,
+                self.tangent_eps,
+                xid_i,
             )
         )(xi, xid, self.L)
 
@@ -1667,12 +1641,12 @@ class PCS(SoftRobot):
             J_base: Array,
             Jd_base: Array,
         ) -> tuple[Array, Array]:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, s_local, eps=self.global_eps
-            )
-            T = constant_strain.tangent_se3(xi_i, s_local, eps=self.tangent_eps)
-            Td = constant_strain.tangent_derivative_se3(
-                xi_i, xid_i, s_local, eps=self.tangent_eps
+            Ad_inv, T, Td = constant_strain._operators_se3(
+                xi_i,
+                s_local,
+                self.global_eps,
+                self.tangent_eps,
+                xid_i,
             )
 
             J_next, Jd_next = self._update_body_jacobian_time_derivative_step(
@@ -1724,12 +1698,12 @@ class PCS(SoftRobot):
             xid_i: Array,
             arc_len: Array,
         ) -> tuple[Array, Array]:
-            Ad_inv = constant_strain.adjoint_inverse_se3(
-                xi_i, arc_len, eps=self.global_eps
-            )
-            T = constant_strain.tangent_se3(xi_i, arc_len, eps=self.global_eps)
-            Td = constant_strain.tangent_derivative_se3(
-                xi_i, xid_i, arc_len, eps=self.global_eps
+            Ad_inv, T, Td = constant_strain._operators_se3(
+                xi_i,
+                arc_len,
+                self.global_eps,
+                self.global_eps,
+                xid_i,
             )
 
             return self._update_body_jacobian_time_derivative_step(
@@ -2604,19 +2578,13 @@ class PCS(SoftRobot):
         convective_only_jd: bool = False,
     ) -> tuple[Array, Array]:
         """Compute active-coordinate local Jacobians at all segment tips."""
-        Ad_inv_tips = vmap(
-            lambda xi_i, L_i: constant_strain.adjoint_inverse_se3(
-                xi_i, L_i, eps=self.global_eps
-            )
-        )(xi, self.L)
-        T_tips = vmap(
-            lambda xi_i, L_i: constant_strain.tangent_se3(
-                xi_i, L_i, eps=self.tangent_eps
-            )
-        )(xi, self.L)
-        Td_tips = vmap(
-            lambda xi_i, xid_i, L_i: constant_strain.tangent_derivative_se3(
-                xi_i, xid_i, L_i, eps=self.tangent_eps
+        Ad_inv_tips, T_tips, Td_tips = vmap(
+            lambda xi_i, xid_i, L_i: constant_strain._operators_se3(
+                xi_i,
+                L_i,
+                self.global_eps,
+                self.tangent_eps,
+                xid_i,
             )
         )(xi, xid, self.L)
 
@@ -2745,12 +2713,12 @@ class PCS(SoftRobot):
             s_local_i: Array,
         ) -> tuple[Array, Array]:
             def jacobian_at_s(s_local_ij: Array) -> tuple[Array, Array]:
-                Ad_inv = constant_strain.adjoint_inverse_se3(
-                    xi_i, s_local_ij, eps=self.global_eps
-                )
-                T = constant_strain.tangent_se3(xi_i, s_local_ij, eps=self.tangent_eps)
-                Td = constant_strain.tangent_derivative_se3(
-                    xi_i, xid_i, s_local_ij, eps=self.tangent_eps
+                Ad_inv, T, Td = constant_strain._operators_se3(
+                    xi_i,
+                    s_local_ij,
+                    self.global_eps,
+                    self.tangent_eps,
+                    xid_i,
                 )
 
                 Ad_inv_T = Ad_inv @ T

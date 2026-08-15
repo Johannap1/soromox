@@ -101,6 +101,85 @@ def _forward_series_cutoff(theta: Array, eps: float | Array) -> tuple[Array, Arr
     return use_series, theta_safe
 
 
+def _forward_coefficients_and_x_derivatives(
+    theta: Array, eps: float | Array = 0.0
+) -> tuple[tuple[Array, Array, Array], tuple[Array, Array, Array]]:
+    r"""Evaluate all forward coefficients and their analytic ``x`` derivatives.
+
+    This private fused helper is used when one caller needs all three forward
+    coefficients at the same angle. With ``x = theta**2``, it returns
+
+    .. math::
+
+        f(x) &= \frac{\sin\theta}{\theta}, &
+        g(x) &= \frac{1 - \cos\theta}{\theta^2}, &
+        h(x) &= \frac{\theta - \sin\theta}{\theta^3},
+
+    together with ``df/dx``, ``dg/dx``, and ``dh/dx``. The explicit
+    derivatives let constant-strain code differentiate a signed accumulated
+    rotation without invoking runtime autodiff or dividing by ``theta``.
+
+    Args:
+        theta: Scalar signed rotation angle.
+        eps: User-requested minimum series cutoff. The dtype-aware forward
+            cutoff remains a lower bound.
+
+    Returns:
+        Pair ``(coefficients, derivatives)``. Each member is a three-tuple in
+        ``(sinc, cosc, tanc)`` order, and each derivative is with respect to
+        ``x = theta**2``.
+
+    Notes:
+        Values use the same Taylor polynomials through ``theta**8`` as the
+        public scalar helpers. Their differentiated polynomials therefore end
+        at ``x**3``. The closed forms share one sine/cosine evaluation and one
+        sanitized angle. Under strict-singularity mode the raw quotients and
+        their raw analytic derivatives are restored at zero.
+    """
+    theta = jnp.asarray(theta)
+    x = theta**2
+    series = (
+        1.0 + x * (-1.0 / 6.0 + x * (1.0 / 120.0 + x * (-1.0 / 5040.0 + x / 362880.0))),
+        0.5
+        + x * (-1.0 / 24.0 + x * (1.0 / 720.0 + x * (-1.0 / 40320.0 + x / 3628800.0))),
+        1.0 / 6.0
+        + x
+        * (-1.0 / 120.0 + x * (1.0 / 5040.0 + x * (-1.0 / 362880.0 + x / 39916800.0))),
+    )
+    derivative_series = (
+        -1.0 / 6.0 + x * (1.0 / 60.0 + x * (-1.0 / 1680.0 + x / 90720.0)),
+        -1.0 / 24.0 + x * (1.0 / 360.0 + x * (-1.0 / 13440.0 + x / 907200.0)),
+        -1.0 / 120.0 + x * (1.0 / 2520.0 + x * (-1.0 / 120960.0 + x / 9979200.0)),
+    )
+
+    use_series, theta_safe = _forward_series_cutoff(theta, eps)
+    if strict_singularities_enabled():
+        theta_safe = theta
+        use_series = jnp.zeros_like(theta, dtype=jnp.bool_)
+
+    sin_theta = jnp.sin(theta_safe)
+    cos_theta = jnp.cos(theta_safe)
+    closed = (
+        sin_theta / theta_safe,
+        (1.0 - cos_theta) / theta_safe**2,
+        (theta_safe - sin_theta) / theta_safe**3,
+    )
+    derivative_closed = (
+        (theta_safe * cos_theta - sin_theta) / (2.0 * theta_safe**3),
+        (theta_safe * sin_theta + 2.0 * cos_theta - 2.0) / (2.0 * theta_safe**4),
+        (3.0 * sin_theta - 2.0 * theta_safe - theta_safe * cos_theta)
+        / (2.0 * theta_safe**5),
+    )
+    coefficients = tuple(
+        jnp.where(use_series, a, b) for a, b in zip(series, closed, strict=True)
+    )
+    derivatives = tuple(
+        jnp.where(use_series, a, b)
+        for a, b in zip(derivative_series, derivative_closed, strict=True)
+    )
+    return coefficients, derivatives
+
+
 def sine_over_angle(theta: Array, eps: float | Array = 0.0) -> Array:
     r"""Evaluate the analytic sinc coefficient with stable derivatives.
 
