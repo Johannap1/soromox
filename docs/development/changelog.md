@@ -34,17 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact fourth-order matrix powers and tangent coefficients. PCS additionally
   prepares arclength-independent powers once per segment, assembles transported
   tangents directly, and propagates the contracted ``Jd @ qd`` needed by
-  forward dynamics instead of materializing unused matrices.
+  forward dynamics instead of materializing unused matrices. PlanarPCS and GVS
+  now use the same contracted-derivative strategy in their dynamics-only
+  recurrences while preserving full Jacobian derivatives in public kinematics.
 - Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
   PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
 - Compared with ``main`` on CPU/JAX 0.11.0 across five fresh processes, the
   40-case Lie benchmark reduced geometric-mean steady-state and compile time by
-  24.3% and 5.3%, and compiled PlanarPCS rollouts were 22.1% faster on
-  aggregate. In a final interleaved five-pair comparison, the complete
-  non-rollout PCS/GVS method suites changed execution by -11.6%/+1.0% and
-  compilation by +4.6%/+5.8%. One-second PCS rollouts improved by 17.5%, 25.7%,
-  and 34.9% at one, two, and four segments (26.8% aggregate); GVS changed by
-  -3.1%, -10.5%, and +2.8% (4.0% faster on aggregate).
+  24.3% and 5.3%. In a final interleaved five-pair comparison, complete
+  non-rollout PlanarPCS/PCS/GVS method suites changed execution by
+  -10.4%/-12.2%/+0.1% and compilation by -4.3%/+6.5%/+6.4%. One-second
+  PlanarPCS rollouts improved by 24.7%, 27.8%, and 36.0% at one, two, and four
+  segments (29.3% aggregate); PCS improved by 16.6%, 27.3%, and 33.3% (26.3%
+  aggregate); and GVS changed by 0.0%, -21.0%, and -7.6% (10.1% faster on
+  aggregate).
 
 ### Fixed
 

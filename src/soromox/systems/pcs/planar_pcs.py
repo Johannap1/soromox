@@ -2435,6 +2435,7 @@ class PlanarPCS(SoftRobot):
         xi: Array,
         xid: Array,
         B_segments: Array,
+        qd: Array,
         convective_only_jd: bool = False,
     ) -> tuple[Array, Array]:
         """Compute active-coordinate local Jacobians at all segment tips."""
@@ -2445,6 +2446,10 @@ class PlanarPCS(SoftRobot):
         )(xi, xid, self.L)
 
         zeros = jnp.zeros((3, self.num_dofs), dtype=xi.dtype)
+        if convective_only_jd:
+            derivative_zeros = jnp.zeros((3,), dtype=xi.dtype)
+        else:
+            derivative_zeros = zeros
 
         def scan_body(
             carry: tuple[Array, Array], i: Array
@@ -2465,15 +2470,21 @@ class PlanarPCS(SoftRobot):
             Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv_i
 
             if convective_only_jd:
-                Jd_segment = (Ad_inv_i @ Td_i) @ B_i
+                Jd_next = (
+                    Ad_inv_i @ Jd_prev
+                    + Ad_inv_dot @ (J_prev @ qd)
+                    + Ad_inv_i @ (Td_i @ xid_i)
+                )
             else:
                 Jd_segment = (Ad_inv_dot @ T_i + Ad_inv_i @ Td_i) @ B_i
-            Jd_next = Ad_inv_i @ Jd_prev + Ad_inv_dot @ J_prev + Jd_segment
+                Jd_next = Ad_inv_i @ Jd_prev + Ad_inv_dot @ J_prev + Jd_segment
 
             return (J_next, Jd_next), (J_next, Jd_next)
 
         indices = jnp.arange(self.num_segments, dtype=jnp.int32)
-        (_, _), (J_tips, Jd_tips) = lax.scan(scan_body, (zeros, zeros), indices)
+        (_, _), (J_tips, Jd_tips) = lax.scan(
+            scan_body, (zeros, derivative_zeros), indices
+        )
 
         return J_tips, Jd_tips
 
@@ -2513,13 +2524,13 @@ class PlanarPCS(SoftRobot):
         Args:
             q: Active generalized coordinates, shape ``(self.num_dofs,)``.
             qd: Active generalized velocities, shape ``(self.num_dofs,)``.
-            convective_only_jd: If true, compute a Jacobian time derivative that is
-                only guaranteed to be equivalent after multiplication by ``qd``.
+            convective_only_jd: If true, return ``Jd @ qd`` directly instead
+                of materializing the complete Jacobian time derivative.
 
-        When ``convective_only_jd`` is true, the returned derivative is only
-        guaranteed to be equivalent after multiplication by ``qd``. This is
-        sufficient for the forward-dynamics ``C(q, qd) @ qd`` path and avoids
-        assembling terms that vanish in that product.
+        When ``convective_only_jd`` is true, the fourth returned array has
+        shape ``(num_segments, num_gauss_points, 3)`` and contains the exact
+        contraction ``Jd @ qd`` required by forward dynamics. Otherwise it
+        contains the full Jacobian derivatives with the same shape as ``J``.
         """
         xi = self.strain(q).reshape(self.num_segments, 3)
         xid = (self.B_xi @ qd).reshape(self.num_segments, 3)
@@ -2556,11 +2567,12 @@ class PlanarPCS(SoftRobot):
         g_ps = vmap(segment_poses)(g_bases, xi, s_local)
 
         J_tips, Jd_tips = self._active_J_Jd_local_tips_from_strain(
-            xi, xid, B_segments, convective_only_jd=convective_only_jd
+            xi, xid, B_segments, qd, convective_only_jd=convective_only_jd
         )
         zeros_tip = jnp.zeros_like(J_tips[:1])
+        derivative_zeros_tip = jnp.zeros_like(Jd_tips[:1])
         J_bases = jnp.concatenate([zeros_tip, J_tips[:-1]], axis=0)
-        Jd_bases = jnp.concatenate([zeros_tip, Jd_tips[:-1]], axis=0)
+        Jd_bases = jnp.concatenate([derivative_zeros_tip, Jd_tips[:-1]], axis=0)
 
         def segment_jacobians(
             xi_i: Array,
@@ -2587,10 +2599,16 @@ class PlanarPCS(SoftRobot):
                 Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv
 
                 if convective_only_jd:
-                    Jd_segment = (Ad_inv @ Td) @ B_i
+                    Jd_next = (
+                        Ad_inv @ Jd_base_i
+                        + Ad_inv_dot @ (J_base_i @ qd)
+                        + Ad_inv @ (Td @ xid_i)
+                    )
                 else:
                     Jd_segment = (Ad_inv_dot @ T + Ad_inv @ Td) @ B_i
-                Jd_next = Ad_inv @ Jd_base_i + Ad_inv_dot @ J_base_i + Jd_segment
+                    Jd_next = (
+                        Ad_inv @ Jd_base_i + Ad_inv_dot @ J_base_i + Jd_segment
+                    )
 
                 return J_next, Jd_next
 
@@ -2621,7 +2639,7 @@ class PlanarPCS(SoftRobot):
             ``(self.num_dofs,)``. ``G`` is the active generalized gravity
             vector with shape ``(self.num_dofs,)``.
         """
-        Ws_scaled, g_ps, J_ps, Jd_ps = self._integration_kinematics(
+        Ws_scaled, g_ps, J_ps, Jd_qd_ps = self._integration_kinematics(
             q, qd, convective_only_jd=True
         )
         num_quad = self.num_gauss_points
@@ -2633,14 +2651,15 @@ class PlanarPCS(SoftRobot):
                 Ws_ij = Ws_scaled[i, j]
                 g_ij = g_ps[i, j]
                 J_ij = J_ps[i, j]
-                Jd_ij = Jd_ps[i, j]
+                Jd_qd_ij = Jd_qd_ps[i, j]
 
                 Ad_g_inv_ij = se2.adjoint_inverse(g_ij)
                 eta_ij = J_ij @ qd
 
                 B_ij = Ws_ij * J_ij.T @ M_i @ J_ij
                 Cqd_ij = Ws_ij * (
-                    J_ij.T @ (M_i @ (Jd_ij @ qd) + se2.coadjoint(eta_ij) @ M_i @ eta_ij)
+                    J_ij.T
+                    @ (M_i @ Jd_qd_ij + se2.coadjoint(eta_ij) @ M_i @ eta_ij)
                 )
                 G_ij = -Ws_ij * J_ij.T @ M_i @ Ad_g_inv_ij @ self.g
 
