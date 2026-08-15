@@ -88,6 +88,21 @@ class ConstantStrainOperators(NamedTuple):
     tangent_derivative: Array | None
 
 
+class _PreparedPowersSE3(NamedTuple):
+    """Unscaled SE(3) adjoint powers shared across arclength evaluations.
+
+    ``powers[k]`` contains ``ad_xi**k`` and ``dot_powers[k]`` its analytic
+    directional derivative under ``ad_xid``. The scalar rotational invariants
+    are stored alongside the matrices so an evaluator only needs to apply
+    ``s**k`` and evaluate the stable coefficients at a requested arclength.
+    """
+
+    angle_sq: Array
+    angle_sq_dot: Array
+    powers: Array
+    dot_powers: Array
+
+
 # Shared reduced-polynomial coefficients and matrix-power recurrences.
 
 
@@ -476,6 +491,32 @@ def _reduced_tangent_from_powers(
     result = powers[0]
     for coefficient, power in zip(coefficients, powers[1:], strict=True):
         result = result + coefficient * power
+    return s * result
+
+
+def _reduced_transported_tangent_from_powers(
+    powers: list[Array],
+    coefficients: tuple[Array, ...],
+    s: Array,
+) -> Array:
+    r"""Assemble ``exp(-B) @ T`` directly from shared powers.
+
+    Since the tangent coefficients are even in ``z = s * theta``, changing
+    ``B`` to ``-B`` only alternates the matrix-power signs. The identity
+
+    .. math::
+
+        \exp(-B)T(s,\xi) = -T(-s,\xi)
+        = s\left(I-c_1B+c_2B^2-c_3B^3+c_4B^4\right)
+
+    avoids a dense matrix product in PCS Jacobian recurrences while remaining
+    exactly equivalent to the separately assembled operators.
+    """
+    result = powers[0]
+    sign = -1.0
+    for coefficient, power in zip(coefficients, powers[1:], strict=True):
+        result = result + sign * coefficient * power
+        sign = -sign
     return s * result
 
 
@@ -990,6 +1031,163 @@ def _adjoint_inverse_from_forward_se3(adjoint: Array) -> Array:
     )
 
 
+def _prepare_powers_se3(xi: Array, xid: Array) -> _PreparedPowersSE3:
+    r"""Precompute SE(3) powers that do not depend on arclength.
+
+    PCS evaluates a constant segment strain at its tip and at several
+    quadrature points. For ``A = ad_xi`` and fixed ``xid``, the identities
+
+    .. math::
+
+        (sA)^k = s^k A^k, \qquad
+        D[(sA)^k][s\dot A] = s^k D[A^k][\dot A]
+
+    let all matrix products be evaluated once per segment. This helper stores
+    those unscaled powers; :func:`_operators_from_prepared_se3` applies the
+    inexpensive scalar powers for each requested ``s``.
+
+    Args:
+        xi: Spatial strain in angular-first order.
+        xid: Spatial strain direction/rate with the same shape.
+
+    Returns:
+        Prepared rotational invariants and stacked powers with shapes
+        ``(5, 6, 6)``.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    xid = jnp.asarray(xid).reshape(-1)
+    powers, dot_powers = _matrix_powers_with_derivatives(
+        se3.small_adjoint(xi), se3.small_adjoint(xid)
+    )
+    return _PreparedPowersSE3(
+        angle_sq=jnp.dot(xi[:3], xi[:3]),
+        angle_sq_dot=2.0 * jnp.dot(xi[:3], xid[:3]),
+        powers=jnp.stack(powers),
+        dot_powers=jnp.stack(dot_powers),
+    )
+
+
+def _scaled_powers_from_prepared_se3(
+    prepared: _PreparedPowersSE3, s: Array
+) -> tuple[list[Array], list[Array]]:
+    """Scale prepared ``A**k`` and directional powers by ``s**k``."""
+    scale = jnp.ones((), dtype=prepared.powers.dtype)
+    powers: list[Array] = []
+    dot_powers: list[Array] = []
+    for order in range(5):
+        powers.append(scale * prepared.powers[order])
+        dot_powers.append(scale * prepared.dot_powers[order])
+        scale = scale * s
+    return powers, dot_powers
+
+
+def _operators_from_powers_se3(
+    powers: list[Array],
+    dot_powers: list[Array] | None,
+    angle_sq: Array,
+    angle_sq_dot: Array | None,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+    *,
+    return_adjoint: bool = False,
+) -> (
+    tuple[Array, Array]
+    | tuple[Array, Array, Array]
+    | tuple[Array, Array, Array, Array]
+):
+    """Assemble selected SE(3) operators from already scaled powers."""
+    adjoint = _reduced_adjoint_from_powers(powers, angle_sq, s, adjoint_eps)
+    adjoint_inverse = _adjoint_inverse_from_forward_se3(adjoint)
+    coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
+        angle_sq, s, tangent_eps
+    )
+    tangent = _reduced_tangent_from_powers(powers, coefficients, s)
+
+    outputs = (adjoint_inverse, tangent)
+    if dot_powers is not None:
+        assert angle_sq_dot is not None
+        tangent_derivative = _reduced_tangent_derivative_from_powers(
+            powers,
+            dot_powers,
+            coefficients,
+            derivatives,
+            angle_sq_dot,
+            s,
+        )
+        outputs += (tangent_derivative,)
+    if return_adjoint:
+        outputs += (adjoint,)
+    return outputs
+
+
+def _operators_from_prepared_se3(
+    prepared: _PreparedPowersSE3,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+) -> tuple[Array, Array, Array]:
+    """Evaluate ``(Ad_inv, T, Td)`` from per-segment prepared powers."""
+    s = jnp.asarray(s, dtype=prepared.powers.dtype)
+    powers, dot_powers = _scaled_powers_from_prepared_se3(prepared, s)
+    operators = _operators_from_powers_se3(
+        powers,
+        dot_powers,
+        prepared.angle_sq,
+        prepared.angle_sq_dot,
+        s,
+        adjoint_eps,
+        tangent_eps,
+    )
+    assert len(operators) == 3
+    return operators
+
+
+def _kinematic_operators_from_prepared_se3(
+    prepared: _PreparedPowersSE3,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+    *,
+    convective_only: bool,
+) -> tuple[Array, Array, Array] | tuple[Array, Array, Array, Array]:
+    r"""Evaluate the operator subset consumed by PCS recurrences.
+
+    Both paths return ``Ad_inv`` and the directly assembled transported
+    tangent ``Ad_inv @ T``. The convective path returns ``Td`` as its third
+    value and deliberately omits ``T``; forward dynamics only needs
+    ``Ad_inv @ (Td @ xid)``. The full-derivative path returns
+    ``(Ad_inv, Ad_inv_T, T, Td)``.
+
+    This selective helper keeps the public operator bundle fixed while
+    avoiding matrices that an internal recurrence would immediately discard.
+    """
+    s = jnp.asarray(s, dtype=prepared.powers.dtype)
+    powers, dot_powers = _scaled_powers_from_prepared_se3(prepared, s)
+    adjoint = _reduced_adjoint_from_powers(
+        powers, prepared.angle_sq, s, adjoint_eps
+    )
+    adjoint_inverse = _adjoint_inverse_from_forward_se3(adjoint)
+    coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
+        prepared.angle_sq, s, tangent_eps
+    )
+    transported_tangent = _reduced_transported_tangent_from_powers(
+        powers, coefficients, s
+    )
+    tangent_derivative = _reduced_tangent_derivative_from_powers(
+        powers,
+        dot_powers,
+        coefficients,
+        derivatives,
+        prepared.angle_sq_dot,
+        s,
+    )
+    if convective_only:
+        return adjoint_inverse, transported_tangent, tangent_derivative
+    tangent = _reduced_tangent_from_powers(powers, coefficients, s)
+    return adjoint_inverse, transported_tangent, tangent, tangent_derivative
+
+
 def _operators_se3(
     xi: Array,
     s: Array,
@@ -1042,29 +1240,17 @@ def _operators_se3(
             s * ad_xi, s * se3.small_adjoint(xid)
         )
 
-    adjoint = _reduced_adjoint_from_powers(powers, angle_sq, s, adjoint_eps)
-    adjoint_inverse = _adjoint_inverse_from_forward_se3(adjoint)
-    coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
-        angle_sq, s, tangent_eps
+    angle_sq_dot = None if xid is None else 2.0 * jnp.dot(xi[:3], xid[:3])
+    return _operators_from_powers_se3(
+        powers,
+        dot_powers,
+        angle_sq,
+        angle_sq_dot,
+        s,
+        adjoint_eps,
+        tangent_eps,
+        return_adjoint=return_adjoint,
     )
-    tangent = _reduced_tangent_from_powers(powers, coefficients, s)
-
-    outputs = (adjoint_inverse, tangent)
-    if xid is not None:
-        assert dot_powers is not None
-        angle_sq_dot = 2.0 * jnp.dot(xi[:3], xid[:3])
-        tangent_derivative = _reduced_tangent_derivative_from_powers(
-            powers,
-            dot_powers,
-            coefficients,
-            derivatives,
-            angle_sq_dot,
-            s,
-        )
-        outputs += (tangent_derivative,)
-    if return_adjoint:
-        outputs += (adjoint,)
-    return outputs
 
 
 def _tangent_and_derivative_se3(

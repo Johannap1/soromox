@@ -1308,6 +1308,18 @@ def test_integration_kinematics_matches_existing_batched_path(
     assert_allclose(J_quads, J_expected, rtol=RTOL, atol=ATOL)
     assert_allclose(Jd_quads, Jd_expected, rtol=RTOL, atol=ATOL)
 
+    _, g_convective, J_convective, Jd_qd = model._integration_kinematics(
+        q, qd, convective_only_jd=True
+    )
+    assert_allclose(g_convective, g_quads, rtol=RTOL, atol=ATOL)
+    assert_allclose(J_convective, J_quads, rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        Jd_qd,
+        jnp.einsum("...ij,j->...i", Jd_quads, qd),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
 
 @pytest.mark.parametrize("num_segments", [1, 3])
 @pytest.mark.parametrize(

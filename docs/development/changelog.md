@@ -30,18 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tangent derivatives remain explicit analytic production paths; runtime
   autodiff is used only as a test oracle.
 - Fused repeated constant-strain operator evaluation in PlanarPCS, PCS, and
-  GVS. The planar path uses direct SE(2) blocks; the spatial paths share the
-  exact fourth-order matrix powers and tangent coefficients while omitting
-  operators a recurrence does not consume.
+  GVS. The planar path uses direct SE(2) blocks; the spatial operators share
+  exact fourth-order matrix powers and tangent coefficients. PCS additionally
+  prepares arclength-independent powers once per segment, assembles transported
+  tangents directly, and propagates the contracted ``Jd @ qd`` needed by
+  forward dynamics instead of materializing unused matrices.
 - Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
   PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
 - Compared with ``main`` on CPU/JAX 0.11.0 across five fresh processes, the
   40-case Lie benchmark reduced geometric-mean steady-state and compile time by
-  24.3% and 5.3%. The current fused implementation made compiled PlanarPCS
-  rollouts 22.1% faster on aggregate. For the SE(3) systems, PCS/GVS method
-  execution improved by 1.8%/2.1% while compilation increased 6.5%/8.1%; PCS
-  one-second rollouts remained 16.0% slower, whereas GVS rollouts improved by
-  3.7% in an interleaved five-pair comparison.
+  24.3% and 5.3%, and compiled PlanarPCS rollouts were 22.1% faster on
+  aggregate. In a final interleaved five-pair comparison, the complete
+  non-rollout PCS/GVS method suites changed execution by -11.6%/+1.0% and
+  compilation by +4.6%/+5.8%. One-second PCS rollouts improved by 17.5%, 25.7%,
+  and 34.9% at one, two, and four segments (26.8% aggregate); GVS changed by
+  -3.1%, -10.5%, and +2.8% (4.0% faster on aggregate).
 
 ### Fixed
 

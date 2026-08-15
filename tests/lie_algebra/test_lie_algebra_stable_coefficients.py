@@ -502,6 +502,55 @@ def test_fused_se3_operators_match_the_public_operators(scale, dtype, rtol, atol
     assert constant_strain.operators_se3(xi, s, tangent_eps).tangent_derivative is None
 
 
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [(jnp.float64, 2e-9, 2e-10), (jnp.float32, 1e-3, 1e-4)],
+)
+def test_prepared_se3_powers_match_pointwise_operator_evaluation(dtype, rtol, atol):
+    xi = jnp.array([0.2, -0.1, 0.3, 0.7, -0.4, 0.2], dtype=dtype)
+    xid = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2], dtype=dtype)
+    arclengths = jnp.array([-0.3, 0.0, 0.2, 0.73], dtype=dtype)
+    eps = jnp.asarray(1e-8, dtype=dtype)
+    prepared = constant_strain._prepare_powers_se3(xi, xid)
+
+    actual = jax.vmap(
+        lambda s: constant_strain._operators_from_prepared_se3(
+            prepared, s, eps, eps
+        )
+    )(arclengths)
+    expected = jax.vmap(
+        lambda s: constant_strain._operators_se3(xi, s, eps, eps, xid)
+    )(arclengths)
+
+    for actual_operator, expected_operator in zip(actual, expected, strict=True):
+        assert_allclose(actual_operator, expected_operator, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [(jnp.float64, 2e-9, 2e-10), (jnp.float32, 1e-3, 1e-4)],
+)
+def test_prepared_se3_kinematic_operators_match_explicit_products(dtype, rtol, atol):
+    xi = jnp.array([0.2, -0.1, 0.3, 0.7, -0.4, 0.2], dtype=dtype)
+    xid = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2], dtype=dtype)
+    s = jnp.asarray(0.73, dtype=dtype)
+    eps = jnp.asarray(1e-8, dtype=dtype)
+    prepared = constant_strain._prepare_powers_se3(xi, xid)
+
+    Ad_inv, Ad_inv_T, T, Td = (
+        constant_strain._kinematic_operators_from_prepared_se3(
+            prepared, s, eps, eps, convective_only=False
+        )
+    )
+    convective = constant_strain._kinematic_operators_from_prepared_se3(
+        prepared, s, eps, eps, convective_only=True
+    )
+
+    assert_allclose(Ad_inv_T, Ad_inv @ T, rtol=rtol, atol=atol)
+    for actual, expected in zip(convective, (Ad_inv, Ad_inv_T, Td), strict=True):
+        assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
 def test_strict_mode_exposes_forward_and_constant_strain_quotients():
     with strict_singularities_mode():
         results = (
