@@ -506,7 +506,7 @@ def _reduced_tangent_derivative_from_powers(
 # Direct SE(2) block implementation and bundled evaluator.
 
 
-def _se2_forward_cutoff(s: Array, eps: float | Array, dtype: jnp.dtype) -> Array:
+def _forward_cutoff_se2(s: Array, eps: float | Array, dtype: jnp.dtype) -> Array:
     """Return the accumulated-angle cutoff for forward SE(2) coefficients.
 
     ``eps`` is expressed in rotational-strain units, whereas the scalar
@@ -518,7 +518,7 @@ def _se2_forward_cutoff(s: Array, eps: float | Array, dtype: jnp.dtype) -> Array
     return jnp.maximum(requested, _constant_strain_series_threshold(dtype))
 
 
-def _se2_forward_coefficients(
+def _forward_coefficients_se2(
     theta: Array, s: Array, eps: float | Array
 ) -> tuple[Array, tuple[Array, Array, Array]]:
     r"""Return ``z`` and the stable forward coefficient triple.
@@ -529,12 +529,12 @@ def _se2_forward_coefficients(
     assembler.
     """
     z = s * theta
-    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    cutoff = _forward_cutoff_se2(s, eps, z.dtype)
     coefficients, _ = _forward_coefficients_and_x_derivatives(z, cutoff)
     return z, coefficients
 
 
-def _se2_adjoint_coefficients(
+def _adjoint_coefficients_se2(
     theta: Array, s: Array, eps: float | Array
 ) -> tuple[Array, Array, Array]:
     r"""Return ``z``, ``sinc(z)``, and ``cosc(z)`` for an SE(2) adjoint.
@@ -544,7 +544,7 @@ def _se2_adjoint_coefficients(
     tangent path while retaining the same cutoff policy.
     """
     z = s * theta
-    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    cutoff = _forward_cutoff_se2(s, eps, z.dtype)
     return (
         z,
         sine_over_angle(z, cutoff),
@@ -552,7 +552,7 @@ def _se2_adjoint_coefficients(
     )
 
 
-def _se2_forward_coefficients_and_derivatives(
+def _forward_coefficients_and_derivatives_se2(
     theta: Array, s: Array, eps: float | Array
 ) -> tuple[
     Array,
@@ -563,16 +563,16 @@ def _se2_forward_coefficients_and_derivatives(
 
     The derivative triple is ``d(sinc, cosc, tanc) / d(z**2)``. Representing
     these even functions in ``z**2`` avoids dividing by ``theta`` at zero and
-    lets :func:`_se2_tangent_derivative_from_coefficients` apply the chain rule
+    lets :func:`_tangent_derivative_from_coefficients_se2` apply the chain rule
     using ``d(z**2)/dt = 2 z s xid[0]``.
     """
     z = s * theta
-    cutoff = _se2_forward_cutoff(s, eps, z.dtype)
+    cutoff = _forward_cutoff_se2(s, eps, z.dtype)
     coefficients, derivatives = _forward_coefficients_and_x_derivatives(z, cutoff)
     return z, coefficients, derivatives
 
 
-def _se2_adjoint_components(
+def _adjoint_components_se2(
     xi: Array, s: Array, eps: float | Array
 ) -> tuple[Array, Array, Array]:
     r"""Evaluate the shared translation and rotation components of an adjoint.
@@ -600,7 +600,7 @@ def _se2_adjoint_components(
     s = jnp.asarray(s, dtype=xi.dtype)
     theta = xi[0]
     v = xi[1:]
-    z, sinc, cosc = _se2_adjoint_coefficients(theta, s, eps)
+    z, sinc, cosc = _adjoint_coefficients_se2(theta, s, eps)
     z_cosc = z * cosc
     minus_j_v = jnp.stack([v[1], -v[0]])
     q = s * (sinc * minus_j_v + z_cosc * v)
@@ -608,7 +608,7 @@ def _se2_adjoint_components(
     return q, jnp.sin(z), jnp.cos(z)
 
 
-def _se2_adjoint_from_components(
+def _adjoint_from_components_se2(
     q: Array, sin_z: Array, cos_z: Array, *, inverse: bool
 ) -> Array:
     r"""Assemble an SE(2) adjoint from precomputed scalar/block components.
@@ -642,16 +642,16 @@ def _se2_adjoint_from_components(
     )
 
 
-def _se2_adjoint_block(
+def _adjoint_block_se2(
     xi: Array, s: Array, eps: float | Array, *, inverse: bool
 ) -> Array:
     """Evaluate one planar adjoint while sharing its component assembly."""
-    return _se2_adjoint_from_components(
-        *_se2_adjoint_components(xi, s, eps), inverse=inverse
+    return _adjoint_from_components_se2(
+        *_adjoint_components_se2(xi, s, eps), inverse=inverse
     )
 
 
-def _se2_tangent_from_coefficients(
+def _tangent_from_coefficients_se2(
     xi: Array,
     s: Array,
     z: Array,
@@ -680,7 +680,7 @@ def _se2_tangent_from_coefficients(
     )
 
 
-def _se2_tangent_derivative_from_coefficients(
+def _tangent_derivative_from_coefficients_se2(
     xi: Array,
     xid: Array,
     s: Array,
@@ -753,17 +753,19 @@ def _operators_se2(
     """
     xi = jnp.asarray(xi).reshape(-1)
     s = jnp.asarray(s, dtype=xi.dtype)
-    adjoint_inverse = _se2_adjoint_block(xi, s, adjoint_eps, inverse=True)
+    adjoint_inverse = _adjoint_block_se2(xi, s, adjoint_eps, inverse=True)
     if xid is None:
-        z, coefficients = _se2_forward_coefficients(xi[0], s, tangent_eps)
-        return adjoint_inverse, _se2_tangent_from_coefficients(xi, s, z, coefficients)
+        z, coefficients = _forward_coefficients_se2(xi[0], s, tangent_eps)
+        return adjoint_inverse, _tangent_from_coefficients_se2(
+            xi, s, z, coefficients
+        )
 
     xid = jnp.asarray(xid).reshape(-1)
-    z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+    z, coefficients, derivatives = _forward_coefficients_and_derivatives_se2(
         xi[0], s, tangent_eps
     )
-    tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
-    tangent_derivative = _se2_tangent_derivative_from_coefficients(
+    tangent = _tangent_from_coefficients_se2(xi, s, z, coefficients)
+    tangent_derivative = _tangent_derivative_from_coefficients_se2(
         xi, xid, s, z, coefficients, derivatives
     )
     return adjoint_inverse, tangent, tangent_derivative
@@ -799,7 +801,7 @@ def adjoint_se2(xi: Array, s: Array, eps: float | Array) -> Array:
         coefficient quotients.
     """
     xi = jnp.asarray(xi).reshape(-1)
-    return _se2_adjoint_block(xi, s, eps, inverse=False)
+    return _adjoint_block_se2(xi, s, eps, inverse=False)
 
 
 def adjoint_inverse_se2(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -828,7 +830,7 @@ def adjoint_inverse_se2(xi: Array, s: Array, eps: float | Array) -> Array:
         translation is formed explicitly as ``-R.T @ q`` without a generic
         matrix inverse. It is intended for body-frame PCS/GVS recurrences.
     """
-    return _se2_adjoint_block(xi, s, eps, inverse=True)
+    return _adjoint_block_se2(xi, s, eps, inverse=True)
 
 
 def tangent_se2(xi: Array, s: Array, eps: float | Array) -> Array:
@@ -862,8 +864,8 @@ def tangent_se2(xi: Array, s: Array, eps: float | Array) -> Array:
     """
     xi = jnp.asarray(xi).reshape(-1)
     s = jnp.asarray(s, dtype=xi.dtype)
-    z, coefficients = _se2_forward_coefficients(xi[0], s, eps)
-    return _se2_tangent_from_coefficients(xi, s, z, coefficients)
+    z, coefficients = _forward_coefficients_se2(xi[0], s, eps)
+    return _tangent_from_coefficients_se2(xi, s, z, coefficients)
 
 
 def tangent_derivative_se2(
@@ -897,10 +899,10 @@ def tangent_derivative_se2(
     xi = jnp.asarray(xi).reshape(-1)
     xid = jnp.asarray(xid).reshape(-1)
     s = jnp.asarray(s, dtype=xi.dtype)
-    z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+    z, coefficients, derivatives = _forward_coefficients_and_derivatives_se2(
         xi[0], s, eps
     )
-    return _se2_tangent_derivative_from_coefficients(
+    return _tangent_derivative_from_coefficients_se2(
         xi, xid, s, z, coefficients, derivatives
     )
 
@@ -941,22 +943,22 @@ def operators_se2(
     """
     xi = jnp.asarray(xi).reshape(-1)
     s = jnp.asarray(s, dtype=xi.dtype)
-    adjoint_components = _se2_adjoint_components(xi, s, eps)
-    adjoint = _se2_adjoint_from_components(*adjoint_components, inverse=False)
-    adjoint_inverse = _se2_adjoint_from_components(
+    adjoint_components = _adjoint_components_se2(xi, s, eps)
+    adjoint = _adjoint_from_components_se2(*adjoint_components, inverse=False)
+    adjoint_inverse = _adjoint_from_components_se2(
         *adjoint_components, inverse=True
     )
     if xid is None:
-        z, coefficients = _se2_forward_coefficients(xi[0], s, eps)
-        tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
+        z, coefficients = _forward_coefficients_se2(xi[0], s, eps)
+        tangent = _tangent_from_coefficients_se2(xi, s, z, coefficients)
         tangent_derivative = None
     else:
         xid = jnp.asarray(xid).reshape(-1)
-        z, coefficients, derivatives = _se2_forward_coefficients_and_derivatives(
+        z, coefficients, derivatives = _forward_coefficients_and_derivatives_se2(
             xi[0], s, eps
         )
-        tangent = _se2_tangent_from_coefficients(xi, s, z, coefficients)
-        tangent_derivative = _se2_tangent_derivative_from_coefficients(
+        tangent = _tangent_from_coefficients_se2(xi, s, z, coefficients)
+        tangent_derivative = _tangent_derivative_from_coefficients_se2(
             xi, xid, s, z, coefficients, derivatives
         )
     return ConstantStrainOperators(
@@ -967,7 +969,7 @@ def operators_se2(
 # Reduced-polynomial SE(3) implementation and bundled evaluators.
 
 
-def _inverse_adjoint_se3_from_forward(adjoint: Array) -> Array:
+def _adjoint_inverse_from_forward_se3(adjoint: Array) -> Array:
     r"""Construct an inverse SE(3) adjoint from stabilized forward blocks.
 
     For ``Ad = [[R, 0], [hat(t) R, R]]``, this assembles
@@ -1041,7 +1043,7 @@ def _operators_se3(
         )
 
     adjoint = _reduced_adjoint_from_powers(powers, angle_sq, s, adjoint_eps)
-    adjoint_inverse = _inverse_adjoint_se3_from_forward(adjoint)
+    adjoint_inverse = _adjoint_inverse_from_forward_se3(adjoint)
     coefficients, derivatives = _tangent_coefficients_and_x_derivatives(
         angle_sq, s, tangent_eps
     )
@@ -1166,7 +1168,7 @@ def adjoint_inverse_se3(xi: Array, s: Array, eps: float | Array) -> Array:
         the cost and conditioning of a dense solve.
     """
     adjoint = adjoint_se3(xi, s, eps=eps)
-    return _inverse_adjoint_se3_from_forward(adjoint)
+    return _adjoint_inverse_from_forward_se3(adjoint)
 
 
 def tangent_se3(xi: Array, s: Array, eps: float | Array) -> Array:
