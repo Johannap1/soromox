@@ -255,7 +255,7 @@ def _operators(
 
     This helper is private because it is an execution optimization for callers
     that need several public operators together; it is not a new Lie-algebra
-    API. No automatic-differentiation transform is used in either path.
+    API.
 
     Args:
         xi: Planar strain in angular-first order.

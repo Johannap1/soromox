@@ -243,8 +243,7 @@ def _operators(
     thresholds preserve the caller's existing numerical policy.
 
     This private execution helper mirrors :func:`.se2._operators` while
-    keeping the spatial fourth-order polynomial. It performs no autodiff
-    operation.
+    keeping the spatial fourth-order polynomial.
 
     Args:
         xi: Spatial strain in angular-first order.
