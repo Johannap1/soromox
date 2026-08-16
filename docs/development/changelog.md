@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public ``operators_se2`` and ``operators_se3`` constant-strain bundles with a
   fixed named result for callers that need adjoints, tangents, and an optional
   analytic tangent derivative at the same strain and arclength.
-- A standalone Section Vd renderer for saved optimization trajectories, with
-  reproducible tracking plots, MP4 animations, optional GIF conversion, and
-  intermediate metrics.
+- An offline Section Vd post-processing renderer for saved optimization
+  trajectories, with reproducible tracking plots, MP4 animations, optional GIF
+  conversion, and intermediate metrics.
 
 ### Changed
 

@@ -27,8 +27,8 @@ Recreate the canonical comparison from the committed MAT files:
 uv run python paper_results/secVd_control_gain_optimization/code/plot_control_gain_optimization.py
 ```
 
-Render standalone tracking diagnostics plus MP4 and GIF animations from the
-saved MAT trajectories:
+Render offline tracking diagnostics plus MP4 and GIF animations from the saved
+MAT trajectories:
 
 ```bash
 uv run python paper_results/secVd_control_gain_optimization/code/render_control_gain_optimization_animations.py \
