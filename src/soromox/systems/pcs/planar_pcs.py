@@ -2454,7 +2454,7 @@ class PlanarPCS(SoftRobot):
         def scan_body(
             carry: tuple[Array, Array], i: Array
         ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
-            J_prev, Jd_prev = carry
+            J_prev, derivative_prev = carry
 
             xid_i = lax.dynamic_index_in_dim(xid, i, axis=0, keepdims=False)
             B_i = lax.dynamic_index_in_dim(B_segments, i, axis=0, keepdims=False)
@@ -2470,23 +2470,29 @@ class PlanarPCS(SoftRobot):
             Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv_i
 
             if convective_only_jd:
-                Jd_next = (
-                    Ad_inv_i @ Jd_prev
+                # The omitted local term Ad_inv_dot @ (T_i @ xid_i) equals
+                # -ad_eta @ eta and is therefore exactly zero.
+                Jd_qd_next = (
+                    Ad_inv_i @ derivative_prev
                     + Ad_inv_dot @ (J_prev @ qd)
                     + Ad_inv_i @ (Td_i @ xid_i)
                 )
+                derivative_next = Jd_qd_next
             else:
                 Jd_segment = (Ad_inv_dot @ T_i + Ad_inv_i @ Td_i) @ B_i
-                Jd_next = Ad_inv_i @ Jd_prev + Ad_inv_dot @ J_prev + Jd_segment
+                Jd_next = (
+                    Ad_inv_i @ derivative_prev + Ad_inv_dot @ J_prev + Jd_segment
+                )
+                derivative_next = Jd_next
 
-            return (J_next, Jd_next), (J_next, Jd_next)
+            return (J_next, derivative_next), (J_next, derivative_next)
 
         indices = jnp.arange(self.num_segments, dtype=jnp.int32)
-        (_, _), (J_tips, Jd_tips) = lax.scan(
+        (_, _), (J_tips, derivative_tips) = lax.scan(
             scan_body, (zeros, derivative_zeros), indices
         )
 
-        return J_tips, Jd_tips
+        return J_tips, derivative_tips
 
     @eqx.filter_jit
     def integration_kinematics(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
@@ -2566,20 +2572,22 @@ class PlanarPCS(SoftRobot):
 
         g_ps = vmap(segment_poses)(g_bases, xi, s_local)
 
-        J_tips, Jd_tips = self._active_J_Jd_local_tips_from_strain(
+        J_tips, derivative_tips = self._active_J_Jd_local_tips_from_strain(
             xi, xid, B_segments, qd, convective_only_jd=convective_only_jd
         )
         zeros_tip = jnp.zeros_like(J_tips[:1])
-        derivative_zeros_tip = jnp.zeros_like(Jd_tips[:1])
+        derivative_zeros_tip = jnp.zeros_like(derivative_tips[:1])
         J_bases = jnp.concatenate([zeros_tip, J_tips[:-1]], axis=0)
-        Jd_bases = jnp.concatenate([derivative_zeros_tip, Jd_tips[:-1]], axis=0)
+        derivative_bases = jnp.concatenate(
+            [derivative_zeros_tip, derivative_tips[:-1]], axis=0
+        )
 
         def segment_jacobians(
             xi_i: Array,
             xid_i: Array,
             B_i: Array,
             J_base_i: Array,
-            Jd_base_i: Array,
+            derivative_base_i: Array,
             s_local_i: Array,
         ) -> tuple[Array, Array]:
             def jacobian_at_s(s_local_ij: Array) -> tuple[Array, Array]:
@@ -2599,26 +2607,32 @@ class PlanarPCS(SoftRobot):
                 Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv
 
                 if convective_only_jd:
-                    Jd_next = (
-                        Ad_inv @ Jd_base_i
+                    # The omitted local term Ad_inv_dot @ (T @ xid_i) equals
+                    # -ad_eta @ eta and is therefore exactly zero.
+                    Jd_qd_next = (
+                        Ad_inv @ derivative_base_i
                         + Ad_inv_dot @ (J_base_i @ qd)
                         + Ad_inv @ (Td @ xid_i)
                     )
+                    derivative_next = Jd_qd_next
                 else:
                     Jd_segment = (Ad_inv_dot @ T + Ad_inv @ Td) @ B_i
                     Jd_next = (
-                        Ad_inv @ Jd_base_i + Ad_inv_dot @ J_base_i + Jd_segment
+                        Ad_inv @ derivative_base_i
+                        + Ad_inv_dot @ J_base_i
+                        + Jd_segment
                     )
+                    derivative_next = Jd_next
 
-                return J_next, Jd_next
+                return J_next, derivative_next
 
             return vmap(jacobian_at_s)(s_local_i)
 
-        J_ps, Jd_ps = vmap(segment_jacobians)(
-            xi, xid, B_segments, J_bases, Jd_bases, s_local
+        J_ps, derivative_ps = vmap(segment_jacobians)(
+            xi, xid, B_segments, J_bases, derivative_bases, s_local
         )
 
-        return Ws_scaled, g_ps, J_ps, Jd_ps
+        return Ws_scaled, g_ps, J_ps, derivative_ps
 
     @eqx.filter_jit
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
