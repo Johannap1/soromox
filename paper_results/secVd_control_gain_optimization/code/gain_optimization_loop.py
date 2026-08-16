@@ -146,8 +146,17 @@ def run_gain_optimization(
 
         # Keep the parameters the loss belongs to before the update moves them.
         opt_vars_evaluated = opt_vars
-        (loss, aux), grad = gradient_fn(opt_vars)
-        jax.block_until_ready((loss, aux, grad, opt_vars_evaluated))
+        try:
+            (loss, aux), grad = gradient_fn(opt_vars)
+            jax.block_until_ready((loss, aux, grad, opt_vars_evaluated))
+        except KeyboardInterrupt:
+            history.stopped_early = True
+            history.stop_reason = (
+                f"interrupted during iteration {iteration + 1}; preserving "
+                f"{len(history)} completed iterations"
+            )
+            print(f"\n[WARNING] {history.stop_reason}.")
+            break
 
         # Reject an invalid evaluation without poisoning the history.
         candidate = {

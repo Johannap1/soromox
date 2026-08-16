@@ -1,13 +1,9 @@
-import argparse
-import pickle
 import sys
 from pathlib import Path
 
 import jax
 import matplotlib.pyplot as plt
-import numpy as onp
 import optax
-import scipy.io as sio
 from jax import Array, jit, value_and_grad, vmap
 from jax import numpy as jnp
 
@@ -15,6 +11,12 @@ CODE_DIR = Path(__file__).resolve().parent
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
+from control_gain_optimization_common import (  # noqa: E402
+    finish_figure,
+    parse_args,
+    prepare_output_dirs,
+    save_optimization_outputs,
+)
 from gain_optimization_loop import run_gain_optimization  # noqa: E402
 
 from soromox.actuation import ThreadlikeActuator, ThreadlikeRouting
@@ -32,65 +34,14 @@ jax.config.update("jax_enable_x64", True)  # double precision
 
 CASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = CASE_DIR / "data"
-OUTPUTS_DIR = CASE_DIR / "outputs"
+OUTPUTS_ROOT = CASE_DIR / "outputs"
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Optimize collocated control gains for the Section Vd study."
-    )
-    parser.add_argument(
-        "--result-dir",
-        type=Path,
-        default=DATA_DIR / "collocated",
-        help="Directory for generated MAT and pickle data.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=OUTPUTS_DIR / "collocated_diagnostics",
-        help="Directory for optional diagnostic figures.",
-    )
-    parser.add_argument(
-        "--num-iters",
-        type=int,
-        default=100,
-        help="Number of optimization iterations (paper-result default: 100).",
-    )
-    parser.add_argument("--save-figures", action="store_true")
-    parser.add_argument("--no-show", action="store_true")
-    parser.add_argument("--no-render", action="store_true")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument(
-        "--debug-nans",
-        action="store_true",
-        help=(
-            "Enable jax_debug_nans. Slower, and the ODE solve runs inside a "
-            "lax.while_loop, so it flags the rollout output rather than the "
-            "failing step. The per-iteration finiteness check is always on."
-        ),
-    )
-    return parser.parse_args()
-
-
-ARGS = parse_args()
-if ARGS.debug_nans:
-    jax.config.update("jax_debug_nans", True)
-RESULT_DIR = ARGS.result_dir.resolve()
-OUTPUTS_DIR = ARGS.output_dir.resolve()
-if ARGS.num_iters < 1:
-    raise ValueError("--num-iters must be at least 1")
-for output_name in ("optimization_results.mat", "animation_data.pkl"):
-    output_path = RESULT_DIR / output_name
-    if output_path.exists() and not ARGS.force:
-        raise FileExistsError(f"Refusing to overwrite {output_path}; pass --force")
-
-
-def finish_figure() -> None:
-    if ARGS.no_show:
-        plt.close()
-    else:
-        plt.show()
+ARGS = parse_args(
+    description="Optimize collocated control gains for the Section Vd study.",
+    default_result_dir=DATA_DIR / "collocated",
+    default_output_dir=OUTPUTS_ROOT / "collocated_diagnostics",
+)
+RESULT_DIR, OUTPUTS_DIR = prepare_output_dirs(ARGS)
 
 
 def evaluate_closed_loop_system(
@@ -400,6 +351,32 @@ x_ts_best = vmap(robot.forward_kinematics, in_axes=(0, None))(q_ts_best, total_l
     :, :3, 3
 ]  # (p, 3)
 
+# =====================================================
+# Save
+# =====================================================
+save_optimization_outputs(
+    RESULT_DIR,
+    loss_tot=loss_tot,
+    time_iter=time_iter,
+    opt_vars_tot=opt_vars_tot,
+    t_ts=t_ts,
+    q_ts_init=q_ts_init,
+    qd_ts_init=qd_ts_init,
+    u_ts_init=u_ts_init,
+    x_ts_init=x_ts_init,
+    q_ts_best=q_ts_best,
+    qd_ts_best=qd_ts_best,
+    u_ts_best=u_ts_best,
+    x_ts_best=x_ts_best,
+    num_iters=num_iters,
+    x_des_ts=x_des_ts,
+    best_idx_opt=best_idx_opt,
+    params=params,
+    active_tendon_routing=active_tendon_routing,
+    passive_elements=robot.passive_elements,
+    num_segments=num_segments,
+)
+
 
 # =====================================================
 # Compute metrics
@@ -437,8 +414,6 @@ metrics_best = compute_metrics(t_ts, q_ts_best, q_des, strain_indices)
 # =====================================================
 # Plot
 # =====================================================
-savefigs = ARGS.save_figures
-
 # Create figure for loss
 plt.figure()
 plt.plot(loss_tot, linewidth=2)
@@ -447,12 +422,7 @@ plt.xlabel("Iterations [-]")
 plt.ylabel("Loss")
 plt.xlim([0, len(loss_tot)])
 plt.tight_layout()
-if savefigs:
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    plt.savefig(OUTPUTS_DIR / "loss.pdf", dpi=200, bbox_inches="tight")
-    print("\nPlots saved to:")
-    print("  - loss.pdf")
-finish_figure()
+finish_figure(ARGS, OUTPUTS_DIR, "loss.pdf")
 
 # Select key strains to plot (curvatures and axial strain)
 plot_strain_indices = [1, 2, 3]  # kappa_y, kappa_z, sigma_x
@@ -512,14 +482,7 @@ axes[-1].set_xlabel("Time [s]")
 axes[0].set_title("Actuation-Space Setpoint Regulation: Strain Tracking Comparison")
 
 plt.tight_layout()
-if savefigs:
-    plt.savefig(
-        OUTPUTS_DIR / "actuation_space_regulation_tracking.pdf",
-        dpi=200,
-        bbox_inches="tight",
-    )
-    print("  - actuation_space_regulation_tracking.pdf")
-finish_figure()
+finish_figure(ARGS, OUTPUTS_DIR, "actuation_space_regulation_tracking.pdf")
 
 # Create figure for tracking errors
 fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
@@ -562,14 +525,7 @@ axes[-1].set_xlabel("Time [s]")
 axes[0].set_title("Actuation-Space Setpoint Regulation: Tracking Error Comparison")
 
 plt.tight_layout()
-if savefigs:
-    plt.savefig(
-        OUTPUTS_DIR / "actuation_space_regulation_errors.pdf",
-        dpi=200,
-        bbox_inches="tight",
-    )
-    print("  - actuation_space_regulation_errors.pdf")
-finish_figure()
+finish_figure(ARGS, OUTPUTS_DIR, "actuation_space_regulation_errors.pdf")
 
 # Create figure for control inputs (tendon tensions)
 fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
@@ -620,14 +576,7 @@ axes[0].set_title(
 )
 
 plt.tight_layout()
-if savefigs:
-    plt.savefig(
-        OUTPUTS_DIR / "actuation_space_regulation_inputs.pdf",
-        dpi=200,
-        bbox_inches="tight",
-    )
-    print("  - actuation_space_regulation_inputs.pdf")
-finish_figure()
+finish_figure(ARGS, OUTPUTS_DIR, "actuation_space_regulation_inputs.pdf")
 
 # Create bar chart for RMSE comparison
 fig, ax = plt.subplots(figsize=(10, 6))
@@ -651,14 +600,7 @@ ax.legend()
 ax.grid(True, alpha=0.3, axis="y")
 
 plt.tight_layout()
-if savefigs:
-    plt.savefig(
-        OUTPUTS_DIR / "actuation_space_regulation_rmse.pdf",
-        dpi=200,
-        bbox_inches="tight",
-    )
-    print("  - actuation_space_regulation_rmse.pdf")
-finish_figure()
+finish_figure(ARGS, OUTPUTS_DIR, "actuation_space_regulation_rmse.pdf")
 
 if ARGS.no_render:
     pass
@@ -673,90 +615,3 @@ else:
         playback_speed=1.0,
         window_name=f"Actuation-Space Regulation ({render_name})",
     )
-
-# =====================================================
-# Save
-# =====================================================
-save_dir = RESULT_DIR
-save_dir.mkdir(parents=True, exist_ok=True)
-
-save_path = str(save_dir)
-
-
-def to_np(x):
-    return onp.array(x)
-
-
-mat_data = {}
-
-
-# Optimization
-def flatten_params_to_dict(params_tree, prefix=""):
-    """
-    Helper: Flatten params_tree.
-
-    :param params_tree: Description
-    :param prefix: Description
-    """
-    flat_dict = {}
-    leaves, _ = jax.tree_util.tree_flatten_with_path(params_tree)
-    for path, val in leaves:
-        key_str = "_".join([str(p.key) if hasattr(p, "key") else str(p) for p in path])
-        full_key = f"{prefix}{key_str}"
-        flat_dict[full_key] = to_np(val)
-    return flat_dict
-
-
-mat_data["history_loss"] = to_np(loss_tot)
-mat_data["history_time"] = to_np(time_iter)
-stacked_history_tree = jax.tree_util.tree_map(
-    lambda *xs: jnp.stack(xs, axis=0), *opt_vars_tot
-)
-mat_data.update(
-    flatten_params_to_dict(stacked_history_tree, prefix="history_opt_vars_")
-)
-
-# Simulation
-mat_data["t_ts"] = to_np(t_ts)
-
-mat_data["q_ts_init"] = to_np(q_ts_init)
-mat_data["qd_ts_init"] = to_np(qd_ts_init)
-mat_data["u_ts_init"] = to_np(u_ts_init)
-mat_data["x_ts_init"] = to_np(x_ts_init)
-
-mat_data["q_ts_best"] = to_np(q_ts_best)
-mat_data["qd_ts_best"] = to_np(qd_ts_best)
-mat_data["u_ts_best"] = to_np(u_ts_best)
-mat_data["x_ts_best"] = to_np(x_ts_best)
-
-# Metadata
-mat_data["num_iters"] = to_np(num_iters)
-mat_data["x_des_ts"] = to_np(x_des_ts)
-mat_data["best_idx_opt"] = to_np(best_idx_opt)
-
-# Save main summary .mat file
-mat_filename = save_dir / "optimization_results.mat"
-print(f"Saving data to {mat_filename}")
-sio.savemat(mat_filename, mat_data, do_compression=True)
-
-# Save Data for Python Animation (Pickle)
-animation_dict = {
-    # Robot parameters
-    "params": params,
-    "active_tendon_routing": active_tendon_routing,
-    "passive_elements": robot.passive_elements,
-    "num_segments": num_segments,
-    # Optimized Parameters
-    "best_opt_vars": opt_vars_tot[best_idx_opt],
-    # Trajectory Data
-    "t_ts": t_ts,
-    "q_ts": q_ts_best,
-    # Target
-    "x_des_ts": x_des_ts,
-}
-
-anim_filename = save_dir / "animation_data.pkl"
-with open(anim_filename, "wb") as f:
-    pickle.dump(animation_dict, f)
-
-print("Save complete.")  # '''

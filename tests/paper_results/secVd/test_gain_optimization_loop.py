@@ -237,6 +237,51 @@ def test_final_evaluation_does_not_compute_an_unused_non_finite_update():
     assert history.stop_reason is None
 
 
+def test_keyboard_interrupt_preserves_completed_iterations():
+    """Ctrl-C should return the finite prefix so generators can save it."""
+    calls = 0
+    finite_gradient_fn = _quadratic_gradient_fn()
+
+    def interrupted_gradient_fn(opt_vars):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise KeyboardInterrupt
+        return finite_gradient_fn(opt_vars)
+
+    history = run_gain_optimization(
+        gradient_fn=interrupted_gradient_fn,
+        optimizer=optax.sgd(learning_rate=0.1),
+        opt_vars={"x": jnp.array([0.0])},
+        num_iters=8,
+    )
+
+    assert len(history) == 2
+    assert history.stopped_early
+    assert history.stop_reason == (
+        "interrupted during iteration 3; preserving 2 completed iterations"
+    )
+    assert jnp.isfinite(jnp.asarray(history.loss)).all()
+
+
+def test_keyboard_interrupt_before_first_evaluation_returns_empty_history():
+    def interrupted_gradient_fn(_opt_vars):
+        raise KeyboardInterrupt
+
+    history = run_gain_optimization(
+        gradient_fn=interrupted_gradient_fn,
+        optimizer=optax.sgd(learning_rate=0.1),
+        opt_vars={"x": jnp.array([0.0])},
+        num_iters=3,
+    )
+
+    assert len(history) == 0
+    assert history.stopped_early
+    assert history.stop_reason == (
+        "interrupted during iteration 1; preserving 0 completed iterations"
+    )
+
+
 def test_num_iters_must_be_positive():
     with pytest.raises(ValueError, match="at least 1"):
         run_gain_optimization(
