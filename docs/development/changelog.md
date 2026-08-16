@@ -12,12 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reverse-mode-safe numerical primitives, strict singularity diagnostics, and
   pytree finiteness reporting for locating and handling degenerate model
   configurations.
-- Shared, dtype-aware scalar coefficients for forward and inverse Lie-group
-  Jacobians, together with a reproducible Lie-algebra benchmark covering
-  primal, Jacobian, Hessian, and analytic constant-strain derivative paths.
-- Public ``operators_se2`` and ``operators_se3`` constant-strain bundles with a
-  fixed named result for callers that need adjoints, tangents, and an optional
-  analytic tangent derivative at the same strain and arclength.
+- Public, dtype-aware ``jacobian_coefficients`` for forward and inverse
+  Lie-group Jacobians, together with a reproducible Lie-algebra benchmark
+  covering primal, Jacobian, Hessian, and analytic constant-strain derivative
+  paths.
+- Public ``constant_strain.se2.operators`` and
+  ``constant_strain.se3.operators`` bundles with a fixed named result for
+  callers that need adjoints, tangents, and an optional analytic tangent
+  derivative at the same strain and arclength. The historical suffixed
+  ``constant_strain`` functions remain available as compatibility aliases.
 - An offline Section Vd post-processing renderer for saved optimization
   trajectories, with reproducible tracking plots, MP4 animations, optional GIF
   conversion, and intermediate metrics.
@@ -38,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   around stable closed forms and high-order near-zero series. Constant-strain
   tangent derivatives remain explicit analytic production paths; runtime
   autodiff is used only as a test oracle.
+- Organized constant-strain operators into dedicated ``se2`` and ``se3``
+  modules with unsuffixed names, keeping their reduced-polynomial machinery in
+  a private shared implementation module.
 - Fused repeated constant-strain operator evaluation in PlanarPCS, PCS, and
   GVS. The planar path uses direct SE(2) blocks; the spatial operators share
   exact fourth-order matrix powers and tangent coefficients. PCS additionally

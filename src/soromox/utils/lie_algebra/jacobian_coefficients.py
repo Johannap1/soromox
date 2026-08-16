@@ -1,4 +1,4 @@
-"""Stable scalar coefficients used by Lie-group Jacobians and maps.
+"""Public stable scalar coefficients for Lie-group Jacobians and maps.
 
 Forward and inverse Lie-group Jacobians contain removable singularities at zero
 rotation. Their closed forms are accurate away from the origin, while Taylor
@@ -22,6 +22,16 @@ zero, sanitize the closed-form input so batched selection cannot evaluate a
 singular dead branch, and restore the unsanitized quotients under
 ``strict_singularities_mode``.
 """
+
+__all__ = [
+    "angle_minus_sine_over_angle_cubed",
+    "forward_left_jacobian_series_threshold",
+    "half_angle_cotangent",
+    "inverse_left_jacobian_quadratic_coefficient",
+    "inverse_left_jacobian_series_threshold",
+    "one_minus_cosine_over_angle_squared",
+    "sine_over_angle",
+]
 
 import jax.numpy as jnp
 from jax import Array

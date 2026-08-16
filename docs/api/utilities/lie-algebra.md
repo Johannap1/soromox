@@ -4,7 +4,9 @@ The Lie algebra utilities are organized by semantic responsibility:
 
 - `so2` and `so3` contain pure rotational Lie group and Lie algebra operators.
 - `se2` and `se3` contain rigid-body Lie group and Lie algebra operators.
-- `constant_strain` contains arclength operators for rod segment kinematics.
+- `jacobian_coefficients` contains reusable stable scalar coefficients.
+- `constant_strain.se2` and `constant_strain.se3` contain arclength operators
+  for planar and spatial rod segment kinematics.
 
 ## SO(2)
 
@@ -22,6 +24,18 @@ The Lie algebra utilities are organized by semantic responsibility:
 
 ::: soromox.utils.lie_algebra.se3
 
-## Constant Strain
+## Jacobian Coefficients
+
+::: soromox.utils.lie_algebra.jacobian_coefficients
+
+## Constant-Strain Bundles
 
 ::: soromox.utils.lie_algebra.constant_strain
+
+### SE(2)
+
+::: soromox.utils.lie_algebra.constant_strain.se2
+
+### SE(3)
+
+::: soromox.utils.lie_algebra.constant_strain.se3

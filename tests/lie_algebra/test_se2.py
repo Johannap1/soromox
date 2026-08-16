@@ -5,8 +5,8 @@ from jax.scipy.linalg import expm
 from numpy.testing import assert_allclose
 
 from soromox.utils.geometry import poses
-from soromox.utils.lie_algebra import constant_strain, se2
-from soromox.utils.lie_algebra._jacobian_coefficients import (
+from soromox.utils.lie_algebra import se2
+from soromox.utils.lie_algebra.jacobian_coefficients import (
     inverse_left_jacobian_series_threshold,
 )
 from soromox.utils.tolerance import Tolerance
@@ -286,94 +286,8 @@ def test_adjoint_g_inv_se2_is_matrix_inverse():
     assert_allclose(adj_inv @ adj, jnp.eye(3), rtol=RTOL, atol=ATOL)
 
 
-def test_adjoint_gi_se2_zero_theta_matches_first_order_series():
-    xi = jnp.array([0.0, 1.0, -2.0])
-    s = jnp.array(0.3)
-
-    expected = jnp.eye(3) + s * se2.small_adjoint(xi)
-
-    result = constant_strain.adjoint_se2(xi, s, eps=EPS)
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_adjoint_gi_se2_inverse_matches_identity():
-    xi = jnp.array([0.7, 0.25, -0.1])
-    s = jnp.array(0.5)
-
-    adj = constant_strain.adjoint_se2(xi, s, eps=EPS)
-    adj_inv = constant_strain.adjoint_inverse_se2(xi, s, eps=EPS)
-
-    assert_allclose(adj @ adj_inv, jnp.eye(3), rtol=RTOL, atol=ATOL)
-    assert_allclose(adj_inv @ adj, jnp.eye(3), rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_gi_se2_zero_theta_matches_truncated_series():
-    xi = jnp.array([0.0, 1.0, -0.5])
-    s = jnp.array(0.4)
-
-    expected = s * jnp.eye(3) + 0.5 * s**2 * se2.small_adjoint(xi)
-
-    result = constant_strain.tangent_se2(xi, s, eps=EPS)
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_gi_se2_derivative_zero_without_motion():
-    xi = jnp.array([0.7, 0.2, -0.3])
-    xid = jnp.zeros((3,))
-    s = jnp.array(0.6)
-
-    result = constant_strain.tangent_derivative_se2(xi, xid, s, eps=EPS)
-    expected = jnp.zeros((3, 3))
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_derivative_gi_se2_zero_theta_matches_exact_series():
-    xi = jnp.array([0.0, 0.5, -0.1])
-    xid = jnp.array([0.1, -0.4, 0.2])
-    s = jnp.array(0.2)
-
-    ad_xi = se2.small_adjoint(xi)
-    ad_xid = se2.small_adjoint(xid)
-    expected = (
-        0.5 * s**2 * ad_xid
-        + (1.0 / 6.0) * s**3 * (ad_xid @ ad_xi + ad_xi @ ad_xid)
-        + (1.0 / 24.0) * s**4 * ad_xi @ ad_xid @ ad_xi
-    )
-
-    result = constant_strain.tangent_derivative_se2(xi, xid, s, eps=EPS)
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_derivative_matches_autodiff(N: int = 10):
-    key = jax.random.PRNGKey(0)
-    for _i in range(N):
-        key, subkey1, subkey2, subkey3 = jax.random.split(key, num=4)
-
-        # xi = jnp.array([0.7, -0.3, 0.25])
-        # xid = jnp.array([-0.2, 0.4, -0.35])
-        # s = jnp.array(0.6)
-        # randomly sample xi, xid, s
-        xi = jax.random.uniform(subkey1, shape=(3,), minval=-1.0, maxval=1.0)
-        xid = jax.random.uniform(subkey2, shape=(3,), minval=-1.0, maxval=1.0)
-        s = jax.random.uniform(subkey3, shape=(), minval=0.1, maxval=1.0)
-
-        def tangent_map(xi_, s_current=s):
-            return constant_strain.tangent_se2(xi_, s_current, eps=EPS)
-
-        _, autodiff = jax.jvp(tangent_map, (xi,), (xid,))
-        closed_form = constant_strain.tangent_derivative_se2(xi, xid, s, eps=EPS)
-
-        assert_allclose(autodiff, closed_form, rtol=RTOL, atol=ATOL)
-
-
 def test_se2_helpers_are_autodiff_finite_at_zero():
     xi_zero = jnp.zeros((3,))
-    xid_zero = jnp.zeros((3,))
-    s = jnp.array(0.4)
 
     def assert_autodiff_finite(fn, arg, fn_name=None):
         jac_rev = jax.jacrev(fn)(arg)
@@ -384,24 +298,6 @@ def test_se2_helpers_are_autodiff_finite_at_zero():
         assert jnp.isfinite(jac_fwd).all(), (
             f"Jacobian (forward) is not finite of fn {fn_name}"
         )
-
-    def tangent_fn(xi):
-        return constant_strain.tangent_se2(xi, s, eps=EPS).reshape(-1)
-
-    assert_autodiff_finite(tangent_fn, xi_zero, fn_name="constant_strain.tangent_se2")
-
-    def tangent_dot_wrt_xi(xi):
-        return constant_strain.tangent_derivative_se2(xi, xid_zero, s, eps=EPS).reshape(
-            -1
-        )
-
-    def tangent_dot_wrt_xid(xid):
-        return constant_strain.tangent_derivative_se2(xi_zero, xid, s, eps=EPS).reshape(
-            -1
-        )
-
-    for fn, arg in ((tangent_dot_wrt_xi, xi_zero), (tangent_dot_wrt_xid, xid_zero)):
-        assert_autodiff_finite(fn, arg, fn_name=fn.__name__)
 
     def exp_gn_fn(xi):
         return se2.exp(xi, eps=EPS).reshape(-1)

@@ -7,8 +7,8 @@ from numpy.testing import assert_allclose
 
 from soromox.autodiff import strict_singularities_mode
 from soromox.utils.geometry import poses
-from soromox.utils.lie_algebra import constant_strain, se2, se3, so3
-from soromox.utils.lie_algebra._jacobian_coefficients import (
+from soromox.utils.lie_algebra import se2, se3, so3
+from soromox.utils.lie_algebra.jacobian_coefficients import (
     inverse_left_jacobian_series_threshold,
 )
 from soromox.utils.tolerance import Tolerance
@@ -405,68 +405,8 @@ def test_planar_adjoint_blocks_match_se2():
     assert_allclose(lhs, rhs, rtol=RTOL, atol=ATOL)
 
 
-def test_adjoint_gi_se3_inverse_matches_identity():
-    xi = jnp.array([0.2, -0.1, 0.4, 0.3, -0.5, 0.1])
-    s = jnp.array(0.45)
-
-    adj = constant_strain.adjoint_se3(xi, s, eps=EPS)
-    adj_inv = constant_strain.adjoint_inverse_se3(xi, s, eps=EPS)
-
-    assert_allclose(adj @ adj_inv, jnp.eye(6), rtol=RTOL, atol=ATOL)
-    assert_allclose(adj_inv @ adj, jnp.eye(6), rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_gi_se3_zero_theta_matches_truncated_series():
-    xi = jnp.array([0.0, 0.0, 0.0, 0.4, -0.3, 0.2])
-    s = jnp.array(0.35)
-
-    expected = s * jnp.eye(6) + 0.5 * s**2 * se3.small_adjoint(xi)
-
-    result = constant_strain.tangent_se3(xi, s, eps=EPS)
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_derivative_gi_se3_zero_without_motion():
-    xi = jnp.array([0.3, -0.2, 0.4, 0.5, -0.1, 0.2])
-    xid = jnp.zeros((6,))
-    s = jnp.array(0.6)
-
-    result = constant_strain.tangent_derivative_se3(xi, xid, s, eps=EPS)
-    expected = jnp.zeros((6, 6))
-
-    assert_allclose(result, expected, rtol=RTOL, atol=ATOL)
-
-
-def test_tangent_derivative_matches_autodiff_random(N: int = 10):
-    key = jax.random.PRNGKey(2)
-    samples = 0
-
-    while samples < N:
-        key, subkey1, subkey2, subkey3 = jax.random.split(key, num=4)
-
-        xi = jax.random.uniform(subkey1, shape=(6,), minval=-1.0, maxval=1.0)
-        xid = jax.random.uniform(subkey2, shape=(6,), minval=-1.0, maxval=1.0)
-        s = jax.random.uniform(subkey3, shape=(), minval=0.1, maxval=1.0)
-
-        # Skip near-singular angular velocities to avoid the eps fallback dominating.
-        if jnp.linalg.norm(xi[:3]) < 1e-3:
-            continue
-
-        def tangent_map(xi_, s_current=s):
-            return constant_strain.tangent_se3(xi_, s_current, eps=EPS)
-
-        _, autodiff = jax.jvp(tangent_map, (xi,), (xid,))
-        closed_form = constant_strain.tangent_derivative_se3(xi, xid, s, eps=EPS)
-
-        assert_allclose(autodiff, closed_form, rtol=RTOL, atol=ATOL)
-        samples += 1
-
-
 def test_se3_helpers_are_autodiff_finite_at_zero():
     xi_zero = jnp.zeros((6,))
-    xid_zero = jnp.zeros((6,))
-    s = jnp.array(0.35)
 
     def assert_autodiff_finite(fn, arg, fn_name=None):
         jac_rev = jax.jacrev(fn)(arg)
@@ -477,24 +417,6 @@ def test_se3_helpers_are_autodiff_finite_at_zero():
         assert jnp.isfinite(jac_fwd).all(), (
             f"Jacobian (forward) is not finite of fn {fn_name}"
         )
-
-    def tangent_fn(xi):
-        return constant_strain.tangent_se3(xi, s, eps=EPS).reshape(-1)
-
-    assert_autodiff_finite(tangent_fn, xi_zero, fn_name="constant_strain.tangent_se3")
-
-    def tangent_dot_wrt_xi(xi):
-        return constant_strain.tangent_derivative_se3(xi, xid_zero, s, eps=EPS).reshape(
-            -1
-        )
-
-    def tangent_dot_wrt_xid(xid):
-        return constant_strain.tangent_derivative_se3(xi_zero, xid, s, eps=EPS).reshape(
-            -1
-        )
-
-    for fn, arg in ((tangent_dot_wrt_xi, xi_zero), (tangent_dot_wrt_xid, xid_zero)):
-        assert_autodiff_finite(fn, arg, fn_name=fn.__name__)
 
     def exp_gn_fn(xi):
         return se3.exp(xi, eps=EPS).reshape(-1)
@@ -526,24 +448,6 @@ def _batched_grad(fn, x: Array, batch: int = 3) -> Array:
 BRANCH_SAFETY_CASES = {
     "se3.exp": (lambda xi: se3.exp(xi, BRANCH_EPS), XI_STRAIGHT),
     "so3.exp": (lambda xi: so3.exp(xi[:3], BRANCH_EPS), XI_STRAIGHT),
-    "constant_strain.tangent_se3": (
-        lambda xi: constant_strain.tangent_se3(xi, ARC_LENGTH, TANGENT_BRANCH_EPS),
-        XI_STRAIGHT,
-    ),
-    "constant_strain.adjoint_se3": (
-        lambda xi: constant_strain.adjoint_se3(xi, ARC_LENGTH, BRANCH_EPS),
-        XI_STRAIGHT,
-    ),
-    "constant_strain.adjoint_inverse_se3": (
-        lambda xi: constant_strain.adjoint_inverse_se3(xi, ARC_LENGTH, BRANCH_EPS),
-        XI_STRAIGHT,
-    ),
-    "constant_strain.tangent_derivative_se3": (
-        lambda xi: constant_strain.tangent_derivative_se3(
-            xi, jnp.zeros(6), ARC_LENGTH, TANGENT_BRANCH_EPS
-        ),
-        XI_STRAIGHT,
-    ),
     "se3.log": (lambda g: se3.log(g, BRANCH_EPS), jnp.eye(4)),
     "so3.log": (lambda R: so3.log(R, BRANCH_EPS), jnp.eye(3)),
 }

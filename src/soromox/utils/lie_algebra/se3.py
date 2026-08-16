@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from jax import Array, lax
 
 from . import so3
-from ._jacobian_coefficients import (
+from .jacobian_coefficients import (
     angle_minus_sine_over_angle_cubed,
     inverse_left_jacobian_quadratic_coefficient,
     one_minus_cosine_over_angle_squared,

@@ -12,7 +12,7 @@ from jax import Array, lax
 
 from soromox.utils.numerics import eps_for_dtype, safe_norm, safe_sqrt
 
-from ._jacobian_coefficients import (
+from .jacobian_coefficients import (
     one_minus_cosine_over_angle_squared,
     sine_over_angle,
 )

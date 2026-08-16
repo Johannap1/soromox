@@ -32,7 +32,8 @@ Explicit namespaces for rigid-body and constant-strain operators.
 
 - Pure ``SO(2)`` / ``so(2)``, ``SO(3)`` / ``so(3)``, ``SE(2)`` / ``se(2)``,
   and ``SE(3)`` / ``se(3)`` maps
-- Constant-strain adjoint and tangent operators
+- Stable scalar Jacobian coefficients
+- Algebra-specific constant-strain adjoint, tangent, and bundled operators
 
 ## Quick Links
 

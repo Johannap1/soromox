@@ -51,7 +51,8 @@ from soromox.systems.gvs.structures import (
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.geometry import poses
 from soromox.utils.integration import gauss_quadrature
-from soromox.utils.lie_algebra import constant_strain, se3, so3
+from soromox.utils.lie_algebra import se3, so3
+from soromox.utils.lie_algebra.constant_strain import se3 as constant_strain_se3
 from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 
 __all__ = ["GVS"]
@@ -1268,7 +1269,7 @@ class GVS(SoftRobot):
             length, H, xi_Z1, xi_Z2, B_Z1, B_Z2
         )
         g_step = se3.exp(Magnus, self.global_eps)
-        T_step = constant_strain.tangent_se3(
+        T_step = constant_strain_se3.tangent(
             Magnus, jnp.array(1.0), eps=self.tangent_eps
         )
         Ad_step_inv = se3.adjoint_inverse(g_step)
@@ -1348,7 +1349,7 @@ class GVS(SoftRobot):
         Magnusd = B_Magnus @ qd_i
 
         g_step = se3.exp(Magnus, self.global_eps)
-        T_step, Td_step = constant_strain._tangent_and_derivative_se3(
+        T_step, Td_step = constant_strain_se3._tangent_and_derivative(
             Magnus, Magnusd, jnp.array(1.0), self.tangent_eps
         )
         Ad_step_inv = se3.adjoint_inverse(g_step)
@@ -1414,7 +1415,7 @@ class GVS(SoftRobot):
         )
 
         g_step = se3.exp(Magnus, self.global_eps)
-        T_step, T_step_H = constant_strain._tangent_and_derivative_se3(
+        T_step, T_step_H = constant_strain_se3._tangent_and_derivative(
             Magnus, Magnus_H, jnp.array(1.0), self.tangent_eps
         )
         Ad_step_inv = se3.adjoint_inverse(g_step)
@@ -1457,7 +1458,7 @@ class GVS(SoftRobot):
         """
         xi_joint = B_joint @ q_joint + xi_ref_joint
         g_joint = se3.exp(xi_joint, self.global_eps)
-        T_joint = constant_strain.tangent_se3(
+        T_joint = constant_strain_se3.tangent(
             xi_joint, jnp.array(1.0), eps=self.tangent_eps
         )
         return g_joint, se3.adjoint_inverse(g_joint), T_joint @ B_joint
@@ -1496,7 +1497,7 @@ class GVS(SoftRobot):
         xi_joint = B_joint @ q_joint + xi_ref_joint
         xid_joint = B_joint @ qd_joint
         g_joint = se3.exp(xi_joint, self.global_eps)
-        T_joint, Td_joint = constant_strain._tangent_and_derivative_se3(
+        T_joint, Td_joint = constant_strain_se3._tangent_and_derivative(
             xi_joint, xid_joint, jnp.array(1.0), self.tangent_eps
         )
         T_joint_B = T_joint @ B_joint
@@ -3980,7 +3981,7 @@ class GVS(SoftRobot):
         def body_segment_i(
             carry: tuple[Array, Array, Array, Array], i_segment: Array
         ) -> tuple[tuple[Array, Array, Array, Array], tuple[Array, Array, Array]]:
-            g_tip, J_tip, derivative_tip, eta_tip = carry
+            g_tip, J_tip, Jd_or_Jd_qd_tip, eta_tip = carry
 
             B_joint_i = self.B_joint[i_segment]
             xi_ref_joint_i = self.xi_ref_joint[i_segment]
@@ -4010,18 +4011,16 @@ class GVS(SoftRobot):
                 # T_joint_active @ qd = joint_velocity and the helper builds
                 # Ad_dot from eta_joint = Ad_inv @ joint_velocity, so the term
                 # reduces to -ad_eta_joint @ eta_joint = 0.
-                Jd_qd_j = (
-                    Ad_g_joint_inv
-                    @ (derivative_tip + Td_joint_B_i @ qd_joint_i)
-                    + Ad_g_joint_inv_dot @ (J_tip @ qd)
-                )
-                derivative_j = Jd_qd_j
+                Jd_qd_j = Ad_g_joint_inv @ (
+                    Jd_or_Jd_qd_tip + Td_joint_B_i @ qd_joint_i
+                ) + Ad_g_joint_inv_dot @ (J_tip @ qd)
+                Jd_or_Jd_qd_j = Jd_qd_j
             else:
                 Td_joint_active = Td_joint_B_i @ selector_joint_i
                 Jd_j = Ad_g_joint_inv @ (
-                    derivative_tip + Td_joint_active
+                    Jd_or_Jd_qd_tip + Td_joint_active
                 ) + Ad_g_joint_inv_dot @ (J_tip + T_joint_active)
-                derivative_j = Jd_j
+                Jd_or_Jd_qd_j = Jd_j
 
             Xs_i = self.integration_points[i_segment]
             xi_ref_Z1_i = self.xi_ref_Z1[i_segment]
@@ -4036,7 +4035,7 @@ class GVS(SoftRobot):
             def body_eval_point(
                 carry_link: tuple[Array, Array, Array, Array], j_eval: Array
             ) -> tuple[tuple[Array, Array, Array, Array], tuple[Array, Array, Array]]:
-                g_prev, J_prev, derivative_prev, eta_prev = carry_link
+                g_prev, J_prev, Jd_or_Jd_qd_prev, eta_prev = carry_link
                 H = Xs_i[j_eval + 1] - Xs_i[j_eval]
 
                 (
@@ -4072,61 +4071,60 @@ class GVS(SoftRobot):
                     # As at the joint, the omitted
                     # Ad_step_inv_dot @ (T_active @ qd) term is
                     # -ad_eta_step @ eta_step and therefore exactly zero.
-                    Jd_qd_next = (
-                        Ad_step_inv @ (derivative_prev + tangent_velocity_dot)
-                        + Ad_step_inv_dot @ (J_prev @ qd)
-                    )
-                    derivative_next = Jd_qd_next
+                    Jd_qd_next = Ad_step_inv @ (
+                        Jd_or_Jd_qd_prev + tangent_velocity_dot
+                    ) + Ad_step_inv_dot @ (J_prev @ qd)
+                    Jd_or_Jd_qd_next = Jd_qd_next
                 else:
                     Td_active = (
                         Td_step @ B_Magnus_j + T_step @ B_Magnus_dot_j
                     ) @ selector_link_i
                     Jd_next = Ad_step_inv @ (
-                        derivative_prev + Td_active
+                        Jd_or_Jd_qd_prev + Td_active
                     ) + Ad_step_inv_dot @ (J_prev + T_active)
-                    derivative_next = Jd_next
+                    Jd_or_Jd_qd_next = Jd_next
 
-                return (g_next, J_next, derivative_next, eta_next), (
+                return (g_next, J_next, Jd_or_Jd_qd_next, eta_next), (
                     g_next,
                     J_next,
-                    derivative_next,
+                    Jd_or_Jd_qd_next,
                 )
 
             (
                 (
                     g_tip_link,
                     J_tip_link,
-                    derivative_tip_link,
+                    Jd_or_Jd_qd_tip_link,
                     eta_tip_link,
                 ),
-                (g_link_nodes, J_link_nodes, derivative_link_nodes),
+                (g_link_nodes, J_link_nodes, Jd_or_Jd_qd_link_nodes),
             ) = lax.scan(
                 body_eval_point,
-                (g_j, J_j, derivative_j, eta_j),
+                (g_j, J_j, Jd_or_Jd_qd_j, eta_j),
                 jnp.arange(self.max_num_integration_points - 1),
             )
 
-            return (g_tip_link, J_tip_link, derivative_tip_link, eta_tip_link), (
+            return (g_tip_link, J_tip_link, Jd_or_Jd_qd_tip_link, eta_tip_link), (
                 g_link_nodes[: self.max_num_integration_points - 2],
                 J_link_nodes[: self.max_num_integration_points - 2],
-                derivative_link_nodes[: self.max_num_integration_points - 2],
+                Jd_or_Jd_qd_link_nodes[: self.max_num_integration_points - 2],
             )
 
         J_init = jnp.zeros((6, self.num_dofs), dtype=self.active_dof_map.dtype)
         if convective_only_jd:
-            derivative_init = jnp.zeros((6,), dtype=self.active_dof_map.dtype)
+            Jd_or_Jd_qd_init = jnp.zeros((6,), dtype=self.active_dof_map.dtype)
         else:
-            derivative_init = jnp.zeros(
+            Jd_or_Jd_qd_init = jnp.zeros(
                 (6, self.num_dofs), dtype=self.active_dof_map.dtype
             )
         eta_init = jnp.zeros((6,), dtype=self.active_dof_map.dtype)
-        (_, _, _, _), (g_quads, J_quads, derivative_quads) = lax.scan(
+        (_, _, _, _), (g_quads, J_quads, Jd_or_Jd_qd_quads) = lax.scan(
             body_segment_i,
-            (self.g0, J_init, derivative_init, eta_init),
+            (self.g0, J_init, Jd_or_Jd_qd_init, eta_init),
             jnp.arange(self.num_segments),
         )
 
-        return weights, g_quads, J_quads, derivative_quads
+        return weights, g_quads, J_quads, Jd_or_Jd_qd_quads
 
     @eqx.filter_jit
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:

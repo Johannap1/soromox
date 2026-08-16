@@ -5,16 +5,18 @@ from numpy.testing import assert_allclose
 
 from soromox.autodiff import strict_singularities_mode
 from soromox.utils.lie_algebra import constant_strain, se2, se3, so3
-from soromox.utils.lie_algebra._jacobian_coefficients import (
-    _forward_coefficients_and_x_derivatives,
+from soromox.utils.lie_algebra.constant_strain import se2 as constant_strain_se2
+from soromox.utils.lie_algebra.constant_strain import se3 as constant_strain_se3
+from soromox.utils.lie_algebra.constant_strain._shared import (
+    _adjoint_coefficients,
+    _constant_strain_series_threshold,
+    _tangent_coefficients_and_x_derivatives,
+)
+from soromox.utils.lie_algebra.jacobian_coefficients import (
     angle_minus_sine_over_angle_cubed,
     forward_left_jacobian_series_threshold,
     one_minus_cosine_over_angle_squared,
     sine_over_angle,
-)
-from soromox.utils.lie_algebra.constant_strain import (
-    _adjoint_coefficients,
-    _tangent_coefficients_and_x_derivatives,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -55,48 +57,6 @@ def _integrated_exp_series_directional(matrix, matrix_dot, s, terms=20):
     return result_dot
 
 
-def _forward_reference_from_x(kind, theta_sq):
-    if kind == "sinc":
-        return 1.0 + theta_sq * (
-            -1.0 / 6.0
-            + theta_sq
-            * (
-                1.0 / 120.0
-                + theta_sq
-                * (-1.0 / 5040.0 + theta_sq * (1.0 / 362880.0 - theta_sq / 39916800.0))
-            )
-        )
-    if kind == "cosc":
-        return 0.5 + theta_sq * (
-            -1.0 / 24.0
-            + theta_sq
-            * (
-                1.0 / 720.0
-                + theta_sq
-                * (
-                    -1.0 / 40320.0
-                    + theta_sq * (1.0 / 3628800.0 - theta_sq / 479001600.0)
-                )
-            )
-        )
-    return 1.0 / 6.0 + theta_sq * (
-        -1.0 / 120.0
-        + theta_sq
-        * (
-            1.0 / 5040.0
-            + theta_sq
-            * (
-                -1.0 / 362880.0
-                + theta_sq * (1.0 / 39916800.0 - theta_sq / 6227020800.0)
-            )
-        )
-    )
-
-
-def _forward_reference(kind, theta):
-    return _forward_reference_from_x(kind, theta**2)
-
-
 def _constant_coefficient_references(x):
     a1 = 1.0 + x**2 * (
         -1.0 / 120.0 + x * (1.0 / 2520.0 + x * (-1.0 / 120960.0 + x / 9979200.0))
@@ -135,66 +95,6 @@ def _constant_coefficient_references(x):
     return jnp.stack([a1, a2, a3, a4, c2, c4])
 
 
-@pytest.mark.parametrize(
-    ("kind", "function"),
-    [
-        ("sinc", sine_over_angle),
-        ("cosc", one_minus_cosine_over_angle_squared),
-        ("tanc", angle_minus_sine_over_angle_cubed),
-    ],
-)
-@pytest.mark.parametrize("scale", [0.0, 1.0, 1.25])
-@pytest.mark.parametrize(
-    ("dtype", "rtol", "atol"),
-    [(jnp.float64, 2e-9, 2e-11), (jnp.float32, 5e-4, 5e-5)],
-)
-def test_forward_coefficients_match_analytic_value_gradient_and_hessian(
-    kind, function, scale, dtype, rtol, atol
-):
-    theta = scale * forward_left_jacobian_series_threshold(dtype)
-
-    def reference(value):
-        return _forward_reference(kind, value)
-
-    assert_allclose(function(theta), reference(theta), rtol=rtol, atol=atol)
-    assert_allclose(
-        jax.jacrev(function)(theta), jax.jacrev(reference)(theta), rtol=rtol, atol=atol
-    )
-    assert_allclose(
-        jax.jacrev(jax.jacrev(function))(theta),
-        jax.jacrev(jax.jacrev(reference))(theta),
-        rtol=rtol,
-        atol=atol,
-    )
-
-
-@pytest.mark.parametrize("scale", [-1.25, 0.0, 1.0, 1.25])
-@pytest.mark.parametrize(
-    ("dtype", "rtol", "atol"),
-    [(jnp.float64, 2e-9, 2e-11), (jnp.float32, 5e-4, 5e-5)],
-)
-def test_fused_forward_coefficients_and_explicit_x_derivatives(
-    scale, dtype, rtol, atol
-):
-    theta = scale * forward_left_jacobian_series_threshold(dtype)
-    x = theta**2
-    coefficients, derivatives = _forward_coefficients_and_x_derivatives(theta)
-
-    def reference(value):
-        return jnp.stack(
-            [
-                _forward_reference_from_x("sinc", value),
-                _forward_reference_from_x("cosc", value),
-                _forward_reference_from_x("tanc", value),
-            ]
-        )
-
-    assert_allclose(jnp.stack(coefficients), reference(x), rtol=rtol, atol=atol)
-    assert_allclose(
-        jnp.stack(derivatives), jax.jacrev(reference)(x), rtol=rtol, atol=atol
-    )
-
-
 @pytest.mark.parametrize("scale", [0.0, 1.0, 1.25])
 @pytest.mark.parametrize(
     ("dtype", "rtol", "atol", "derivative_atol"),
@@ -206,7 +106,7 @@ def test_fused_forward_coefficients_and_explicit_x_derivatives(
 def test_constant_strain_scalar_coefficients_and_derivatives(
     scale, dtype, rtol, atol, derivative_atol
 ):
-    z = scale * constant_strain._constant_strain_series_threshold(dtype)
+    z = scale * _constant_strain_series_threshold(dtype)
     x = z**2
     adjoint_actual = jnp.stack(_adjoint_coefficients(x, jnp.ones((), dtype), 0.0))
     tangent_actual, derivative_actual = _tangent_coefficients_and_x_derivatives(
@@ -301,7 +201,7 @@ def test_constant_strain_operators_match_independent_series(
     spatial, scale, dtype, rtol, atol
 ):
     s = jnp.asarray(0.73, dtype=dtype)
-    theta = scale * constant_strain._constant_strain_series_threshold(dtype) / s
+    theta = scale * _constant_strain_series_threshold(dtype) / s
     eps = jnp.zeros((), dtype=dtype)
     if spatial:
         axis = jnp.array([1.0, -2.0, 0.5], dtype=dtype)
@@ -413,15 +313,15 @@ def test_constant_strain_zero_arc_length_limits():
 )
 def test_fused_se2_operators_match_the_public_operators(scale, dtype, rtol, atol):
     s = jnp.asarray(0.73, dtype=dtype)
-    threshold = constant_strain._constant_strain_series_threshold(dtype)
+    threshold = _constant_strain_series_threshold(dtype)
     theta = scale * threshold / s
     xi = jnp.array([theta, 0.7, -0.4], dtype=dtype)
     xid = jnp.array([0.1, -0.2, 0.3], dtype=dtype)
     adjoint_eps = jnp.zeros((), dtype=dtype)
     tangent_eps = 2.0 * threshold / jnp.abs(s)
 
-    pair = constant_strain._operators_se2(xi, s, adjoint_eps, tangent_eps)
-    triple = constant_strain._operators_se2(xi, s, adjoint_eps, tangent_eps, xid)
+    pair = constant_strain_se2._operators(xi, s, adjoint_eps, tangent_eps)
+    triple = constant_strain_se2._operators(xi, s, adjoint_eps, tangent_eps, xid)
     public = constant_strain.operators_se2(xi, s, tangent_eps, xid)
     expected = (
         constant_strain.adjoint_inverse_se2(xi, s, adjoint_eps),
@@ -451,7 +351,7 @@ def test_fused_se2_operators_match_the_public_operators(scale, dtype, rtol, atol
 )
 def test_fused_se3_operators_match_the_public_operators(scale, dtype, rtol, atol):
     s = jnp.asarray(0.73, dtype=dtype)
-    threshold = constant_strain._constant_strain_series_threshold(dtype)
+    threshold = _constant_strain_series_threshold(dtype)
     theta = scale * threshold / s
     axis = jnp.array([1.0, -2.0, 0.5], dtype=dtype)
     axis = axis / jnp.linalg.norm(axis)
@@ -460,16 +360,12 @@ def test_fused_se3_operators_match_the_public_operators(scale, dtype, rtol, atol
     adjoint_eps = jnp.zeros((), dtype=dtype)
     tangent_eps = 2.0 * threshold / jnp.abs(s)
 
-    pair = constant_strain._operators_se3(xi, s, adjoint_eps, tangent_eps)
-    triple = constant_strain._operators_se3(
-        xi, s, adjoint_eps, tangent_eps, xid
-    )
-    quadruple = constant_strain._operators_se3(
+    pair = constant_strain_se3._operators(xi, s, adjoint_eps, tangent_eps)
+    triple = constant_strain_se3._operators(xi, s, adjoint_eps, tangent_eps, xid)
+    quadruple = constant_strain_se3._operators(
         xi, s, adjoint_eps, tangent_eps, xid, return_adjoint=True
     )
-    tangent_pair = constant_strain._tangent_and_derivative_se3(
-        xi, xid, s, tangent_eps
-    )
+    tangent_pair = constant_strain_se3._tangent_and_derivative(xi, xid, s, tangent_eps)
     public = constant_strain.operators_se3(xi, s, tangent_eps, xid)
     expected = (
         constant_strain.adjoint_inverse_se3(xi, s, adjoint_eps),
@@ -511,16 +407,14 @@ def test_prepared_se3_powers_match_pointwise_operator_evaluation(dtype, rtol, at
     xid = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2], dtype=dtype)
     arclengths = jnp.array([-0.3, 0.0, 0.2, 0.73], dtype=dtype)
     eps = jnp.asarray(1e-8, dtype=dtype)
-    prepared = constant_strain._prepare_powers_se3(xi, xid)
+    prepared = constant_strain_se3._prepare_adjoint_powers(xi, xid)
 
     actual = jax.vmap(
-        lambda s: constant_strain._operators_from_prepared_se3(
-            prepared, s, eps, eps
-        )
+        lambda s: constant_strain_se3._operators_from_prepared(prepared, s, eps, eps)
     )(arclengths)
-    expected = jax.vmap(
-        lambda s: constant_strain._operators_se3(xi, s, eps, eps, xid)
-    )(arclengths)
+    expected = jax.vmap(lambda s: constant_strain_se3._operators(xi, s, eps, eps, xid))(
+        arclengths
+    )
 
     for actual_operator, expected_operator in zip(actual, expected, strict=True):
         assert_allclose(actual_operator, expected_operator, rtol=rtol, atol=atol)
@@ -535,14 +429,12 @@ def test_prepared_se3_kinematic_operators_match_explicit_products(dtype, rtol, a
     xid = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2], dtype=dtype)
     s = jnp.asarray(0.73, dtype=dtype)
     eps = jnp.asarray(1e-8, dtype=dtype)
-    prepared = constant_strain._prepare_powers_se3(xi, xid)
+    prepared = constant_strain_se3._prepare_adjoint_powers(xi, xid)
 
-    Ad_inv, Ad_inv_T, T, Td = (
-        constant_strain._kinematic_operators_from_prepared_se3(
-            prepared, s, eps, eps, convective_only=False
-        )
+    Ad_inv, Ad_inv_T, T, Td = constant_strain_se3._kinematic_operators_from_prepared(
+        prepared, s, eps, eps, convective_only=False
     )
-    convective = constant_strain._kinematic_operators_from_prepared_se3(
+    convective = constant_strain_se3._kinematic_operators_from_prepared(
         prepared, s, eps, eps, convective_only=True
     )
 

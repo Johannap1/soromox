@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from jax import Array
 
 from . import so2
-from ._jacobian_coefficients import (
+from .jacobian_coefficients import (
     half_angle_cotangent,
     one_minus_cosine_over_angle_squared,
     sine_over_angle,
