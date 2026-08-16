@@ -61,7 +61,6 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help="Number of optimization iterations (paper-result default: 100).",
     )
-    parser.add_argument("--save-figures", action="store_true")
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--force", action="store_true")
@@ -91,11 +90,10 @@ for output_name in ("optimization_results.mat", "animation_data.pkl"):
 
 
 def finish_figure(filename: str) -> None:
-    if ARGS.save_figures:
-        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        output_path = OUTPUTS_DIR / filename
-        plt.savefig(output_path, dpi=200, bbox_inches="tight")
-        print(f"Saved {output_path}")
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUTS_DIR / filename
+    plt.savefig(output_path, dpi=200, bbox_inches="tight")
+    print(f"Saved {output_path}")
     if ARGS.no_show:
         plt.close()
     else:
