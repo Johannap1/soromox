@@ -52,6 +52,20 @@ class BenchmarkCase:
     args: tuple[Any, ...]
 
 
+def _constant_strain_function(algebra: str, operation: str) -> Callable[..., Array]:
+    """Resolve one constant-strain function across the compared revisions.
+
+    The PR uses algebra-specific package modules, while ``main`` exposes
+    suffixed functions from a single module. Keeping this adaptation local to
+    the comparison driver lets both revisions run the same benchmark without
+    adding legacy aliases to the library API.
+    """
+    algebra_module = getattr(constant_strain, algebra)
+    if hasattr(algebra_module, "tangent"):
+        return getattr(algebra_module, operation)
+    return getattr(constant_strain, f"{operation}_{algebra}")
+
+
 def _block_until_ready(tree: Tree) -> None:
     """Block until every array leaf in ``tree`` is ready."""
     for leaf in jax.tree.leaves(tree):
@@ -138,6 +152,16 @@ def _cases() -> tuple[BenchmarkCase, ...]:
             [jnp.zeros((1, 3)), jnp.ones((1, 1))],
         ]
     )
+    constant_se2_adjoint = _constant_strain_function("se2", "adjoint")
+    constant_se2_tangent = _constant_strain_function("se2", "tangent")
+    constant_se2_tangent_derivative = _constant_strain_function(
+        "se2", "tangent_derivative"
+    )
+    constant_se3_adjoint = _constant_strain_function("se3", "adjoint")
+    constant_se3_tangent = _constant_strain_function("se3", "tangent")
+    constant_se3_tangent_derivative = _constant_strain_function(
+        "se3", "tangent_derivative"
+    )
 
     cases: list[BenchmarkCase] = []
 
@@ -194,17 +218,13 @@ def _cases() -> tuple[BenchmarkCase, ...]:
             xi,
             eps,
         )
-        add(
-            "constant_se2", "adjoint", scenario, constant_strain.adjoint_se2, xi, s, eps
-        )
-        add(
-            "constant_se2", "tangent", scenario, constant_strain.tangent_se2, xi, s, eps
-        )
+        add("constant_se2", "adjoint", scenario, constant_se2_adjoint, xi, s, eps)
+        add("constant_se2", "tangent", scenario, constant_se2_tangent, xi, s, eps)
         add(
             "constant_se2",
             "tangent_derivative",
             scenario,
-            constant_strain.tangent_derivative_se2,
+            constant_se2_tangent_derivative,
             xi,
             xid2,
             s,
@@ -216,7 +236,7 @@ def _cases() -> tuple[BenchmarkCase, ...]:
             scenario,
             jax.hessian(
                 lambda value, arc, threshold: _weighted_sum(
-                    constant_strain.tangent_se2(value, arc, threshold)
+                    constant_se2_tangent(value, arc, threshold)
                 )
             ),
             xi,
@@ -241,17 +261,13 @@ def _cases() -> tuple[BenchmarkCase, ...]:
             xi,
             eps,
         )
-        add(
-            "constant_se3", "adjoint", scenario, constant_strain.adjoint_se3, xi, s, eps
-        )
-        add(
-            "constant_se3", "tangent", scenario, constant_strain.tangent_se3, xi, s, eps
-        )
+        add("constant_se3", "adjoint", scenario, constant_se3_adjoint, xi, s, eps)
+        add("constant_se3", "tangent", scenario, constant_se3_tangent, xi, s, eps)
         add(
             "constant_se3",
             "tangent_derivative",
             scenario,
-            constant_strain.tangent_derivative_se3,
+            constant_se3_tangent_derivative,
             xi,
             xid3,
             s,
@@ -263,7 +279,7 @@ def _cases() -> tuple[BenchmarkCase, ...]:
             scenario,
             jax.hessian(
                 lambda value, arc, threshold: _weighted_sum(
-                    constant_strain.tangent_se3(value, arc, threshold)
+                    constant_se3_tangent(value, arc, threshold)
                 )
             ),
             xi,

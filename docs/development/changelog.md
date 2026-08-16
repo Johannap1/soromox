@@ -19,8 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public ``constant_strain.se2.operators`` and
   ``constant_strain.se3.operators`` bundles with a fixed named result for
   callers that need adjoints, tangents, and an optional analytic tangent
-  derivative at the same strain and arclength. The historical suffixed
-  ``constant_strain`` functions remain available as compatibility aliases.
+  derivative at the same strain and arclength.
 - An offline Section Vd post-processing renderer for saved optimization
   trajectories, with reproducible tracking plots, MP4 animations, optional GIF
   conversion, and intermediate metrics.
@@ -43,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   autodiff is used only as a test oracle.
 - Organized constant-strain operators into dedicated ``se2`` and ``se3``
   modules with unsuffixed names, keeping their reduced-polynomial machinery in
-  a private shared implementation module.
+  a private shared implementation module. The package root now exports only
+  these algebra namespaces and the shared ``ConstantStrainOperators`` result.
 - Fused repeated constant-strain operator evaluation in PlanarPCS, PCS, and
   GVS. The planar path uses direct SE(2) blocks; the spatial operators share
   exact fourth-order matrix powers and tangent coefficients. PCS additionally

@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from numpy.testing import assert_allclose
 
 from soromox.autodiff import strict_singularities_mode
-from soromox.utils.lie_algebra import constant_strain, se2, se3, so3
+from soromox.utils.lie_algebra import se2, se3, so3
 from soromox.utils.lie_algebra.constant_strain import se2 as constant_strain_se2
 from soromox.utils.lie_algebra.constant_strain import se3 as constant_strain_se3
 from soromox.utils.lie_algebra.constant_strain._shared import (
@@ -211,16 +211,16 @@ def test_constant_strain_operators_match_independent_series(
         xi = jnp.concatenate([theta * axis, jnp.array([0.7, -0.4, 0.2], dtype=dtype)])
         xid = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2], dtype=dtype)
         small_adjoint = se3.small_adjoint
-        adjoint = constant_strain.adjoint_se3
-        tangent = constant_strain.tangent_se3
-        tangent_dot = constant_strain.tangent_derivative_se3
+        adjoint = constant_strain_se3.adjoint
+        tangent = constant_strain_se3.tangent
+        tangent_dot = constant_strain_se3.tangent_derivative
     else:
         xi = jnp.array([theta, 0.7, -0.4], dtype=dtype)
         xid = jnp.array([0.1, -0.2, 0.3], dtype=dtype)
         small_adjoint = se2.small_adjoint
-        adjoint = constant_strain.adjoint_se2
-        tangent = constant_strain.tangent_se2
-        tangent_dot = constant_strain.tangent_derivative_se2
+        adjoint = constant_strain_se2.adjoint
+        tangent = constant_strain_se2.tangent
+        tangent_dot = constant_strain_se2.tangent_derivative
 
     def adjoint_fn(value):
         return adjoint(value, s, eps)
@@ -277,7 +277,7 @@ def test_batched_small_angle_gradients_are_finite():
         ),
         (
             lambda values: jnp.sum(
-                jax.vmap(lambda value: constant_strain.tangent_se3(value, 0.73, 0.0))(
+                jax.vmap(lambda value: constant_strain_se3.tangent(value, 0.73, 0.0))(
                     values
                 )
             ),
@@ -294,16 +294,16 @@ def test_constant_strain_zero_arc_length_limits():
     xi3 = jnp.array([0.2, -0.1, 0.3, 0.7, -0.4, 0.2])
     xid3 = jnp.array([0.1, -0.2, 0.05, -0.3, 0.4, 0.2])
 
-    assert_allclose(constant_strain.adjoint_se2(xi2, 0.0, 0.0), jnp.eye(3))
-    assert_allclose(constant_strain.tangent_se2(xi2, 0.0, 0.0), jnp.zeros((3, 3)))
+    assert_allclose(constant_strain_se2.adjoint(xi2, 0.0, 0.0), jnp.eye(3))
+    assert_allclose(constant_strain_se2.tangent(xi2, 0.0, 0.0), jnp.zeros((3, 3)))
     assert_allclose(
-        constant_strain.tangent_derivative_se2(xi2, xid2, 0.0, 0.0),
+        constant_strain_se2.tangent_derivative(xi2, xid2, 0.0, 0.0),
         jnp.zeros((3, 3)),
     )
-    assert_allclose(constant_strain.adjoint_se3(xi3, 0.0, 0.0), jnp.eye(6))
-    assert_allclose(constant_strain.tangent_se3(xi3, 0.0, 0.0), jnp.zeros((6, 6)))
+    assert_allclose(constant_strain_se3.adjoint(xi3, 0.0, 0.0), jnp.eye(6))
+    assert_allclose(constant_strain_se3.tangent(xi3, 0.0, 0.0), jnp.zeros((6, 6)))
     assert_allclose(
-        constant_strain.tangent_derivative_se3(xi3, xid3, 0.0, 0.0),
+        constant_strain_se3.tangent_derivative(xi3, xid3, 0.0, 0.0),
         jnp.zeros((6, 6)),
     )
 
@@ -324,11 +324,11 @@ def test_fused_se2_operators_match_the_public_operators(scale, dtype, rtol, atol
 
     pair = constant_strain_se2._operators(xi, s, adjoint_eps, tangent_eps)
     triple = constant_strain_se2._operators(xi, s, adjoint_eps, tangent_eps, xid)
-    public = constant_strain.operators_se2(xi, s, tangent_eps, xid)
+    public = constant_strain_se2.operators(xi, s, tangent_eps, xid)
     expected = (
-        constant_strain.adjoint_inverse_se2(xi, s, adjoint_eps),
-        constant_strain.tangent_se2(xi, s, tangent_eps),
-        constant_strain.tangent_derivative_se2(xi, xid, s, tangent_eps),
+        constant_strain_se2.adjoint_inverse(xi, s, adjoint_eps),
+        constant_strain_se2.tangent(xi, s, tangent_eps),
+        constant_strain_se2.tangent_derivative(xi, xid, s, tangent_eps),
     )
 
     assert_allclose(pair[0], expected[0], rtol=rtol, atol=atol)
@@ -336,14 +336,14 @@ def test_fused_se2_operators_match_the_public_operators(scale, dtype, rtol, atol
     for actual, reference in zip(triple, expected, strict=True):
         assert_allclose(actual, reference, rtol=rtol, atol=atol)
     public_expected = (
-        constant_strain.adjoint_se2(xi, s, tangent_eps),
-        constant_strain.adjoint_inverse_se2(xi, s, tangent_eps),
+        constant_strain_se2.adjoint(xi, s, tangent_eps),
+        constant_strain_se2.adjoint_inverse(xi, s, tangent_eps),
         expected[1],
         expected[2],
     )
     for actual, reference in zip(public, public_expected, strict=True):
         assert_allclose(actual, reference, rtol=rtol, atol=atol)
-    assert constant_strain.operators_se2(xi, s, tangent_eps).tangent_derivative is None
+    assert constant_strain_se2.operators(xi, s, tangent_eps).tangent_derivative is None
 
 
 @pytest.mark.parametrize("scale", [0.0, 1.0, 1.25])
@@ -368,11 +368,11 @@ def test_fused_se3_operators_match_the_public_operators(scale, dtype, rtol, atol
         xi, s, adjoint_eps, tangent_eps, xid, return_adjoint=True
     )
     tangent_pair = constant_strain_se3._tangent_and_derivative(xi, xid, s, tangent_eps)
-    public = constant_strain.operators_se3(xi, s, tangent_eps, xid)
+    public = constant_strain_se3.operators(xi, s, tangent_eps, xid)
     expected = (
-        constant_strain.adjoint_inverse_se3(xi, s, adjoint_eps),
-        constant_strain.tangent_se3(xi, s, tangent_eps),
-        constant_strain.tangent_derivative_se3(xi, xid, s, tangent_eps),
+        constant_strain_se3.adjoint_inverse(xi, s, adjoint_eps),
+        constant_strain_se3.tangent(xi, s, tangent_eps),
+        constant_strain_se3.tangent_derivative(xi, xid, s, tangent_eps),
     )
 
     for actual, reference in zip(pair, expected[:2], strict=True):
@@ -385,19 +385,19 @@ def test_fused_se3_operators_match_the_public_operators(scale, dtype, rtol, atol
         assert_allclose(actual, reference, rtol=rtol, atol=atol)
     assert_allclose(
         quadruple[3],
-        constant_strain.adjoint_se3(xi, s, adjoint_eps),
+        constant_strain_se3.adjoint(xi, s, adjoint_eps),
         rtol=rtol,
         atol=atol,
     )
     public_expected = (
-        constant_strain.adjoint_se3(xi, s, tangent_eps),
-        constant_strain.adjoint_inverse_se3(xi, s, tangent_eps),
+        constant_strain_se3.adjoint(xi, s, tangent_eps),
+        constant_strain_se3.adjoint_inverse(xi, s, tangent_eps),
         expected[1],
         expected[2],
     )
     for actual, reference in zip(public, public_expected, strict=True):
         assert_allclose(actual, reference, rtol=rtol, atol=atol)
-    assert constant_strain.operators_se3(xi, s, tangent_eps).tangent_derivative is None
+    assert constant_strain_se3.operators(xi, s, tangent_eps).tangent_derivative is None
 
 
 @pytest.mark.parametrize(
@@ -454,7 +454,7 @@ def test_strict_mode_exposes_forward_and_constant_strain_quotients():
             so3.exp(jnp.zeros(3), 0.0),
             se2.exp(jnp.array([0.0, 0.7, -0.4]), 0.0),
             se3.exp(jnp.array([0.0, 0.0, 0.0, 0.7, -0.4, 0.2]), 0.0),
-            constant_strain.tangent_se3(
+            constant_strain_se3.tangent(
                 jnp.array([0.0, 0.0, 0.0, 0.7, -0.4, 0.2]), 0.73, 0.0
             ),
         )
