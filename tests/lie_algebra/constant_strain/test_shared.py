@@ -1,3 +1,5 @@
+"""Tests for shared constant-strain identities and cross-algebra behavior."""
+
 import jax
 import pytest
 from jax import numpy as jnp

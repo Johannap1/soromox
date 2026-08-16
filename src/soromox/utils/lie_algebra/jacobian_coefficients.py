@@ -39,28 +39,6 @@ from jax import Array
 from soromox.autodiff import strict_singularities_enabled
 
 
-def inverse_left_jacobian_series_threshold(dtype: jnp.dtype) -> Array:
-    """Return the dtype-aware cutoff for inverse left-Jacobian coefficients.
-
-    For an input dtype with machine epsilon ``u``, the cutoff is ``u**(1/8)``.
-    It balances the ``O(u / theta**2)`` roundoff amplification in the
-    closed-form Hessian of ``(theta / 2) cot(theta / 2)`` against the
-    ``O(theta**6)`` Hessian truncation error of the retained inverse series.
-
-    Args:
-        dtype: Real floating-point dtype for which to construct the cutoff.
-
-    Returns:
-        Scalar array of the requested dtype containing ``u**(1/8)``.
-
-    Notes:
-        This is a numerical switching threshold rather than a declaration that
-        the mathematical coefficient is singular. The singularity at zero is
-        removable, and both branches approximate the same analytic function.
-    """
-    return jnp.asarray(jnp.finfo(dtype).eps ** (1.0 / 8.0), dtype=dtype)
-
-
 def forward_left_jacobian_series_threshold(dtype: jnp.dtype) -> Array:
     """Return the dtype-aware cutoff for forward left-Jacobian coefficients.
 
@@ -81,6 +59,28 @@ def forward_left_jacobian_series_threshold(dtype: jnp.dtype) -> Array:
         but never a smaller dtype-aware cutoff.
     """
     return jnp.asarray(jnp.finfo(dtype).eps ** (1.0 / 12.0), dtype=dtype)
+
+
+def inverse_left_jacobian_series_threshold(dtype: jnp.dtype) -> Array:
+    """Return the dtype-aware cutoff for inverse left-Jacobian coefficients.
+
+    For an input dtype with machine epsilon ``u``, the cutoff is ``u**(1/8)``.
+    It balances the ``O(u / theta**2)`` roundoff amplification in the
+    closed-form Hessian of ``(theta / 2) cot(theta / 2)`` against the
+    ``O(theta**6)`` Hessian truncation error of the retained inverse series.
+
+    Args:
+        dtype: Real floating-point dtype for which to construct the cutoff.
+
+    Returns:
+        Scalar array of the requested dtype containing ``u**(1/8)``.
+
+    Notes:
+        This is a numerical switching threshold rather than a declaration that
+        the mathematical coefficient is singular. The singularity at zero is
+        removable, and both branches approximate the same analytic function.
+    """
+    return jnp.asarray(jnp.finfo(dtype).eps ** (1.0 / 8.0), dtype=dtype)
 
 
 def _forward_series_cutoff(theta: Array, eps: float | Array) -> tuple[Array, Array]:

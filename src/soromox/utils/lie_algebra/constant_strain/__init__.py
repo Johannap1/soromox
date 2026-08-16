@@ -1,10 +1,8 @@
 r"""Closed-form Lie operators for constant-strain rod segments.
 
-New code should use the algebra-specific :mod:`.se2` and :mod:`.se3`
-namespaces, whose public functions do not repeat the algebra in their names.
-The package-level ``*_se2`` and ``*_se3`` callables preserve the public API
-that predates this package layout; they are compatibility aliases to the same
-function objects rather than separate implementations.
+The algebra-specific :mod:`.se2` and :mod:`.se3` namespaces provide concise
+public functions for planar and spatial rod kinematics. Both modules return
+:class:`ConstantStrainOperators` from their bundled ``operators`` evaluator.
 """
 
 from . import se2, se3

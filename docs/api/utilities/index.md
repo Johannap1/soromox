@@ -49,7 +49,7 @@ Rod-segment operators organized into planar and spatial namespaces.
 
 - Constant-strain adjoint, inverse-adjoint, tangent, and tangent derivative
 - Bundled evaluation when several related operators are needed
-- Compatibility aliases for the historical suffixed API
+- Separate planar and spatial operator namespaces
 
 ## Quick Links
 
