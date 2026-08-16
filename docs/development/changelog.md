@@ -25,15 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Consolidated the Section Vd control-gain optimization scripts around a shared,
-  testable optimization loop, shared CLI/output helpers, and consistent MAT,
+  testable optimization loop and independently configured collocated and
+  synergistic cases, with shared CLI/output helpers, explicit output locations,
+  overwrite protection, paper-result iteration defaults, and consistent MAT,
   pickle, and diagnostic-figure handling. Diagnostic figures are always saved,
   the obsolete ``--save-figures`` switch is no longer needed, and the primary
   optimization data is persisted before plotting or interactive rendering
-  begins.
-- Standardized the Section Vd reproduction workflow around independently
-  configured collocated and synergistic cases, with explicit output locations,
-  overwrite protection, paper-result iteration defaults, and saved trajectory
-  diagnostics that can be rendered without rerunning optimization.
+  begins; saved trajectory diagnostics can be rendered without rerunning
+  optimization.
 - Reworked ``SO(3)``, ``SE(2)``, and ``SE(3)`` exponential/logarithmic maps,
   constant-strain adjoint and tangent operators, and PlanarPCS pose integration
   around stable closed forms and high-order near-zero series. Constant-strain
