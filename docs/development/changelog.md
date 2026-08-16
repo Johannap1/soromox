@@ -18,12 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Public ``operators_se2`` and ``operators_se3`` constant-strain bundles with a
   fixed named result for callers that need adjoints, tangents, and an optional
   analytic tangent derivative at the same strain and arclength.
+- A standalone Section Vd renderer for saved optimization trajectories, with
+  reproducible tracking plots, MP4 animations, optional GIF conversion, and
+  intermediate metrics.
 
 ### Changed
 
 - Consolidated the Section Vd control-gain optimization scripts around a shared,
-  testable optimization loop and aligned the synergistic objective with its
-  operational-space pose controller.
+  testable optimization loop, shared CLI/output helpers, and consistent MAT,
+  pickle, and diagnostic-figure handling. Diagnostic figures are always saved,
+  the obsolete ``--save-figures`` switch is no longer needed, and the primary
+  optimization data is persisted before plotting or interactive rendering
+  begins.
+- Standardized the Section Vd reproduction workflow around independently
+  configured collocated and synergistic cases, with explicit output locations,
+  overwrite protection, paper-result iteration defaults, and saved trajectory
+  diagnostics that can be rendered without rerunning optimization.
 - Reworked ``SO(3)``, ``SE(2)``, and ``SE(3)`` exponential/logarithmic maps,
   constant-strain adjoint and tangent operators, and PlanarPCS pose integration
   around stable closed forms and high-order near-zero series. Constant-strain
@@ -61,11 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected Section Vd loss/parameter history pairing, rejected non-finite
   optimization candidates, and selected the best collocated and synergistic
   plotting batches independently.
+- Guarded the collocated optimization reference against transient setpoints and
+  collapsed tendon paths by using stable asymmetric tensions and failing fast
+  when the generated steady state is unsuitable for reverse-mode optimization.
 - Kept Lie exponential/logarithmic values, first derivatives, and Hessians
   finite and accurate at zero and small rotations, including batched SE(2) and
   arbitrary-axis SE(3) inputs, without adding autodiff to production paths.
 - Made simulation benchmark timing treat Python solver/save parameters as static
   JAX arguments so the existing rollout benchmark can compile and run.
+- Reported Open3D window-creation failures explicitly, with a clear error for
+  environments that lack a usable display or OpenGL context.
 
 ## [0.2.2] - 2026-08-11
 
