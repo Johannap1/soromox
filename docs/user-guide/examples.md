@@ -140,19 +140,15 @@ HSA robots use auxetic materials that exhibit unique deformation characteristics
 
 #### Planar HSA Robot
 ```bash
-# Basic simulation
-python examples/simulation/hsa/simulate_planar_hsa.py
-
-# Motor-to-end-effector Jacobian demonstration
-python examples/simulation/hsa/demo_planar_hsa_motor2ee_jacobian.py
+# Planar HSA simulation
+python examples/simulation/pcs/simulate_planar_hsa.py
 ```
 
 **What you'll learn:**
 - Handed Shearing Auxetics (HSA) mechanics and unique deformation characteristics
-- Motor-to-end-effector Jacobian computation for control
 - Practical control applications with HSA robots
 
-**Key concepts:** HSA mechanics, auxetic materials, motor-space to task-space mapping
+**Key concepts:** HSA mechanics, auxetic materials, PCS simulation
 
 ### GVS (Geometric Variable Strain) Robots
 
