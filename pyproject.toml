@@ -125,6 +125,10 @@ dependencies = [
 # Similar to `dependencies` above, these must be valid existing
 # projects.
 [project.optional-dependencies] # Optional
+cuda13 = [
+    "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
+    "torch>=2.13.0; sys_platform == 'linux'",
+]
 dev = [
     "bump2version",
     "check-manifest",
@@ -152,6 +156,7 @@ examples = [
     "matplotlib",
     "numpy",
     "open3d>=0.18",
+    "ipywidgets>=8.0.4",
     "opencv-python",
     "optax",
     "optimistix",
@@ -168,6 +173,7 @@ paper_results = [
     "matplotlib",
     "numpy",
     "open3d>=0.18",
+    "ipywidgets>=8.0.4",
     "opencv-python",
     "openpyxl",
     "optax",
@@ -184,6 +190,7 @@ rendering = [
     "ffmpeg-python",
     "matplotlib",
     "open3d>=0.18",
+    "ipywidgets>=8.0.4",
     "opencv-python",
     "plotly",
     "trimesh",
@@ -224,6 +231,7 @@ all = [
     "mkdocstrings-python",
     "numpy",
     "open3d>=0.18",
+    "ipywidgets>=8.0.4",
     "opencv-python",
     "openpyxl",
     "optimistix",

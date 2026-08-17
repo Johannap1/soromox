@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
+  PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
+
 ### Fixed
 
 ## [0.2.2] - 2026-08-11
