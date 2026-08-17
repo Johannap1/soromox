@@ -211,7 +211,9 @@ class PlanarHSA(PlanarPCS):
         self.num_dofs = int(self.num_active_strains.item())
 
         self._set_hsa_params(params)
-        self.xi_ref = self.beta_inv(self._reference_physical_strains())
+        self.xi_ref = self.physical_to_virtual_strains(
+            self._reference_physical_strains()
+        )
         self._set_hysteresis(params)
         self._refresh_hsa_caches()
         self.actuators = ()
@@ -428,7 +430,9 @@ class PlanarHSA(PlanarPCS):
         updated = eqx.tree_at(
             lambda model: model.xi_ref,
             updated,
-            updated.beta_inv(updated._reference_physical_strains()),
+            updated.physical_to_virtual_strains(
+                updated._reference_physical_strains()
+            ),
         )
         if self.consider_hysteresis:
             updated = eqx.tree_at(
@@ -492,7 +496,7 @@ class PlanarHSA(PlanarPCS):
         """Return the physical rod reference strains from the parameter set."""
         return jnp.asarray(self.params.xi_ref, dtype=self.L.dtype)
 
-    def beta(self, vxi: Array) -> Array:
+    def virtual_to_physical_strains(self, vxi: Array) -> Array:
         """Map virtual-backbone strains to physical rod strains.
 
         The virtual strain vector uses three components per segment.  HSA
@@ -514,7 +518,7 @@ class PlanarHSA(PlanarPCS):
             physical[:, :, 2] + self.rod_offset * physical[:, :, 0]
         )
 
-    def beta_inv(self, pxi: Array) -> Array:
+    def physical_to_virtual_strains(self, pxi: Array) -> Array:
         """Map physical rod strains to the least-squares virtual strain.
 
         The inverse uses the mean across rods and removes the offset-induced
@@ -1867,7 +1871,7 @@ class PlanarHSA(PlanarPCS):
     def _actuation_full_matrix(self, q: Array, phi: Array) -> Array:
         """Assemble rod actuation forces before active-coordinate projection."""
         xi_rows = self.strain(q).reshape(self.num_segments, 3)
-        physical = self.beta(xi_rows.reshape(-1))
+        physical = self.virtual_to_physical_strains(xi_rows.reshape(-1))
         references = self._reference_physical_strains()
         phi = jnp.asarray(phi).reshape(-1)
         scale = (
