@@ -1123,22 +1123,6 @@ class PlanarHSA(PlanarPCS):
             Ad_rot @ Jd_local + Ad_rot_dot @ J_local,
         )
 
-    def jacobian_and_time_derivative_batched(
-        self, q: Array, qd: Array, s_ps: Array
-    ) -> tuple[Array, Array]:
-        """Evaluate point Jacobians and time derivatives at many arc lengths.
-
-        Args:
-            q: Active generalized coordinates with shape ``(num_dofs,)``.
-            qd: Generalized velocities with shape ``(num_dofs,)``.
-            s_ps: Arc-length coordinates with shape ``(num_points,)``.
-
-        Returns:
-            Two arrays of shape ``(num_points, 3, num_dofs)`` containing the
-            point Jacobians and their time derivatives.
-        """
-        return vmap(lambda s: self.jacobian_and_time_derivative(q, qd, s))(s_ps)
-
     def inverse_kinematics(self, chi_ee: Array) -> Array:
         """Solve one-segment constant-strain inverse kinematics.
 
