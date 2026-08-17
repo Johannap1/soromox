@@ -73,7 +73,8 @@ class GVS(SoftRobot):
         max_num_integration_points: Maximum number of integration points per link (= max_num_gauss_points + 2).
         num_dofs: Total number of DOFs for the robot (sum of joint + link DOFs).
         num_padded_dofs: Theoretical maximum number of DOFs (num_segments * 2 * max_dof).
-        active_dof_map: Strain basis selection matrix mapping active DOFs to the full strain space.
+        active_dof_map: Basis matrix mapping active DOFs into the full padded
+            joint/link coordinate space.
         scale_rotational_basis_by_length: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
         segment_lengths, segment_end_positions: Length of each link, and cumulative link lengths.
         num_integration_points: Number of integration/evaluation points for each link.
@@ -145,7 +146,7 @@ class GVS(SoftRobot):
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
 
-    active_dof_map: Array  # Strain basis functions for the robot (6, max_dof)
+    active_dof_map: Array  # Active-DOF basis for the padded coordinate space.
     # Active selectors by segment/block.
     active_dof_map_blocks: Array
     scale_rotational_basis_by_length: (

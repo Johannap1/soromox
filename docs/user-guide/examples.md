@@ -134,25 +134,20 @@ python examples/simulation/pcs/simulate_isupport.py
 
 **Key concepts:** Additive manufacturing, pneumatic actuation, real-world applications
 
-### HSA (Handed Shearing Auxetics) Robots
-
-HSA robots use auxetic materials that exhibit unique deformation characteristics under actuation.
-
 #### Planar HSA Robot
-```bash
-# Basic simulation
-python examples/simulation/hsa/simulate_planar_hsa.py
 
-# Motor-to-end-effector Jacobian demonstration
-python examples/simulation/hsa/demo_planar_hsa_motor2ee_jacobian.py
+Planar HSA robots are a specialized PCS family using auxetic materials that exhibit unique deformation characteristics under actuation.
+
+```bash
+# Planar HSA simulation
+python examples/simulation/pcs/simulate_planar_hsa.py
 ```
 
 **What you'll learn:**
 - Handed Shearing Auxetics (HSA) mechanics and unique deformation characteristics
-- Motor-to-end-effector Jacobian computation for control
 - Practical control applications with HSA robots
 
-**Key concepts:** HSA mechanics, auxetic materials, motor-space to task-space mapping
+**Key concepts:** HSA mechanics, auxetic materials, PCS simulation
 
 ### GVS (Geometric Variable Strain) Robots
 

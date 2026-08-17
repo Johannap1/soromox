@@ -9,7 +9,6 @@ jax.config.update("jax_enable_x64", True)  # double precision
 
 import jax.numpy as jnp
 
-import soromox
 from soromox.rendering.planar_hsa.opencv_renderer import (
     OpenCVPlanarHSARenderer,
 )
@@ -46,13 +45,6 @@ if __name__ == "__main__":
     num_segments = 1
     num_rods_per_segment = 2
 
-    # filepath to symbolic expressions
-    sym_exp_filepath = (
-        Path(soromox.__file__).parent
-        / "symbolic_expressions"
-        / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
-    )
-
     # activate all strains (i.e. bending, shear, and axial)
     strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
     consider_hysteresis = True
@@ -71,7 +63,6 @@ if __name__ == "__main__":
     robot = PlanarHSA(
         params=params,
         structure=PlanarHSAStructure(
-            symbolic_expression_path=str(sym_exp_filepath),
             strain_selector=strain_selector,
             consider_underactuation=True,
             consider_hysteresis=consider_hysteresis,

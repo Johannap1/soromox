@@ -16,8 +16,8 @@ Each system separates dynamic numeric values from static model structure:
 - **Params objects** store JAX arrays that may be optimized, differentiated,
   vmapped, and replaced without changing the PyTree layout.
 - **Structure objects** store static choices such as quadrature counts, active
-  strain masks, GVS joint/basis/cross-section choices, symbolic expression
-  paths, and padding sizes. Changing structure means constructing a new system
+  strain masks, GVS joint/basis/cross-section choices, and padding sizes.
+  Changing structure means constructing a new system
   and may recompile jitted methods.
 - **Spec objects** are ergonomic construction inputs for model families that
   need richer setup. For GVS, `GVSSegment`, `LinkSpec`, `JointSpec`, and
@@ -32,7 +32,6 @@ are family-local:
 |---------------|----------------|-------------------|--------------------|
 | PCS | `soromox.systems.pcs.params` | `soromox.systems.pcs.structures` | - |
 | GVS | `soromox.systems.gvs.params` | `soromox.systems.gvs.structures` | `soromox.systems.gvs.specs` |
-| HSA | `soromox.systems.hsa.params` | `soromox.systems.hsa.structures` | - |
 | Pendulum | `soromox.systems.pendulum.params` | - | - |
 | Articulated | `soromox.systems.articulated.params` | - | - |
 
@@ -185,7 +184,7 @@ and mechanical parameters use immutable component updates.
 The public static objects are named `PCSStructure`, `GVSStructure`, and
 `PlanarHSAStructure`. `Topology` was considered, but it is too narrow for
 objects that also contain quadrature counts, active strain masks, basis padding,
-and symbolic evaluation choices. `Layout` was also considered, but it reads as
+and numerical evaluation choices. `Layout` was also considered, but it reads as
 array-shape-only. `Structure` is the least misleading umbrella for static model
 choices that affect compilation.
 
@@ -248,24 +247,6 @@ updated_robot = robot.update_params(length=jnp.array([0.12, 0.1]))
       members_order: source
 
 ::: soromox.systems.gvs.structures
-    options:
-      show_root_heading: true
-      show_source: false
-      heading_level: 3
-      group_by_category: true
-      docstring_section_style: table
-      members_order: source
-
-::: soromox.systems.hsa.params
-    options:
-      show_root_heading: true
-      show_source: false
-      heading_level: 3
-      group_by_category: true
-      docstring_section_style: table
-      members_order: source
-
-::: soromox.systems.hsa.structures
     options:
       show_root_heading: true
       show_source: false

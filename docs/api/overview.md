@@ -6,11 +6,11 @@ This page provides an overview of the main components and modules in the SoRoMoX
 
 SoRoMoX is a comprehensive library for modeling, simulating, and controlling soft robots using JAX. The package is organized into several main components:
 
-- **[Systems](systems/index.md)**: Robot system implementations (articulated soft robots, pendulums, PCS, GVS, HSA)
+- **[Systems](systems/index.md)**: Robot system implementations (articulated soft robots, pendulums, PCS, and GVS)
 - **[Control](control/index.md)**: Model-based controllers for trajectory tracking and regulation
 - **[Rendering](rendering/index.md)**: Visualization and animation utilities
 - **[Actuation](actuation/index.md)**: Actuation modeling and utilities
-- **[Utilities](utilities/index.md)**: Parameter management and symbolic derivation tools
+- **[Utilities](utilities/index.md)**: Parameter management and numerical utilities
 
 ---
 
@@ -23,11 +23,10 @@ The [Systems](systems/index.md) module contains implementations for various robo
 - Energy computation methods
 - Support for various actuation methods (direct torque, tendons, pressure chambers)
 
-SoRoMoX includes four main system categories:
+SoRoMoX includes three main system categories:
 - **Articulated Systems**: Planar pendulums, tendon-actuated pendulums, and spatial articulated soft robots
-- **PCS Systems**: Piecewise Constant Strain continuum robots (2D & 3D)
+- **PCS Systems**: Piecewise Constant Strain continuum robots (2D & 3D), including the 2D PlanarHSA variant
 - **GVS Systems**: Geometric Variable Strain robots (3D)
-- **HSA Systems**: Handed Shearing Auxetics robots (2D)
 
 ---
 

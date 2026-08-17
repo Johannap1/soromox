@@ -16,9 +16,7 @@ from soromox.systems.pcs.params import PlanarPCSParams
 from soromox.systems.pcs.structures import PlanarPCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.array_math import blk_diag
-from soromox.utils.basic import (
-    compute_strain_basis,
-)
+from soromox.utils.dof import build_active_dof_basis
 from soromox.utils.geometry import poses
 from soromox.utils.integration import (
     gauss_quadrature,
@@ -77,36 +75,39 @@ class PlanarPCS(SoftRobot):
 
     """
 
-    params: PlanarPCSParams
+    # These fields are optional because PlanarHSA reuses this layout and
+    # propagation infrastructure but has a distinct multi-rod material schema;
+    # leaving PCS-only material fields unset avoids fabricating PCS parameters.
+    params: PlanarPCSParams | None = eqx.field(default=None)
 
     # Robot parameters
-    g: Array  # Gravitational acceleration vector
+    g: Array | None = eqx.field(default=None)  # Gravitational acceleration vector
 
-    L: Array  # Length of the segments
-    L_cum: Array  # Cumulative length of the segments
-    r: Array  # Radius of the segments
-    rho: Array
-    E: Array  # Young's modulus of the segments
-    G: Array  # Shear modulus of the segments
+    L: Array | None = eqx.field(default=None)  # Length of the segments
+    L_cum: Array | None = eqx.field(default=None)  # Cumulative length of the segments
+    r: Array | None = eqx.field(default=None)  # Radius of the segments
+    rho: Array | None = eqx.field(default=None)
+    E: Array | None = eqx.field(default=None)  # Young's modulus of the segments
+    G: Array | None = eqx.field(default=None)  # Shear modulus of the segments
 
-    num_segments: int = eqx.field(static=True)
-    num_gauss_points: int = eqx.field(static=True)
-    num_integration_points: int = eqx.field(static=True)
-    num_strains: int = eqx.field(static=True)  # Number of strains (3 * num_segments)
-    scale_rotational_basis_by_length: bool = eqx.field(static=True)
+    num_segments: int = eqx.field(static=True, default=0)
+    num_gauss_points: int = eqx.field(static=True, default=0)
+    num_integration_points: int = eqx.field(static=True, default=0)
+    num_strains: int = eqx.field(static=True, default=0)  # Number of strains (3 * num_segments)
+    scale_rotational_basis_by_length: bool = eqx.field(static=True, default=False)
 
-    xi_ref: Array  # Reference configuration strain
-    B_xi_unscaled: Array  # Unscaled strain basis matrix
-    B_xi: Array  # Strain basis matrix
-    num_active_strains: Array  # Number of selected strains
+    xi_ref: Array | None = eqx.field(default=None)  # Reference configuration strain
+    B_xi_unscaled: Array | None = eqx.field(default=None)  # Unscaled strain basis matrix
+    B_xi: Array | None = eqx.field(default=None)  # Strain basis matrix
+    num_active_strains: Array | None = eqx.field(default=None)  # Number of selected strains
 
-    integration_points: Array
-    integration_weights: Array
-    M_segments: Array  # Cached per-segment mass matrices
-    K_full: Array  # Cached full stiffness matrix
-    K_active: Array  # Cached active-coordinate stiffness matrix
-    D_full: Array  # Cached full damping matrix
-    D_active: Array  # Cached active-coordinate damping matrix
+    integration_points: Array | None = eqx.field(default=None)
+    integration_weights: Array | None = eqx.field(default=None)
+    M_segments: Array | None = eqx.field(default=None)  # Cached per-segment mass matrices
+    K_full: Array | None = eqx.field(default=None)  # Cached full stiffness matrix
+    K_active: Array | None = eqx.field(default=None)  # Cached active-coordinate stiffness matrix
+    D_full: Array | None = eqx.field(default=None)  # Cached full damping matrix
+    D_active: Array | None = eqx.field(default=None)  # Cached active-coordinate damping matrix
 
     def __init__(
         self,
@@ -180,7 +181,7 @@ class PlanarPCS(SoftRobot):
                     f"strain_selector must have {self.num_strains} elements, got {strain_selector.size}"
                 )
             strain_selector = strain_selector.reshape(self.num_strains)
-        self.B_xi_unscaled = compute_strain_basis(strain_selector)
+        self.B_xi_unscaled = build_active_dof_basis(strain_selector)
         self.B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
 
         self.num_active_strains = jnp.sum(strain_selector)

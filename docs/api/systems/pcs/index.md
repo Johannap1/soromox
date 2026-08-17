@@ -31,6 +31,14 @@ Core 3D PCS implementation for spatial continuum robots.
 - SE(2) kinematics with [theta, x, y] pose representation
 - Suitable for real-time applications
 
+#### [Planar HSA](planar-hsa.md)
+
+Specialized planar PCS soft robots with multiple physical rods per segment.
+
+- HSA-specific rod, cap, and platform geometry
+- Optional motor-to-rod underactuation and Bouc--Wen hysteresis
+- JAX-native numerical kinematics and dynamics
+
 ### Composable actuation
 
 `PCS` and `PlanarPCS` accept actuator models through `actuators=`. Tendons,
@@ -53,6 +61,7 @@ routed mechanics are installed separately with `ThreadlikeImpedance`.
 |--------|-----------|-----------|----------|
 | `PCS` | 3D | Identity or [composable](../../actuation/index.md) | General 3D continuum modeling |
 | `PlanarPCS` | 2D | Identity or [composable](../../actuation/index.md) | General 2D continuum modeling |
+| `PlanarHSA` | 2D | Motor or direct effort | Handed shearing auxetics robots |
 | `ISupport` | 3D | [Threadlike pneumatic](../../actuation/threadlike.md#modality-presets) | I-Support robot platform |
 
 ## References

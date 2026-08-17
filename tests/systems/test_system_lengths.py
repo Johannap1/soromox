@@ -176,14 +176,9 @@ def _planar_hsa_robot():
         / "planar_hsa"
         / "fpu_control.npz"
     )
-    path = (
-        Path(soromox.__file__).parent
-        / "symbolic_expressions"
-        / "planar_hsa_ns-1_nrs-2.dill"
-    )
     return PlanarHSA(
         params=params,
-        structure=PlanarHSAStructure(symbolic_expression_path=str(path)),
+        structure=PlanarHSAStructure(),
     )
 
 

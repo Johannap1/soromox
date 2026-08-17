@@ -16,9 +16,7 @@ from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.array_math import blk_diag
-from soromox.utils.basic import (
-    compute_strain_basis,
-)
+from soromox.utils.dof import build_active_dof_basis
 from soromox.utils.geometry import poses
 from soromox.utils.integration import (
     gauss_quadrature,
@@ -183,7 +181,7 @@ class PCS(SoftRobot):
                     f"strain_selector must have {num_strains} elements, got {strain_selector.size}"
                 )
             strain_selector = strain_selector.reshape(num_strains)
-        self.B_xi_unscaled = compute_strain_basis(strain_selector)
+        self.B_xi_unscaled = build_active_dof_basis(strain_selector)
         self.B_xi = self._scaled_strain_basis(self.B_xi_unscaled)
 
         self.num_active_strains = jnp.sum(strain_selector)

@@ -75,13 +75,11 @@ nav:
             - Overview: api/systems/pcs/index.md
             - Spatial PCS: api/systems/pcs/pcs.md
             - Planar PCS: api/systems/pcs/planar-pcs.md
+            - Planar HSA: api/systems/pcs/planar-hsa.md
             - I-Support: api/systems/pcs/isupport.md
           - GVS Systems:
             - Overview: api/systems/gvs/index.md
             - GVS: api/systems/gvs/gvs.md
-          - HSA Systems:
-            - Overview: api/systems/hsa/index.md
-            - Planar HSA: api/systems/hsa/planar-hsa.md
       - Rendering:
           - Overview: api/rendering/index.md
           - Renderer API: api/rendering/renderers.md

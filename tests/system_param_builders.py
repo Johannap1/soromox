@@ -203,9 +203,14 @@ def planar_hsa_params_from_legacy(params: dict) -> PlanarHSAParams:
         rod_outer_radius=jnp.asarray(params["rout"]),
         rod_inner_radius=jnp.asarray(params["rin"]),
         rod_offset=jnp.asarray(params["roff"]),
-        bending_reference=jnp.asarray(params["kappa_b_ref"]),
-        shear_reference=jnp.asarray(params["sigma_sh_ref"]),
-        axial_reference=jnp.asarray(params["sigma_a_ref"]),
+        xi_ref=jnp.stack(
+            [
+                jnp.asarray(params["kappa_b_ref"]),
+                jnp.asarray(params["sigma_sh_ref"]),
+                jnp.asarray(params["sigma_a_ref"]),
+            ],
+            axis=-1,
+        ),
         strain_coupling=jnp.asarray(params["C_varepsilon"]),
         platform_dimension=jnp.asarray(params["pcudim"]),
         rod_density=jnp.asarray(params["rhor"]),

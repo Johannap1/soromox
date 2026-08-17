@@ -16,8 +16,6 @@ from soromox.systems.gvs.structures import (
     GVSStrainBasisStructure,
     GVSStructure,
 )
-from soromox.systems.hsa.params import PlanarHSAParams
-from soromox.systems.hsa.structures import PlanarHSAStructure
 from soromox.systems.params import (
     DEFAULT_GRAVITY_MAGNITUDE,
     BaseArticulatedSoftRobotParams,
@@ -28,11 +26,13 @@ from soromox.systems.params import (
 from soromox.systems.pcs.params import (
     ISupportParams,
     PCSParams,
+    PlanarHSAParams,
     PlanarPCSParams,
 )
 from soromox.systems.pcs.structures import (
     ISupportStructure,
     PCSStructure,
+    PlanarHSAStructure,
     PlanarPCSStructure,
 )
 from soromox.systems.pendulum.params import PendulumParams
@@ -50,10 +50,10 @@ from .gvs import (
     LinkSpec,
     StrainBasisSpec,
 )
-from .hsa import PlanarHSA
 from .pcs import (
     PCS,
     ISupport,
+    PlanarHSA,
     PlanarPCS,
 )
 from .pendulum import Pendulum
@@ -91,10 +91,6 @@ __all__ = [
     "LinkSpec",
     "JointSpec",
     "StrainBasisSpec",
-    # hsa systems
-    "PlanarHSA",
-    "PlanarHSAParams",
-    "PlanarHSAStructure",
     # pendulum systems
     "Pendulum",
     "PendulumParams",
@@ -105,6 +101,9 @@ __all__ = [
     "ISupportStructure",
     "ISupport",
     "ISupportParams",
+    "PlanarHSA",
+    "PlanarHSAParams",
+    "PlanarHSAStructure",
     "PlanarPCS",
     "PlanarPCSParams",
     "PlanarPCSStructure",
