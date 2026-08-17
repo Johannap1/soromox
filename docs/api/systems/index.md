@@ -65,9 +65,8 @@ SoRoMoX organizes systems into the following categories:
 | Category | Description | Dimension |
 |----------|-------------|-----------|
 | [Articulated Systems](articulated/index.md) | Planar and spatial articulated chains, including compliant joints and tendon actuation | 2D & 3D |
-| [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots | 2D & 3D |
+| [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots, including HSA | 2D & 3D |
 | [GVS Systems](gvs/index.md) | Geometric Variable Strain robots | 3D |
-| [HSA Systems](hsa/index.md) | Handed Shearing Auxetics robots | 2D |
 
 ## System Summary
 
@@ -92,6 +91,7 @@ Continuum soft robots using piecewise constant strain modeling.
 |--------|-----------|-----------|----------|
 | [PCS](pcs/pcs.md) | 3D | Identity or [composable](../actuation/index.md) | General 3D continuum |
 | [Planar PCS](pcs/planar-pcs.md) | 2D | Identity or [composable](../actuation/index.md) | General 2D continuum |
+| [Planar HSA](pcs/planar-hsa.md) | 2D | Motor or direct effort | Handed shearing auxetics |
 | [I-Support](pcs/isupport.md) | 3D | [Threadlike pneumatic](../actuation/threadlike.md#modality-presets) | I-Support platform |
 
 ### GVS Systems
@@ -101,14 +101,6 @@ Continuum robots with Geometric Variable Strain (GVS) parametrization.
 | System | Actuation | Use Case |
 |--------|-----------|----------|
 | [GVS](gvs/gvs.md) | Identity or [composable](../actuation/index.md) | Flexible basis functions |
-
-### HSA Systems
-
-Soft robots based on handed shearing auxetics.
-
-| System | Actuation | Use Case |
-|--------|-----------|----------|
-| [Planar HSA](hsa/planar-hsa.md) | Rod actuation | Auxetic soft robots |
 
 ## Future Systems and Roadmap
 

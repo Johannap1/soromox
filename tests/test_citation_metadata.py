@@ -2,7 +2,6 @@ import re
 import tomllib
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 ARXIV_ID = "2608.06650"
 ARXIV_DOI = f"10.48550/arXiv.{ARXIV_ID}"
@@ -75,8 +74,8 @@ def test_hsa_citation_uses_final_publication_metadata():
     paths = (
         ROOT / "README.md",
         ROOT / "docs" / "citation.md",
-        ROOT / "docs" / "api" / "systems" / "hsa" / "index.md",
-        ROOT / "src" / "soromox" / "systems" / "hsa" / "planar_hsa.py",
+        ROOT / "docs" / "api" / "systems" / "pcs" / "planar-hsa.md",
+        ROOT / "src" / "soromox" / "systems" / "pcs" / "pcs.py",
     )
     contents = "\n".join(path.read_text() for path in paths)
 

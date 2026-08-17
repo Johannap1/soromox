@@ -32,7 +32,7 @@ are family-local:
 |---------------|----------------|-------------------|--------------------|
 | PCS | `soromox.systems.pcs.params` | `soromox.systems.pcs.structures` | - |
 | GVS | `soromox.systems.gvs.params` | `soromox.systems.gvs.structures` | `soromox.systems.gvs.specs` |
-| HSA | `soromox.systems.hsa.params` | `soromox.systems.hsa.structures` | - |
+| PCS (including HSA) | `soromox.systems.pcs.params` | `soromox.systems.pcs.structures` | - |
 | Pendulum | `soromox.systems.pendulum.params` | - | - |
 | Articulated | `soromox.systems.articulated.params` | - | - |
 
@@ -248,24 +248,6 @@ updated_robot = robot.update_params(length=jnp.array([0.12, 0.1]))
       members_order: source
 
 ::: soromox.systems.gvs.structures
-    options:
-      show_root_heading: true
-      show_source: false
-      heading_level: 3
-      group_by_category: true
-      docstring_section_style: table
-      members_order: source
-
-::: soromox.systems.hsa.params
-    options:
-      show_root_heading: true
-      show_source: false
-      heading_level: 3
-      group_by_category: true
-      docstring_section_style: table
-      members_order: source
-
-::: soromox.systems.hsa.structures
     options:
       show_root_heading: true
       show_source: false

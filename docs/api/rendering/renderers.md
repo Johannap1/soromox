@@ -176,7 +176,7 @@ video export for planar robots.
 
 `OpenCVPlanarHSARenderer` extends the planar OpenCV backend with HSA-specific
 geometry. Its system-level usage is documented with the
-[Planar HSA model](../systems/hsa/planar-hsa.md).
+[Planar HSA model](../systems/pcs/planar-hsa.md).
 
 ::: soromox.rendering.planar_hsa.opencv_renderer.OpenCVPlanarHSARenderer
     options:

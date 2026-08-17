@@ -1,4 +1,9 @@
-__all__ = ["PCSStructure", "PlanarPCSStructure", "ISupportStructure"]
+__all__ = [
+    "PCSStructure",
+    "PlanarPCSStructure",
+    "PlanarHSAStructure",
+    "ISupportStructure",
+]
 
 from typing import Any
 
@@ -57,6 +62,16 @@ class PlanarPCSStructure(eqx.Module):
     num_gauss_points: int = eqx.field(static=True, default=5)
     strain_selector: Array | None = None
     scale_rotational_basis_by_length: bool = eqx.field(static=True, default=False)
+
+
+class PlanarHSAStructure(eqx.Module):
+    """Static numerical layout choices for planar HSA PCS systems."""
+
+    num_gauss_points: int = eqx.field(static=True, default=5)
+    strain_selector: Array | None = None
+    consider_underactuation: bool = eqx.field(static=True, default=True)
+    consider_hysteresis: bool = eqx.field(static=True, default=False)
+    eps: float = eqx.field(static=True, default=1e-6)
 
 
 class ISupportStructure(PCSStructure):

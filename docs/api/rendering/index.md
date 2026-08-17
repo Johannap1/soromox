@@ -53,7 +53,7 @@ the same dark-base and warm-backbone styling.
 </div>
 
 System-specific renderer designs are documented alongside their robots: the
-[Planar HSA OpenCV renderer](../systems/hsa/planar-hsa.md),
+[Planar HSA OpenCV renderer](../systems/pcs/planar-hsa.md),
 [I-SUPPORT Viser renderer](../systems/pcs/isupport.md), and
 [UMArm Viser renderer](../systems/articulated/mckibben-umarm.md).
 
