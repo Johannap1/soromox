@@ -133,6 +133,22 @@ class PlanarHSA(PlanarPCS):
         structure: PlanarHSAStructure | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize a numerical planar HSA model.
+
+        Args:
+            params: Typed physical parameters for the HSA rods, rigid bodies,
+                constitutive laws, and optional hysteresis model.
+            structure: Numerical settings such as quadrature order, active
+                strain selection, and underactuation/hysteresis switches.
+                Defaults to :class:`PlanarHSAStructure` defaults.
+            **kwargs: Additional :class:`SoftRobot` initialization options,
+                including ``eps``.
+
+        Raises:
+            TypeError: If ``params`` or ``structure`` has the wrong type.
+            ValueError: If the typed parameters or numerical settings are
+                invalid.
+        """
         if not isinstance(params, PlanarHSAParams):
             raise TypeError("params must be a PlanarHSAParams instance.")
         if structure is None:
@@ -201,15 +217,8 @@ class PlanarHSA(PlanarPCS):
         self.actuators = ()
         self.passive_elements = ()
 
-    @property
-    def is_planar(self) -> bool:
-        return True
-
-    @property
-    def segment_length(self) -> Array:
-        return jnp.asarray(self.L)
-
     def _set_hsa_params(self, params: PlanarHSAParams) -> None:
+        """Copy HSA-specific physical parameters to runtime JAX arrays."""
         self.rod_offset = jnp.asarray(params.rod_offset, dtype=jnp.float64)
         self.platform_dimension = jnp.asarray(params.platform_dimension, dtype=jnp.float64)
         self.proximal_cap_length = jnp.asarray(params.proximal_cap_length, dtype=jnp.float64)
@@ -320,6 +329,7 @@ class PlanarHSA(PlanarPCS):
             object.__setattr__(self, name, value)
 
     def _set_hysteresis(self, params: PlanarHSAParams) -> None:
+        """Configure the optional Bouc--Wen hysteresis state and parameters."""
         if self.consider_hysteresis:
             self.hysteresis_basis = jnp.asarray(params.hysteresis_basis, dtype=jnp.float64)
             if self.hysteresis_basis.ndim != 2 or self.hysteresis_basis.shape[0] != self.num_strains:
@@ -342,6 +352,24 @@ class PlanarHSA(PlanarPCS):
             self.hysteresis_gamma = jnp.zeros((1,), dtype=jnp.float64)
 
     def with_params(self, params: PlanarHSAParams) -> "PlanarHSA":
+        """Return a model copy with all physical parameters replaced.
+
+        The number of segments and rods is part of the model structure.  A
+        change to either shape therefore requires constructing a new model;
+        all other parameter changes refresh the state-independent caches on the
+        returned copy.
+
+        Args:
+            params: Validated HSA parameters with the same segment and rod
+                layout as this model.
+
+        Returns:
+            A new :class:`PlanarHSA` with the supplied parameters.
+
+        Raises:
+            TypeError: If ``params`` is not a :class:`PlanarHSAParams`.
+            ValueError: If the segment or rod layout changes.
+        """
         if not isinstance(params, PlanarHSAParams):
             raise TypeError("params must be a PlanarHSAParams instance.")
         params.validate()
@@ -426,9 +454,32 @@ class PlanarHSA(PlanarPCS):
         return updated
 
     def update_params(self, **updates: Array) -> "PlanarHSA":
+        """Return a model copy with selected physical fields replaced.
+
+        Args:
+            **updates: Field names and replacement values accepted by
+                :meth:`PlanarHSAParams.replace`.
+
+        Returns:
+            A new model with refreshed numerical caches.
+        """
         return self.with_params(self.params.replace(**updates))
 
     def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
+        """Return a renderer-compatible cross-section descriptor.
+
+        HSA rods are represented by a circular section whose radius is the
+        largest rod offset in the segment containing ``s``.  The generalized
+        coordinates do not affect this geometric descriptor.
+
+        Args:
+            q: Generalized coordinates. Accepted for the common renderer API.
+            s: Arc-length coordinate along the flexible backbone.
+
+        Returns:
+            A pair containing the circular-section enum and a one-element
+            array containing the section radius.
+        """
         del q
         segment_idx, _ = self.classify_segment(s)
         radius = jnp.max(jnp.abs(self.rod_offset[segment_idx]))
@@ -438,9 +489,23 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _reference_physical_strains(self) -> Array:
+        """Return the physical rod reference strains from the parameter set."""
         return jnp.asarray(self.params.xi_ref, dtype=self.L.dtype)
 
     def beta(self, vxi: Array) -> Array:
+        """Map virtual-backbone strains to physical rod strains.
+
+        The virtual strain vector uses three components per segment.  HSA
+        rods share bending and shear strains, while the axial strain of a rod
+        is shifted by its signed lateral offset and the segment curvature.
+
+        Args:
+            vxi: Virtual strains with shape ``(3 * num_segments,)``.
+
+        Returns:
+            Physical rod strains with shape
+            ``(num_segments, num_rods_per_segment, 3)``.
+        """
         vxi = jnp.asarray(vxi).reshape(self.num_segments, 3)
         physical = jnp.broadcast_to(
             vxi[:, None, :], (self.num_segments, self.num_rods_per_segment, 3)
@@ -450,6 +515,18 @@ class PlanarHSA(PlanarPCS):
         )
 
     def beta_inv(self, pxi: Array) -> Array:
+        """Map physical rod strains to the least-squares virtual strain.
+
+        The inverse uses the mean across rods and removes the offset-induced
+        axial contribution from the virtual axial component.
+
+        Args:
+            pxi: Physical rod strains with shape
+                ``(num_segments, num_rods_per_segment, 3)``.
+
+        Returns:
+            Virtual strains flattened to shape ``(3 * num_segments,)``.
+        """
         pxi = jnp.asarray(pxi).reshape(self.num_segments, self.num_rods_per_segment, 3)
         virtual = jnp.mean(pxi, axis=1)
         virtual = virtual.at[:, 2].set(
@@ -457,19 +534,21 @@ class PlanarHSA(PlanarPCS):
         )
         return virtual.reshape(self.num_strains)
 
-    def ref_strains(self) -> Array:
-        return self.xi_ref
-
-    def strain(self, q: Array) -> Array:
-        return self.B_xi @ q + self.xi_ref
-
     @staticmethod
     def _translation_transform(x: Array, y: Array) -> Array:
+        """Construct an SE(2) translation by local coordinates ``(x, y)``."""
         return poses.planar_pose_to_transform(
             jnp.stack([jnp.zeros_like(x), x, y])
         )
 
     def _segment_bases_and_tips(self, xi: Array) -> tuple[Array, Array]:
+        """Propagate virtual-backbone base and flexible-tip transforms.
+
+        Proximal caps are applied before each flexible section and the distal
+        cap/platform translation is applied after it.  The returned tip
+        transforms are therefore the poses used as starting transforms for
+        subsequent segments.
+        """
         xi = xi.reshape(self.num_segments, 3)
         g0 = poses.planar_pose_to_transform(jnp.asarray(self.base_pose, dtype=xi.dtype))
 
@@ -495,17 +574,20 @@ class PlanarHSA(PlanarPCS):
         return g_bases, g_tips
 
     def _backbone_transform(self, xi: Array, s: Array) -> Array:
+        """Return the SE(2) transform of the virtual backbone at ``s``."""
         segment_idx, s_local = self.classify_segment(s)
         g_bases, _ = self._segment_bases_and_tips(xi)
         g_base = g_bases[segment_idx]
         return g_base @ se2.exp(s_local * xi.reshape(self.num_segments, 3)[segment_idx], eps=self.global_eps)
 
     def _forward_backbone_from_xi(self, xi: Array, s: Array) -> Array:
+        """Convert the virtual-backbone transform at ``s`` to pose coordinates."""
         return poses.planar_pose_from_transform(
             self._backbone_transform(xi, s), eps=self.global_eps
         )
 
     def _forward_rod_from_xi(self, xi: Array, s: Array, rod_idx: Array) -> Array:
+        """Return a physical rod pose by applying its segment offset."""
         segment_idx, _ = self.classify_segment(s)
         offset = self.rod_offset[segment_idx, rod_idx]
         rod_transform = self._translation_transform(offset, jnp.zeros_like(offset))
@@ -515,6 +597,7 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _forward_platform_from_xi(self, xi: Array, segment_idx: Array) -> Array:
+        """Return the center pose of a rigid segment platform."""
         _, g_tips = self._segment_bases_and_tips(xi)
         offset = self.distal_cap_length[segment_idx] + self.platform_dimension[segment_idx, 1] / 2.0
         platform_transform = self._translation_transform(
@@ -525,6 +608,7 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _end_effector_transform_from_tip(self, g_tip: Array) -> Array:
+        """Apply distal platform and end-effector offsets to a tip transform."""
         last = self.num_segments - 1
         platform_end = self._translation_transform(
             jnp.zeros_like(self.distal_cap_length[last]),
@@ -533,21 +617,21 @@ class PlanarHSA(PlanarPCS):
         return g_tip @ platform_end @ poses.planar_pose_to_transform(self.end_effector_offset)
 
     def _forward_end_effector_from_xi(self, xi: Array) -> Array:
+        """Return the end-effector pose from a full virtual strain vector."""
         _, g_tips = self._segment_bases_and_tips(xi)
         return poses.planar_pose_from_transform(
             self._end_effector_transform_from_tip(g_tips[-1]), eps=self.global_eps
         )
 
-    def _kinematic_xi(self, q: Array) -> Array:
-        return self.strain(q)
-
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
-        return self._forward_backbone_from_xi(self._kinematic_xi(q), s)
+        """Protected numerical FK hook used by :class:`SoftRobot`."""
+        return self._forward_backbone_from_xi(self.strain(q), s)
 
     def _forward_kinematics_arc_length_derivative(self, q: Array, s: Array) -> Array:
-        xi = self._kinematic_xi(q).reshape(self.num_segments, 3)
+        """Return the analytic arc-length derivative of the HSA pose."""
+        xi = self.strain(q).reshape(self.num_segments, 3)
         segment_idx, _ = self.classify_segment(s)
-        g = self._backbone_transform(self._kinematic_xi(q), s)
+        g = self._backbone_transform(self.strain(q), s)
         return jnp.concatenate(
             [
                 xi[segment_idx, :1],
@@ -558,16 +642,45 @@ class PlanarHSA(PlanarPCS):
     def _forward_kinematics_and_arc_length_derivative(
         self, q: Array, s: Array
     ) -> tuple[Array, Array]:
+        """Return HSA pose and arc-length derivative from shared kinematics."""
         return self._forward_kinematics(q, s), self._forward_kinematics_arc_length_derivative(q, s)
 
     def forward_kinematics_rod(self, q: Array, s: Array, rod_idx: Array) -> Array:
-        return self._forward_rod_from_xi(self._kinematic_xi(q), s, rod_idx)
+        """Return the pose of a physical rod centerline point.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            s: Arc-length coordinate along the flexible backbone.
+            rod_idx: Index of the rod within the segment containing ``s``.
+
+        Returns:
+            Planar pose ``[theta, x, y]`` of the rod point in the base frame.
+        """
+        return self._forward_rod_from_xi(self.strain(q), s, rod_idx)
 
     def forward_kinematics_platform(self, q: Array, segment_idx: Array) -> Array:
-        return self._forward_platform_from_xi(self._kinematic_xi(q), segment_idx)
+        """Return the pose of the platform belonging to one segment.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            segment_idx: Integer segment index.
+
+        Returns:
+            Planar pose ``[theta, x, y]`` at the platform center.
+        """
+        return self._forward_platform_from_xi(self.strain(q), segment_idx)
 
     def forward_kinematics_end_effector(self, q: Array) -> Array:
-        return self._forward_end_effector_from_xi(self._kinematic_xi(q))
+        """Return the pose of the HSA end effector.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+
+        Returns:
+            End-effector pose ``[theta, x, y]`` in the base frame, including
+            the distal cap, platform, and configured end-effector offset.
+        """
+        return self._forward_end_effector_from_xi(self.strain(q))
 
     def _segment_bases_and_jacobians_geometry(
         self, xi: Array
@@ -804,6 +917,12 @@ class PlanarHSA(PlanarPCS):
     def _segment_bases_and_jacobians(
         self, xi: Array, xid: Array
     ) -> tuple[Array, Array, Array, Array, Array, Array]:
+        """Propagate segment bases, tips, Jacobians, and Jacobian derivatives.
+
+        The returned arrays retain one entry per segment. This fused scan is
+        the common source for point kinematics, end-effector derivatives, and
+        tip quantities, avoiding separate propagation passes.
+        """
         xi = xi.reshape(self.num_segments, 3)
         xid = xid.reshape(self.num_segments, 3)
         zeros = jnp.zeros((self.num_segments, 3, 3), dtype=xi.dtype)
@@ -849,6 +968,7 @@ class PlanarHSA(PlanarPCS):
     def _body_kinematics_at(
         self, q: Array, qd: Array, s: Array
     ) -> tuple[Array, Array, Array, Array]:
+        """Evaluate pose, body Jacobian, and time derivative at one ``s``."""
         xi = self.strain(q)
         xid = self.B_xi @ qd
         segment_idx, s_local = self.classify_segment(s)
@@ -876,14 +996,17 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _jacobian_bodyframe_with_pose(self, q: Array, s: Array) -> tuple[Array, Array]:
+        """Return the point pose and its active-coordinate body Jacobian."""
         g, J, _, _ = self._body_kinematics_at(q, jnp.zeros_like(q), s)
         return poses.planar_pose_from_transform(g, eps=self.global_eps), J
 
     def _jacobian(self, q: Array, s: Array) -> Array:
+        """Return the inertial-frame point Jacobian for the SoftRobot hook."""
         chi, J_local = self._jacobian_bodyframe_with_pose(q, s)
         return self._body_jacobian_to_inertial(chi, J_local)
 
     def _jacobian_arc_length_derivative(self, q: Array, s: Array) -> Array:
+        """Return the analytic arc-length derivative of a point Jacobian."""
         xi = self.strain(q)
         segment_idx, s_local = self.classify_segment(s)
         xi_rows = xi.reshape(self.num_segments, 3)
@@ -913,9 +1036,22 @@ class PlanarHSA(PlanarPCS):
     def _jacobian_and_arc_length_derivative(
         self, q: Array, s: Array
     ) -> tuple[Array, Array]:
+        """Return a point Jacobian and its arc-length derivative together."""
         return self._jacobian(q, s), self._jacobian_arc_length_derivative(q, s)
 
     def jacobian_end_effector(self, q: Array) -> Array:
+        """Return the end-effector geometric Jacobian.
+
+        The row ordering is ``[x, y, theta]`` and the columns correspond to
+        the active generalized coordinates.  The result maps generalized
+        velocities to the planar end-effector velocity in the inertial frame.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+
+        Returns:
+            Jacobian with shape ``(3, num_dofs)``.
+        """
         g_tip, J_tip_local, _, _ = self._body_kinematics_at(
             q, jnp.zeros_like(q), self.length
         )
@@ -933,6 +1069,16 @@ class PlanarHSA(PlanarPCS):
     def jacobian_and_time_derivative_end_effector(
         self, q: Array, qd: Array
     ) -> tuple[Array, Array]:
+        """Return the end-effector Jacobian and its time derivative.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Generalized velocities with shape ``(num_dofs,)``.
+
+        Returns:
+            A pair ``(J, Jd)``.  Both arrays have shape ``(3, num_dofs)`` and
+            ``Jd`` is the convective time derivative evaluated at ``(q, qd)``.
+        """
         g_tip, J_tip_local, Jd_tip_local, _ = self._body_kinematics_at(
             q, qd, self.length
         )
@@ -961,6 +1107,7 @@ class PlanarHSA(PlanarPCS):
     def _jacobian_and_time_derivative(
         self, q: Array, qd: Array, s: Array
     ) -> tuple[Array, Array]:
+        """Return a point Jacobian and analytic time derivative together."""
         g, J_local, Jd_local, _ = self._body_kinematics_at(q, qd, s)
         chi = poses.planar_pose_from_transform(g, eps=self.global_eps)
         Ad_rot = self._rotation_adjoint_from_pose(chi)
@@ -975,9 +1122,36 @@ class PlanarHSA(PlanarPCS):
     def jacobian_and_time_derivative_batched(
         self, q: Array, qd: Array, s_ps: Array
     ) -> tuple[Array, Array]:
+        """Evaluate point Jacobians and time derivatives at many arc lengths.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Generalized velocities with shape ``(num_dofs,)``.
+            s_ps: Arc-length coordinates with shape ``(num_points,)``.
+
+        Returns:
+            Two arrays of shape ``(num_points, 3, num_dofs)`` containing the
+            point Jacobians and their time derivatives.
+        """
         return vmap(lambda s: self.jacobian_and_time_derivative(q, qd, s))(s_ps)
 
     def inverse_kinematics(self, chi_ee: Array) -> Array:
+        """Solve one-segment constant-strain inverse kinematics.
+
+        The analytic solution accounts for the proximal and distal rigid
+        geometry and returns active coordinates that reproduce the requested
+        end-effector pose.  As in the underlying model, this method is only
+        defined for a single flexible segment.
+
+        Args:
+            chi_ee: Desired end-effector pose ``[theta, x, y]``.
+
+        Returns:
+            Active generalized coordinates with shape ``(num_dofs,)``.
+
+        Raises:
+            AssertionError: If the model has more than one segment.
+        """
         if self.num_segments != 1:
             raise AssertionError("Inverse kinematics only works for one segment!")
         # Keep the historical one-segment target inversion, including its
@@ -1010,6 +1184,7 @@ class PlanarHSA(PlanarPCS):
         return jnp.linalg.pinv(self.B_xi) @ (xi - self.xi_ref)
 
     def _quadrature(self) -> tuple[Array, Array]:
+        """Return physical quadrature positions and length-scaled weights."""
         points = self.integration_points[1:-1]
         weights = self.integration_weights[1:-1]
         starts = self.L_cum[:-1]
@@ -1026,11 +1201,8 @@ class PlanarHSA(PlanarPCS):
         )
         return mapping.at[..., 2, 0].set(self.rod_offset)
 
-    def _rod_strain_mapping(self) -> Array:
-        """Return the cached per-rod map from virtual to physical strains."""
-        return self.rod_strain_mapping
-
     def _platform_mass_properties(self, i: int | Array) -> tuple[Array, Array, Array]:
+        """Return mass, planar inertia, and local center of gravity for a platform assembly."""
         width, height, depth = self.platform_dimension[i]
         m_platform = self.platform_density[i] * width * height * depth
         I_platform = m_platform / 12.0 * (width**2 + height**2)
@@ -1105,6 +1277,12 @@ class PlanarHSA(PlanarPCS):
         convective_only_jd: bool = False,
         return_tips: bool = False,
     ) -> tuple[Array, ...]:
+        """Evaluate quadrature poses, Jacobians, and time derivatives.
+
+        When ``return_tips`` is true, the segment-tip quantities generated by
+        the same propagation pass are appended to the result so mass-property
+        assembly can reuse them without another scan.
+        """
         xi = self.strain(q).reshape(self.num_segments, 3)
         xid = (self.B_xi @ qd).reshape(self.num_segments, 3)
         Xs_scaled, Ws_scaled = vmap(
@@ -1175,6 +1353,7 @@ class PlanarHSA(PlanarPCS):
     def _integration_kinematics(
         self, q: Array, qd: Array, convective_only_jd: bool = False
     ) -> tuple[Array, Array, Array, Array]:
+        """Return quadrature kinematics projected to active coordinates."""
         Ws_scaled, g_ps, J_full, Jd_full = self._integration_kinematics_full(
             q, qd, convective_only_jd
         )
@@ -1188,6 +1367,21 @@ class PlanarHSA(PlanarPCS):
     def integration_kinematics(
         self, q: Array, qd: Array
     ) -> tuple[Array, Array, Array]:
+        """Return quadrature poses, Jacobians, and Jacobian derivatives.
+
+        The returned quantities are assembled over the interior fixed
+        Gauss--Legendre points of every flexible segment and are used by the
+        numerical dynamics implementation.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Generalized velocities with shape ``(num_dofs,)``.
+
+        Returns:
+            ``(g_ps, J_ps, Jd_ps)`` where ``g_ps`` has shape
+            ``(num_segments, num_gauss_points, 3, 3)`` and both Jacobian
+            arrays have shape ``(num_segments, num_gauss_points, 3, num_dofs)``.
+        """
         _, g_ps, J_ps, Jd_ps = self._integration_kinematics(q, qd)
         return g_ps, J_ps, Jd_ps
 
@@ -1198,6 +1392,7 @@ class PlanarHSA(PlanarPCS):
         convective_only_jd: bool = False,
         full: bool = False,
     ) -> tuple[Array, ...]:
+        """Build rod, platform, and payload mass geometry from one propagation."""
         (
             Ws,
             g_ps,
@@ -1267,6 +1462,13 @@ class PlanarHSA(PlanarPCS):
         full: bool = False,
         return_matrix: bool = False,
     ) -> tuple[Array, Array, Array]:
+        """Assemble inertia, Coriolis, and gravity terms from mass geometry.
+
+        ``full`` selects the complete virtual-strain coordinate space while
+        the default assembles directly in active coordinates. ``return_matrix``
+        returns the Coriolis matrix; otherwise it returns its product with the
+        current generalized velocity.
+        """
         (
             Ws,
             g_rods,
@@ -1351,6 +1553,7 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _gravitational_energy_full_from_xi(self, xi: Array) -> Array:
+        """Compute gravitational potential energy from full virtual strains."""
         gravity = self.g[1:]
         # The potential is referenced to the base origin and therefore omits
         # the constant energy offset caused by a translated base. Forces are
@@ -1405,6 +1608,7 @@ class PlanarHSA(PlanarPCS):
         return energy - self.platform_mass * (gravity @ (payload_cog - base_translation))
 
     def _gravitational_energy(self, q: Array) -> Array:
+        """Return gravitational potential energy for active coordinates."""
         return self._gravitational_energy_full_from_xi(self.strain(q))
 
     def _assemble_gravity_force(self, q: Array, *, full: bool = False) -> Array:
@@ -1464,12 +1668,19 @@ class PlanarHSA(PlanarPCS):
         G_payload = -J_payload.T @ payload_gravity_wrench
         return G_rods + G_cogs + G_payload
 
-    def _inertia_full_matrix(self, q: Array) -> Array:
-        return self._assemble_dynamics_terms(
-            q, jnp.zeros((self.num_dofs,), dtype=q.dtype), full=True
-        )[0]
-
     def inertia_matrix(self, q: Array) -> Array:
+        """Return the active-coordinate generalized inertia matrix.
+
+        The matrix is assembled from the physical rods, rigid platforms, caps,
+        and payload using the fixed Gauss--Legendre grid.  It is symmetric and
+        positive semidefinite up to numerical round-off.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+
+        Returns:
+            Inertia matrix with shape ``(num_dofs, num_dofs)``.
+        """
         return self._assemble_dynamics_terms(
             q, jnp.zeros((self.num_dofs,), dtype=q.dtype)
         )[0]
@@ -1537,12 +1748,21 @@ class PlanarHSA(PlanarPCS):
 
         return jnp.moveaxis(vmap(directional_derivative)(directions), 0, -1)
 
-    def _coriolis_full_matrix(self, q: Array, qd: Array) -> Array:
-        return self._assemble_dynamics_terms(
-            q, qd, full=True, return_matrix=True
-        )[1]
-
     def coriolis_matrix(self, q: Array, qd: Array) -> Array:
+        """Return the Christoffel-consistent Coriolis matrix.
+
+        The matrix is constructed analytically from the configuration
+        derivative of the inertia matrix.  It satisfies the convention used
+        by :class:`SoftRobot`, namely that ``C(q, qd) @ qd`` is the convective
+        generalized force.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Generalized velocities with shape ``(num_dofs,)``.
+
+        Returns:
+            Coriolis matrix with shape ``(num_dofs, num_dofs)``.
+        """
         dB = self._inertia_derivative_matrix(q)
         return 0.5 * jnp.einsum(
             "abk,k->ab",
@@ -1552,13 +1772,12 @@ class PlanarHSA(PlanarPCS):
             qd,
         )
 
-    def _gravitational_full_force(self, q: Array) -> Array:
-        return self._assemble_gravity_force(q, full=True)
-
     def _gravitational_force(self, q: Array) -> Array:
+        """Assemble active gravitational force using the reduced gravity path."""
         return self._assemble_gravity_force(q)
 
     def _build_nominal_stiffness_full(self, mapping: Array) -> Array:
+        """Build the full virtual-strain stiffness from rod constitutive data."""
         zeros = jnp.zeros_like(self.nominal_bending_stiffness)
         Shat_rod = jnp.stack(
             [
@@ -1587,26 +1806,31 @@ class PlanarHSA(PlanarPCS):
         blocks = jnp.einsum("...ji,...jk,...kl->...il", mapping, Shat_rod, mapping)
         return blk_diag(jnp.sum(blocks, axis=1))
 
-    def _nominal_stiffness_full(self) -> Array:
-        """Return the cached full HSA stiffness matrix."""
-        return self.K_full
-
-    def Shat(self) -> Array:
-        return self.K_full
-
     def stiffness_matrix(self) -> Array:
+        """Return the cached active-coordinate elastic stiffness matrix."""
         return self.K_active
 
     def _stiffness_full_vector(self, q: Array) -> Array:
-        return self.Shat() @ (self.strain(q) - self.ref_strains())
+        """Return the full elastic force vector in virtual-strain coordinates."""
+        return self.K_full @ (self.strain(q) - self.xi_ref)
 
     def elastic_force(self, q: Array) -> Array:
+        """Return the generalized elastic force at configuration ``q``.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+
+        Returns:
+            Elastic generalized force with shape ``(num_dofs,)``.
+        """
         return self.B_xi.T @ self._stiffness_full_vector(q)
 
     def _elastic_energy(self, q: Array) -> Array:
+        """Return elastic energy in active generalized coordinates."""
         return 0.5 * q @ self.stiffness_matrix() @ q
 
     def _build_damping_full(self, mapping: Array) -> Array:
+        """Build the full virtual-strain damping matrix from rod data."""
         zeros = jnp.zeros_like(self.bending_damping)
         damping_rod = jnp.stack(
             [
@@ -1627,15 +1851,21 @@ class PlanarHSA(PlanarPCS):
         )
         return blk_diag(jnp.sum(blocks, axis=1))
 
-    def _damping_full_matrix(self) -> Array:
-        """Return the cached full HSA damping matrix."""
-        return self.D_full
-
     def damping_matrix(self, q: Array) -> Array:
+        """Return the cached active-coordinate damping matrix.
+
+        Args:
+            q: Generalized coordinates. The HSA damping matrix is
+                configuration independent, so this argument is unused.
+
+        Returns:
+            Damping matrix with shape ``(num_dofs, num_dofs)``.
+        """
         del q
         return self.D_active
 
     def _actuation_full_matrix(self, q: Array, phi: Array) -> Array:
+        """Assemble rod actuation forces before active-coordinate projection."""
         xi_rows = self.strain(q).reshape(self.num_segments, 3)
         physical = self.beta(xi_rows.reshape(-1))
         references = self._reference_physical_strains()
@@ -1685,23 +1915,60 @@ class PlanarHSA(PlanarPCS):
             "...jk,...k->...j", Sr, coupling
         )
         rod_force_virtual = jnp.einsum(
-            "...ji,...j->...i", self._rod_strain_mapping(), rod_force_physical
+            "...ji,...j->...i", self.rod_strain_mapping, rod_force_physical
         )
         return jnp.sum(rod_force_virtual, axis=1).reshape(self.num_strains)
 
     def actuation_force(
         self, q: Array, phi: Array, qd: Array | None = None
     ) -> Array:
+        """Return generalized forces generated by HSA actuation.
+
+        With underactuation disabled, ``phi`` is interpreted directly as an
+        active generalized-force vector.  With underactuation enabled, it is
+        interpreted as one motor rotation per physical rod and mapped through
+        the HSA rod stiffness and strain geometry.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            phi: Motor rotations or direct generalized forces, depending on
+                ``consider_underactuation``.
+            qd: Generalized velocities. Accepted for the common actuation API;
+                HSA actuation is velocity independent.
+
+        Returns:
+            Generalized actuation force with shape ``(num_dofs,)``.
+        """
         del qd
         if not self.consider_underactuation:
             return jnp.asarray(phi)
         return self.B_xi.T @ self._actuation_full_matrix(q, phi)
 
     def hysteresis_force(self, q: Array, z: Array) -> Array:
+        """Return the generalized force contributed by hysteresis state ``z``.
+
+        Args:
+            q: Active generalized coordinates. The force depends only on the
+                configured hysteresis state for this model.
+            z: Hysteresis coordinates with shape ``(num_hysteresis,)``.
+
+        Returns:
+            Generalized hysteresis force with shape ``(num_dofs,)``.
+        """
         del q
-        return self.B_xi.T @ self.Shat() @ (self.hysteresis_basis @ z)
+        return self.B_xi.T @ self.K_full @ (self.hysteresis_basis @ z)
 
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+        """Return inertia, convective, and gravitational dynamics terms.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Generalized velocities with shape ``(num_dofs,)``.
+
+        Returns:
+            A tuple ``(B, Cqd, G)`` with shapes ``(num_dofs, num_dofs)``,
+            ``(num_dofs,)``, and ``(num_dofs,)`` respectively.
+        """
         return self._assemble_dynamics_terms(
             q, qd, convective_only_jd=True
         )
@@ -1710,7 +1977,26 @@ class PlanarHSA(PlanarPCS):
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
-        """Compute the HSA state derivative."""
+        """Compute the HSA first-order state derivative.
+
+        The state is ``[q, qd]`` without hysteresis and ``[q, qd, z]`` when
+        hysteresis is enabled.  The supplied actuation tuple may contain the
+        motor/direct-force input and optionally an external generalized force.
+
+        Args:
+            t: Simulation time. HSA dynamics are autonomous, so this argument
+                is accepted but not used explicitly.
+            y: State vector with shape ``(2 * num_dofs,)`` or
+                ``(2 * num_dofs + num_hysteresis,)``.
+            actuation_args: ``None``, ``(u,)``, or ``(u, tau_ext)``.
+
+        Returns:
+            State derivative with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` has a length other than one or
+                two.
+        """
         if actuation_args is None:
             u, tau_ext = None, None
         elif len(actuation_args) == 1:
@@ -1743,7 +2029,7 @@ class PlanarHSA(PlanarPCS):
         tau_u = self.actuation_force(q, u, qd=qd)
         if self.consider_hysteresis:
             tau_el_full = self._stiffness_full_vector(q)
-            tau_hyst_full = self.Shat() @ (self.hysteresis_basis @ z)
+            tau_hyst_full = self.K_full @ (self.hysteresis_basis @ z)
             tau_el = self.B_xi.T @ (
                 self.hysteresis_alpha * tau_el_full
                 + (1.0 - self.hysteresis_alpha) * tau_hyst_full
@@ -1759,4 +2045,3 @@ class PlanarHSA(PlanarPCS):
             if self.consider_hysteresis
             else jnp.concatenate((qd, qdd))
         )
-
