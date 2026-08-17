@@ -5,9 +5,9 @@ from jax import Array
 
 
 class PlanarHSAStructure(eqx.Module):
-    """Static symbolic and layout choices for planar HSA."""
+    """Static numerical layout choices for planar HSA."""
 
-    symbolic_expression_path: str = eqx.field(static=True)
+    num_gauss_points: int = eqx.field(static=True, default=5)
     strain_selector: Array | None = None
     consider_underactuation: bool = eqx.field(static=True, default=True)
     consider_hysteresis: bool = eqx.field(static=True, default=False)

@@ -17,7 +17,7 @@ class PlanarHSAParams(BaseSoftRobotParams):
     Field names denote one segment/platform quantity; leading axes store the
     batched values. Arrays store length, rod geometry, reference strain
     components, platform/cap dimensions, end-effector offset, and optional
-    hysteresis coefficients used by the symbolic HSA expressions. ``base_pose``
+    hysteresis coefficients used by the numerical HSA model. ``base_pose``
     stores the planar pose ``[theta, x, y]`` with shape ``(3,)``. ``theta`` is
     a right-handed angle in radians about the out-of-plane z-axis, and
     ``x``/``y`` are direct translations in the parent frame. Omitting

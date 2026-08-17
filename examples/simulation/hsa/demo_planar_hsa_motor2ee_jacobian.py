@@ -8,9 +8,7 @@ import scipy as sp
 from jax import Array, jacrev, jit, random
 from jax import numpy as jnp
 
-import soromox
 from soromox.systems import PlanarHSA, PlanarHSAParams, PlanarHSAStructure
-from soromox.utils.numerical_jacobian import approx_derivative
 
 
 def _repo_hsa_params_path() -> Path:
@@ -24,7 +22,6 @@ def _repo_hsa_params_path() -> Path:
 
 
 def factory_fn(
-    sym_exp_filepath: Path,
     params: PlanarHSAParams,
     strain_selector: Array,
     verbose: bool = False,
@@ -32,7 +29,6 @@ def factory_fn(
     """
     Factory function for the planar HSA.
     Args:
-        sym_exp_filepath: path to the symbolic expressions file
         params: typed planar HSA parameters
         strain_selector: boolean array to select the strains to be activated
         verbose: flag to print additional information
@@ -44,7 +40,6 @@ def factory_fn(
     robot = PlanarHSA(
         params=params,
         structure=PlanarHSAStructure(
-            symbolic_expression_path=str(sym_exp_filepath),
             strain_selector=strain_selector,
         ),
     )
@@ -61,8 +56,13 @@ def factory_fn(
     print("Compiling residual_fn...")
     print(residual_fn(jnp.zeros((3,)), jnp.zeros((2,))))
 
-    # define the Jacobian of the residual function
-    jac_residual_fn = jit(jacrev(residual_fn, argnums=0))
+    # The optimizer solves grad_q residual_fn(q, phi) = 0. Differentiate this
+    # stationarity condition with JAX to obtain dq/dphi through the implicit
+    # function theorem, rather than finite-differencing the optimizer output.
+    grad_residual_fn = jacrev(residual_fn, argnums=0)
+    jac_residual_fn = jit(grad_residual_fn)
+    hess_residual_fn = jit(jacrev(grad_residual_fn, argnums=0))
+    mixed_residual_fn = jit(jacrev(grad_residual_fn, argnums=1))
     print("Compiling jac_residual_fn...")
     print(jac_residual_fn(jnp.zeros((3,)), jnp.zeros((2,))))
 
@@ -133,15 +133,15 @@ def factory_fn(
         """
         # evaluate the static model to convert motor angles into a configuration
         q, aux = phi2q_static_model_fn(phi, q0=q0)
-        # approximate the Jacobian between the actuation and the task-space using finite differences
-        J_phi2q = approx_derivative(
-            fun=lambda _phi: phi2q_static_model_fn(_phi, q0=q0)[0],
-            x0=phi,
-            f0=q,
-        )
+        # Differentiate the optimizer's first-order stationarity condition:
+        # H_qq dq/dphi + H_qphi = 0.
+        H_qq = hess_residual_fn(q, phi)
+        H_qphi = mixed_residual_fn(q, phi)
+        J_phi2q = -jnp.linalg.solve(H_qq, H_qphi)
 
-        # evaluate the closed-form, analytical jacobian of the forward kinematics
-        J_q2chi = robot.jacobian_end_effector(q)
+        # Differentiate the numerical forward kinematics in the same pose
+        # ordering returned by ``phi2chi_static_model_fn``.
+        J_q2chi = jacrev(robot.forward_kinematics_end_effector)(q)
 
         # evaluate the Jacobian between the actuation and the task-space
         J_phi2chi = J_q2chi @ J_phi2q
@@ -155,20 +155,12 @@ if __name__ == "__main__":
     num_segments = 1
     num_rods_per_segment = 2
 
-    # filepath to symbolic expressions
-    sym_exp_filepath = (
-        Path(soromox.__file__).parent
-        / "symbolic_expressions"
-        / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
-    )
-
     # activate all strains (i.e. bending, shear, and axial)
     strain_selector = jnp.ones((3 * num_segments,), dtype=bool)
     params = PlanarHSAParams.from_npz(_repo_hsa_params_path())
 
     # call the factory function
     phi2chi_static_model_fn, jac_phi2chi_static_model_fn = factory_fn(
-        sym_exp_filepath=sym_exp_filepath,
         params=params,
         strain_selector=strain_selector,
     )

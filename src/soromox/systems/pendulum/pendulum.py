@@ -16,10 +16,9 @@ class Pendulum(SoftRobot):
     """
     Planar N-link serial pendulum (revolute chain) with closed-form JAX dynamics.
 
-    This class provides a lightweight rigid-body model of an N-link planar pendulum
-    without relying on pre-generated symbolic expressions. Kinematics and dynamics
-    are computed on-the-fly using Jacobian-based rigid-body formulas that are fully
-    JAX compatible (supporting JIT, vmap, grad, etc.).
+    This class provides a lightweight rigid-body model of an N-link planar pendulum.
+    Kinematics and dynamics are computed on-the-fly using Jacobian-based rigid-body
+    formulas that are fully JAX compatible (supporting JIT, vmap, grad, etc.).
 
     Notes
     ----

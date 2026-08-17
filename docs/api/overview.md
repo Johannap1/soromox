@@ -10,7 +10,7 @@ SoRoMoX is a comprehensive library for modeling, simulating, and controlling sof
 - **[Control](control/index.md)**: Model-based controllers for trajectory tracking and regulation
 - **[Rendering](rendering/index.md)**: Visualization and animation utilities
 - **[Actuation](actuation/index.md)**: Actuation modeling and utilities
-- **[Utilities](utilities/index.md)**: Parameter management and symbolic derivation tools
+- **[Utilities](utilities/index.md)**: Parameter management and numerical utilities
 
 ---
 

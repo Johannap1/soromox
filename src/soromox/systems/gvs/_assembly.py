@@ -8,7 +8,7 @@ from soromox.systems.gvs.params import GVSParams
 from soromox.systems.gvs.primitives import Basis, Joint
 from soromox.systems.gvs.structures import GVSSegmentStructure, GVSStructure
 from soromox.systems.params import validate_quaternion_base_pose
-from soromox.utils.basic import compute_strain_basis
+from soromox.utils.dof import build_active_dof_basis
 from soromox.utils.geometry import poses
 
 
@@ -266,7 +266,7 @@ def assign_gvs_runtime_arrays(
     _set_model_field(model, "semi_minor_params", semi_minor_params)
 
     active_selector = jnp.concatenate(strain_selector, axis=0)
-    _set_model_field(model, "active_dof_map", compute_strain_basis(active_selector))
+    _set_model_field(model, "active_dof_map", build_active_dof_basis(active_selector))
     _set_model_field(
         model, "num_dofs", int(jnp.sum(dofs_per_segment, axis=(0, 1), dtype=int))
     )

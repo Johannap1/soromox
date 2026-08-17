@@ -9,7 +9,6 @@ jax.config.update("jax_enable_x64", True)  # double precision
 from jax import grad, jacfwd, random
 from jax import numpy as jnp
 
-import soromox
 from soromox.systems import PlanarHSA, PlanarHSAParams, PlanarHSAStructure
 
 HSA_PARAMS_PATH = (
@@ -23,19 +22,11 @@ typed_params = PlanarHSAParams.from_npz(HSA_PARAMS_PATH)
 num_segments = 1
 num_rods_per_segment = 2
 
-# filepath to symbolic expressions
-sym_exp_filepath = (
-    Path(soromox.__file__).parent
-    / "symbolic_expressions"
-    / f"planar_hsa_ns-{num_segments}_nrs-{num_rods_per_segment}.dill"
-)
-
-
 def _create_robot():
     """Helper to create a robot instance."""
     return PlanarHSA(
         params=typed_params,
-        structure=PlanarHSAStructure(symbolic_expression_path=str(sym_exp_filepath)),
+        structure=PlanarHSAStructure(),
     )
 
 
@@ -103,7 +94,7 @@ def test_planar_hsa_npz_uses_environment_defaults_when_fields_are_absent(tmp_pat
 
 def test_jacobian_virtual_backbone(seed: int = 0):
     """
-    Test that the symbolic Jacobian matches the autograd Jacobian of forward kinematics.
+    Test that the numerical Jacobian matches the autograd Jacobian of forward kinematics.
     """
     print("Testing jacobian_virtual_backbone...")
     robot = _create_robot()
@@ -114,10 +105,10 @@ def test_jacobian_virtual_backbone(seed: int = 0):
 
         # Test at multiple points along the robot
         rng, subrng = random.split(rng)
-        s_values = random.uniform(subrng, (5,), minval=0.0, maxval=robot.Lmax)
+        s_values = random.uniform(subrng, (5,), minval=0.0, maxval=robot.length)
 
         for s in s_values:
-            # Symbolic Jacobian
+            # Numerical Jacobian
             J_sym = robot.jacobian_virtual_backbone(q, s)
 
             # Autograd Jacobian (computed from forward_kinematics)
@@ -130,7 +121,7 @@ def test_jacobian_virtual_backbone(seed: int = 0):
                 print(f"J_sym =\n{J_sym}")
                 print(f"J_autograd =\n{J_autograd}")
                 print(f"diff =\n{J_sym - J_autograd}")
-                raise ValueError("Symbolic Jacobian does not match autograd Jacobian")
+                raise ValueError("Numerical Jacobian does not match autograd Jacobian")
 
 
 def test_jacobian_wrapper_matches_virtual_backbone(seed: int = 0):
@@ -143,7 +134,7 @@ def test_jacobian_wrapper_matches_virtual_backbone(seed: int = 0):
     rng = random.PRNGKey(seed)
     rng, q = _sample_configuration(rng, num_segments)
     rng, subrng = random.split(rng)
-    s = random.uniform(subrng, (), minval=0.0, maxval=robot.Lmax)
+    s = random.uniform(subrng, (), minval=0.0, maxval=robot.length)
 
     J1 = robot.jacobian(q, s)
     J2 = robot.jacobian_virtual_backbone(q, s)
@@ -186,7 +177,7 @@ def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
         qd = random.normal(subrng, shape=q.shape) * 0.1
 
         rng, subrng = random.split(rng)
-        s = random.uniform(subrng, (), minval=0.1 * robot.Lmax, maxval=0.9 * robot.Lmax)
+        s = random.uniform(subrng, (), minval=0.1 * robot.length, maxval=0.9 * robot.length)
 
         J, Jd = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
 
@@ -221,7 +212,7 @@ def test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone(seed: int
     rng, subrng = random.split(rng)
     qd = random.normal(subrng, shape=q.shape) * 0.1
     rng, subrng = random.split(rng)
-    s = random.uniform(subrng, (), minval=0.0, maxval=robot.Lmax)
+    s = random.uniform(subrng, (), minval=0.0, maxval=robot.length)
 
     J1, Jd1 = robot.jacobian_and_time_derivative(q, qd, s)
     J2, Jd2 = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)

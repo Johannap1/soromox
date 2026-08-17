@@ -1,1366 +1,585 @@
-# ruff: noqa: B904
-from collections.abc import Callable
 from typing import Any
 
-import dill
 import equinox as eqx
-import sympy as sp
-from jax import Array, jacfwd, lax
+import jax
+from jax import Array, lax, vmap
 from jax import numpy as jnp
 
 from soromox.systems.hsa.params import PlanarHSAParams
 from soromox.systems.hsa.structures import PlanarHSAStructure
+from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
-from soromox.utils.basic import (
-    compute_strain_basis,
-    concatenate_params_syms,
-)
+from soromox.utils.array_math import blk_diag
+from soromox.utils.dof import build_active_dof_basis
+from soromox.utils.integration import gauss_quadrature
 
 __all__ = ["PlanarHSA"]
 
 
-class PlanarHSA(SoftRobot):
+class PlanarHSA(PlanarPCS):
     """
-    A kinematic and dynamic model for planar Handed Shearing Auxetics (HSA) robots.
+    Kinematic and dynamic model for planar Handed Shearing Auxetics (HSA) robots.
 
-    This class implements the geometric and dynamic modeling of planar HSA robots
-    using a piecewise constant strain assumption. It supports computation of forward
-    kinematics, inverse kinematics, Jacobians, and dynamical matrices. The model
-    accounts for hysteresis effects using the Bouc-Wen model when enabled.
+    The model uses a piecewise-constant virtual backbone with strain ordering
+    ``[kappa_b, sigma_sh, sigma_a]`` per segment: bending curvature, shear
+    strain, and axial strain. Physical rods are mapped to the virtual backbone
+    through their offsets, and rigid caps, platforms, and the payload are
+    included in forward kinematics and dynamics.
 
-    Based on the publication:
-        Stölzle, M., Rus, D., & Della Santina, C. (2023, November). An experimental
-        study of model-based control for planar handed shearing auxetics robots.
-        In International Symposium on Experimental Robotics (pp. 153-167).
-        Cham: Springer Nature Switzerland.
-        https://link.springer.com/chapter/10.1007/978-3-031-63596-0_14
+    PlanarHSA reuses the planar PCS layout, SE(2) propagation, fixed
+    Gauss--Legendre quadrature, strain selection, and differentiable-system
+    interfaces. Kinematics, Jacobians, energies, forces, and forward dynamics
+    are evaluated numerically with JAX and support JIT compilation and
+    autodiff. Optional underactuation maps motor inputs to rod forces, while
+    optional Bouc--Wen hysteresis augments the elastic response.
 
-    Attributes:
-        num_segments: Number of segments along the robot.
-        num_rods_per_segment: Number of physical rods per segment.
-        num_dofs: Number of degrees of freedom (active strain components).
-        num_actuators: Number of actuators in the robot.
-        consider_underactuation: Whether to consider underactuation in the model.
-        consider_hysteresis: Whether to consider hysteresis effects in the model.
-        num_hysteresis: Number of hysteresis state variables.
-        chiv_lambda_sms: Lambda functions for virtual backbone forward kinematics per segment.
-        chir_lambda_sms: Lambda functions for physical rod forward kinematics per segment.
-        chip_lambda_sms: Lambda functions for platform forward kinematics per segment.
-        chiee_lambda: Lambda function for end-effector forward kinematics.
-        Jee_lambda: Lambda function for end-effector Jacobian.
-        Jeed_lambda: Lambda function for end-effector Jacobian time derivative.
-        B_lambda: Lambda function for inertia matrix computation.
-        C_lambda: Lambda function for Coriolis matrix computation.
-        G_lambda: Lambda function for gravitational force computation.
-        Shat_lambda: Lambda function for nominal stiffness matrix computation.
-        K_lambda: Lambda function for elastic force computation.
-        D_lambda: Lambda function for damping matrix computation.
-        alpha_lambda: Lambda function for actuation force computation.
-        B_xi: Strain basis matrix for mapping active strain components.
-        kappa_b_ref: Reference bending curvatures for each rod. Shape: (num_segments, num_rods_per_segment).
-        sigma_sh_ref: Reference shear strains for each rod. Shape: (num_segments, num_rods_per_segment).
-        sigma_a_ref: Reference axial strains for each rod. Shape: (num_segments, num_rods_per_segment).
-        L: Segment lengths. Shape: (num_segments,).
-        L_cum: Cumulative segment lengths. Shape: (num_segments + 1,).
-        Lmax: Total robot length (sum of all segments).
-        roff: Rod offset from centerline. Shape: (num_segments, num_rods_per_segment).
-        pcudim: Platform dimensions (width, height, depth). Shape: (num_segments, 3).
-        lpc: Length of rigid proximal rod caps. Shape: (num_segments,).
-        ldc: Length of rigid distal rod caps. Shape: (num_segments,).
-        chiee_off: End-effector offset transformation [theta, p_x, p_y]. Shape: (3,).
-        B_hyst: Hysteresis basis matrix. Shape: (num_dofs, num_hysteresis).
-        hyst_alpha: Bouc-Wen hysteresis parameter: ratio of post-yield to pre-yield stiffness.
-        hyst_A: Bouc-Wen hysteresis parameter A.
-        hyst_n: Bouc-Wen hysteresis parameter n.
-        hyst_beta: Bouc-Wen hysteresis parameter beta.
-        hyst_gamma: Bouc-Wen hysteresis parameter gamma.
-        params_for_lambdify: Flattened parameter list for symbolic function evaluation.
-
-    Notes:
-    -----
-    - The strain vector is composed of 3 components per segment:
-      [kappa_b, sigma_sh, sigma_a] representing bending curvature,
-      shear strain, and axial strain respectively.
-    - The robot uses a virtual backbone representation with physical
-      rod mapping for accurate modeling of HSA mechanics.
-    - Hysteresis modeling is optional and uses the Bouc-Wen model
-      when consider_hysteresis=True.
-
-    References:
-        Stölzle, M., Rus, D., & Della Santina, C. (2024). An experimental study of
-        model-based control for planar handed shearing auxetics robots. In
+    Based on:
+        Stölzle, M., Rus, D., & Della Santina, C. (2024). An experimental study
+        of model-based control for planar handed shearing auxetics robots. In
         Experimental Robotics: The 18th International Symposium (pp. 153-167).
         Springer. https://doi.org/10.1007/978-3-031-63596-0_14
+
+    Attributes:
+        num_segments: Number of constant-strain segments.
+        num_rods_per_segment: Number of physical rods per segment.
+        num_dofs: Number of active strain coordinates.
+        num_actuators: Number of motor or direct-torque input channels.
+        consider_underactuation: Whether motor-to-rod actuation is enabled.
+        consider_hysteresis: Whether Bouc--Wen hysteresis is enabled.
+        num_hysteresis: Number of hysteresis state variables.
+        B_xi: Basis mapping active coordinates to virtual-backbone strains.
+        L: Flexible segment lengths.
+        L_cum: Cumulative flexible segment lengths.
+        length: Total backbone length inherited from :class:`SoftRobot`.
+        rod_offset: Physical rod offsets from the virtual backbone.
+        platform_dimension: Platform width, height, and depth per segment.
+        proximal_cap_length: Rigid proximal cap lengths.
+        distal_cap_length: Rigid distal cap lengths.
+        end_effector_offset: End-effector pose offset ``[theta, x, y]``.
+        bending_reference: Reference bending strains per physical rod.
+        shear_reference: Reference shear strains per physical rod.
+        axial_reference: Reference axial strains per physical rod.
+        phi_max: Motor limits for underactuated operation.
+        hysteresis_basis: Basis mapping hysteresis states to full strains.
+        hysteresis_alpha: Post-yield to pre-yield stiffness ratios.
+        hysteresis_A: Bouc--Wen ``A`` parameters.
+        hysteresis_n: Bouc--Wen exponents.
+        hysteresis_beta: Bouc--Wen ``beta`` parameters.
+        hysteresis_gamma: Bouc--Wen ``gamma`` parameters.
+
     """
 
-    # static settings
-    num_segments: int = eqx.field(static=True)
     num_rods_per_segment: int = eqx.field(static=True)
     consider_underactuation: bool = eqx.field(static=True)
     consider_hysteresis: bool = eqx.field(static=True)
     num_hysteresis: int = eqx.field(static=True)
 
-    chiv_lambda_sms: list[Callable]
-    chir_lambda_sms: list[Callable]
-    chip_lambda_sms: list[Callable]
-    Jv_lambda_sms: list[Callable]  # Jacobian of the virtual backbone at each segment
-
-    # kinematic lambda functions
-    chiee_lambda: Callable
-    Jee_lambda: Callable
-    Jeed_lambda: Callable
-
-    # energy lambda functions
-    U_g_lambda: Callable  # gravitational potential energy
-
-    # dynamic lambda functions
-    B_lambda: Callable
-    C_lambda: Callable
-    G_lambda: Callable
-    Shat_lambda: Callable
-    K_lambda: Callable
-    D_lambda: Callable
-    alpha_lambda: Callable
-
-    # strain basis
-    B_xi: Array
-
-    # reference strains
-    kappa_b_ref: Array
-    sigma_sh_ref: Array
-    sigma_a_ref: Array
-
-    # geometric parameters of the robot
-    L: Array  # Array of segment lengths
-    L_cum: Array  # Cumulative length of the robot as array of size (num_segments, )
-    Lmax: Array  # Maximum length of the robot (sum of all segments)
-    roff: Array
-    pcudim: Array
-    lpc: Array
-    ldc: Array
-    chiee_off: Array
-
-    # hysteresis parameters
-    B_hyst: Array
-    hyst_alpha: Array
-    hyst_A: Array
-    hyst_n: Array
-    hyst_beta: Array
-    hyst_gamma: Array
+    rod_offset: Array
+    platform_dimension: Array
+    proximal_cap_length: Array
+    distal_cap_length: Array
+    end_effector_offset: Array
     phi_max: Array
+    bending_reference: Array
+    shear_reference: Array
+    axial_reference: Array
+    strain_coupling: Array
+    rod_height: Array
+    rod_outer_radius: Array
+    rod_inner_radius: Array
+    rod_density: Array
+    platform_density: Array
+    end_cap_density: Array
+    nominal_bending_stiffness: Array
+    nominal_shear_stiffness: Array
+    nominal_axial_stiffness: Array
+    bending_shear_stiffness: Array
+    bending_stiffness_correction: Array
+    shear_stiffness_correction: Array
+    axial_stiffness_correction: Array
+    bending_damping: Array
+    shear_damping: Array
+    axial_damping: Array
+    platform_mass: Array
+    platform_center_of_gravity: Array
+    hysteresis_basis: Array
+    hysteresis_alpha: Array
+    hysteresis_A: Array
+    hysteresis_n: Array
+    hysteresis_beta: Array
+    hysteresis_gamma: Array
 
-    # parameters for lambdify
-    params_for_lambdify: list[Array]
-    params_syms: Any = eqx.field(static=True)
     params: PlanarHSAParams
-
-    @staticmethod
-    def _symbolic_expression_params(
-        params: PlanarHSAParams, consider_hysteresis: bool
-    ) -> dict[str, Array | dict[str, Array]]:
-        """Map typed HSA params to the symbolic-expression parameter names."""
-        mapped: dict[str, Array | dict[str, Array]] = {
-            "th0": params.base_pose[0],
-            "L": params.length,
-            "lpc": params.proximal_cap_length,
-            "ldc": params.distal_cap_length,
-            "h": params.rod_height,
-            "rout": params.rod_outer_radius,
-            "rin": params.rod_inner_radius,
-            "roff": params.rod_offset,
-            "kappa_b_ref": params.bending_reference,
-            "sigma_sh_ref": params.shear_reference,
-            "sigma_a_ref": params.axial_reference,
-            "C_varepsilon": params.strain_coupling,
-            "pcudim": params.platform_dimension,
-            "rhor": params.rod_density,
-            "rhop": params.platform_density,
-            "rhoec": params.end_cap_density,
-            "g": params.gravity,
-            "S_b_hat": params.nominal_bending_stiffness,
-            "S_sh_hat": params.nominal_shear_stiffness,
-            "S_a_hat": params.nominal_axial_stiffness,
-            "S_b_sh": params.bending_shear_stiffness,
-            "C_S_b": params.bending_stiffness_correction,
-            "C_S_sh": params.shear_stiffness_correction,
-            "C_S_a": params.axial_stiffness_correction,
-            "zetab": params.bending_damping,
-            "zetash": params.shear_damping,
-            "zetaa": params.axial_damping,
-            "mpl": params.platform_mass,
-            "CoGpl": params.platform_center_of_gravity,
-            "chiee_off": params.end_effector_offset,
-        }
-        if consider_hysteresis:
-            mapped["hysteresis"] = {
-                "basis": params.hysteresis_basis,
-                "alpha": params.hysteresis_alpha,
-                "A": params.hysteresis_A,
-                "n": params.hysteresis_n,
-                "beta": params.hysteresis_beta,
-                "gamma": params.hysteresis_gamma,
-            }
-        return mapped
-
-    @staticmethod
-    def _params_for_lambdify(
-        symbolic_expression_params: dict[str, Array | dict[str, Array]],
-        params_syms: dict[str, Any],
-    ) -> list[Array]:
-        """Flatten typed params in the order expected by saved lambdified functions."""
-        params_for_lambdify = []
-        for params_key, params_vals in sorted(symbolic_expression_params.items()):
-            if params_key in params_syms:
-                if isinstance(params_vals, dict):
-                    for _, nested_vals in sorted(params_vals.items()):
-                        for param in jnp.asarray(nested_vals).flatten():
-                            params_for_lambdify.append(param)
-                else:
-                    for param in jnp.asarray(params_vals).flatten():
-                        params_for_lambdify.append(param)
-        return params_for_lambdify
-
-    def _with_base_translation(self, chi: Array) -> Array:
-        """Apply the planar base translation to a symbolic pose."""
-        base_offset = jnp.concatenate(
-            [
-                jnp.zeros(1, dtype=chi.dtype),
-                jnp.asarray(self.base_pose[1:3], dtype=chi.dtype),
-            ]
-        )
-        return chi + base_offset
 
     def __init__(
         self,
         params: PlanarHSAParams,
-        structure: PlanarHSAStructure,
+        structure: PlanarHSAStructure | None = None,
         **kwargs: Any,
     ) -> None:
-        """
-        Initialize the PlanarHSA system.
-
-        Args:
-            params: Dynamic HSA parameters.
-            structure: Static symbolic expression path and layout choices. This
-                includes the strain selector, underactuation flag, hysteresis
-                flag, and regularization epsilon.
-            **kwargs: Additional keyword arguments for SoftRobot.__init__.
-        """
         if not isinstance(params, PlanarHSAParams):
             raise TypeError("params must be a PlanarHSAParams instance.")
+        if structure is None:
+            structure = PlanarHSAStructure()
         if not isinstance(structure, PlanarHSAStructure):
             raise TypeError("structure must be a PlanarHSAStructure instance.")
         params.validate()
-        super().__init__(eps=structure.eps, base_pose=params.base_pose, **kwargs)
+
+        # HSA has a distinct physical parameter schema, so initialize the
+        # common SoftRobot fields directly instead of fabricating PCS params.
+        SoftRobot.__init__(self, eps=structure.eps, base_pose=params.base_pose, **kwargs)
         self.params = params
-        symbolic_expression_params = self._symbolic_expression_params(
-            params, structure.consider_hysteresis
+
+        n_segments = int(params.length.shape[0])
+        n_rods = int(params.rod_offset.shape[1])
+        n_strains = 3 * n_segments
+        self.num_segments = n_segments
+        self.num_strains = n_strains
+        self.num_rods_per_segment = n_rods
+        self.consider_underactuation = bool(structure.consider_underactuation)
+        self.consider_hysteresis = bool(structure.consider_hysteresis)
+        self.num_dofs = n_strains
+        self.num_actuators = n_segments * n_rods if self.consider_underactuation else n_strains
+
+        self.base_pose = jnp.asarray(params.base_pose, dtype=jnp.float64)
+        self.g = jnp.concatenate(
+            [jnp.zeros((1,), dtype=jnp.float64), jnp.asarray(params.gravity, dtype=jnp.float64)]
         )
+        self.L = jnp.asarray(params.length, dtype=jnp.float64)
+        self.L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros((1,)), self.L]))
+        self.r = None
+        self.rho = None
+        self.E = None
+        self.G = None
+        self.scale_rotational_basis_by_length = False
 
-        # Load saved symbolic data
-        try:
-            with open(str(structure.symbolic_expression_path), "rb") as sym_exp_file:
-                sym_exps = dill.load(sym_exp_file)
-        except FileNotFoundError:
-            raise FileNotFoundError(
-                "Symbolic expressions file not found. Please generate the symbolic expressions first."
-            )
+        num_gauss_points = structure.num_gauss_points
+        if not isinstance(num_gauss_points, int) or num_gauss_points < 1:
+            raise ValueError("num_gauss_points must be a positive integer.")
+        self.num_gauss_points = num_gauss_points
+        (
+            self.integration_points,
+            self.integration_weights,
+            self.num_integration_points,
+        ) = gauss_quadrature(num_gauss_points)
 
-        # Symbols for robot parameters
-        try:
-            params_syms = sym_exps["params_syms"]
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'params_syms'. Please generate the symbolic expressions first."
-            )
-        self.params_syms = params_syms
-
-        try:
-            params_for_lambdify = self._params_for_lambdify(
-                symbolic_expression_params, params_syms
-            )
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain the required parameters. Please generate the symbolic expressions first."
-            )
-        self.params_for_lambdify = params_for_lambdify
-
-        try:
-            L = symbolic_expression_params["L"]
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
-            )
-        self.L = L
-
-        try:
-            # cumsum of the segment lengths
-            L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1), self.L]))
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
-            )
-        self.L_cum = L_cum
-
-        # Maximum length of the robot
-        self.Lmax = L_cum[-1]
-
-        # Number of segments
-        try:
-            num_segments = len(params_syms["L"])
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'L'. Please generate the symbolic expressions first."
-            )
-        self.num_segments = num_segments
-
-        # Number of rods per segment
-        try:
-            num_rods_per_segment = len(params_syms["rout"]) // num_segments
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'rout'. Please generate the symbolic expressions first."
-            )
-        self.num_rods_per_segment = num_rods_per_segment
-
-        # =================================================
-        # Parameters
-        # =====================
-
-        # concatenate the robot params symbols
-        params_syms_cat = concatenate_params_syms(params_syms)
-
-        # Number of degrees of freedom
-        try:
-            num_dofs = len(sym_exps["state_syms"]["xi"])
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'state_syms'. Please generate the symbolic expressions first."
-            )
-        self.num_dofs = num_dofs
-
-        # set number of actuators
-        self.consider_underactuation = structure.consider_underactuation
-        if self.consider_underactuation:
-            # the number of actuators equals the number of HSA rods
-            self.num_actuators = num_rods_per_segment * num_segments
+        selector = structure.strain_selector
+        if selector is None:
+            selector = jnp.ones((n_strains,), dtype=bool)
         else:
-            # the number of actuators equals the number of degrees of freedom as we consider an identity actuation matrix
-            self.num_actuators = self.num_dofs
-
-        # Hysteresis
-        self.consider_hysteresis = structure.consider_hysteresis
-
-        # ================================================================
-        # Robot parameters
-        self._set_params(
-            symbolic_expression_params, structure.consider_hysteresis, num_dofs
-        )
-        self.phi_max = jnp.asarray(params.phi_max)
-
-        # compute the strain basis
-        strain_selector = structure.strain_selector
-        if strain_selector is None:
-            strain_selector = jnp.ones((num_dofs,), dtype=bool)
-        else:
-            if not isinstance(strain_selector, (list, jnp.ndarray)):
-                raise TypeError(
-                    f"strain_selector must be a list or an array, got {type(strain_selector).__name__}"
-                )
-            strain_selector = jnp.asarray(strain_selector)
-            if not jnp.issubdtype(strain_selector.dtype, jnp.bool_):
-                raise TypeError(
-                    f"strain_selector must be a boolean array, got {strain_selector.dtype}"
-                )
-            if strain_selector.size != num_dofs:
+            selector = jnp.asarray(selector)
+            if selector.dtype != jnp.bool_ or selector.size != n_strains:
                 raise ValueError(
-                    f"strain_selector must have {num_dofs} elements, got {strain_selector.size}"
+                    f"strain_selector must be a boolean array with {n_strains} elements."
                 )
-            strain_selector = strain_selector.reshape(num_dofs)
-        self.B_xi = compute_strain_basis(strain_selector)
+            selector = selector.reshape((n_strains,))
+        self.B_xi_unscaled = build_active_dof_basis(selector)
+        self.B_xi = self.B_xi_unscaled
+        self.num_active_strains = jnp.sum(selector)
+        self.num_dofs = int(self.num_active_strains.item())
 
-        # concatenate the list of state symbols
-        try:
-            state_syms_cat = (
-                sym_exps["state_syms"]["xi"] + sym_exps["state_syms"]["xid"]
-            )
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain 'state_syms'. Please generate the symbolic expressions first."
-            )
+        self._set_hsa_params(params)
+        self.xi_ref = self.ref_strains()
+        self._set_hysteresis(params)
 
-        # =================================================
-        # lambdify symbolic expressions
-
-        chiv_lambda_sms = []
-        # iterate through symbolic expressions for each segment
-        try:
-            for chiv_exp in sym_exps["exps"]["chiv_sms"]:
-                chiv_lambda = sp.lambdify(
-                    params_syms_cat
-                    + sym_exps["state_syms"]["xi"]
-                    + [sym_exps["state_syms"]["s"]],
-                    chiv_exp,
-                    "jax",
-                )
-                chiv_lambda_sms.append(chiv_lambda)
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does ['exps']['chiv_sms']. Please generate the symbolic expressions first."
-            )
-        self.chiv_lambda_sms = chiv_lambda_sms
-
-        chir_lambda_sms = []
-        # iterate through symbolic expressions for each segment
-        try:
-            for chir_exp in sym_exps["exps"]["chir_sms"]:
-                chir_lambda = sp.lambdify(
-                    params_syms_cat
-                    + sym_exps["state_syms"]["xi"]
-                    + [sym_exps["state_syms"]["s"]],
-                    chir_exp,
-                    "jax",
-                )
-                chir_lambda_sms.append(chir_lambda)
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain ['exps']['chir_sms']. Please generate the symbolic expressions first."
-            )
-        self.chir_lambda_sms = chir_lambda_sms
-
-        chip_lambda_sms = []
-        # iterate through symbolic expressions for each segment
-        try:
-            for chip_exp in sym_exps["exps"]["chip_sms"]:
-                chip_lambda = sp.lambdify(
-                    params_syms_cat + sym_exps["state_syms"]["xi"],
-                    chip_exp,
-                    "jax",
-                )
-                chip_lambda_sms.append(chip_lambda)
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain ['exps']['chip_sms']. Please generate the symbolic expressions first."
-            )
-        self.chip_lambda_sms = chip_lambda_sms
-
-        # lambdify the Jacobians of the virtual backbone for each segment
-        Jv_lambda_sms = []
-        try:
-            for Jv_exp in sym_exps["exps"]["Jv_sms"]:
-                Jv_lambda = sp.lambdify(
-                    params_syms_cat
-                    + sym_exps["state_syms"]["xi"]
-                    + [sym_exps["state_syms"]["s"]],
-                    Jv_exp,
-                    "jax",
-                )
-                Jv_lambda_sms.append(Jv_lambda)
-        except KeyError:
-            raise KeyError(
-                "Symbolic expressions file does not contain ['exps']['Jv_sms']. Please generate the symbolic expressions first."
-            )
-        self.Jv_lambda_sms = Jv_lambda_sms
-
-        # end-effector kinematics
-        try:
-            chiee_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["chiee"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify chiee. Check the symbolic expressions file."
-            )
-        self.chiee_lambda = chiee_lambda
-
-        try:
-            Jee_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["Jee"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify Jee. Check the symbolic expressions file."
-            )
-        self.Jee_lambda = Jee_lambda
-
-        try:
-            Jeed_lambda = sp.lambdify(
-                params_syms_cat
-                + sym_exps["state_syms"]["xi"]
-                + sym_exps["state_syms"]["xid"],
-                sym_exps["exps"]["Jeed"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify Jeed. Check the symbolic expressions file."
-            )
-        self.Jeed_lambda = Jeed_lambda
-
-        # dynamical matrices
-        try:
-            B_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["B"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError("Fail to lambdify B. Check the symbolic expressions file.")
-        self.B_lambda = B_lambda
-
-        try:
-            C_lambda = sp.lambdify(
-                params_syms_cat + state_syms_cat, sym_exps["exps"]["C"], "jax"
-            )
-        except ValueError:
-            raise ValueError("Fail to lambdify C. Check the symbolic expressions file.")
-        self.C_lambda = C_lambda
-
-        try:
-            G_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["G"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError("Fail to lambdify G. Check the symbolic expressions file.")
-        self.G_lambda = G_lambda
-
-        # gravitational potential energy
-        try:
-            U_g_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["U_g"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify U_g. Check the symbolic expressions file."
-            )
-        self.U_g_lambda = U_g_lambda
-
-        try:
-            Shat_lambda = sp.lambdify(params_syms_cat, sym_exps["exps"]["Shat"], "jax")
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify Shat. Check the symbolic expressions file."
-            )
-        self.Shat_lambda = Shat_lambda
-
-        try:
-            K_lambda = sp.lambdify(
-                params_syms_cat + sym_exps["state_syms"]["xi"],
-                sym_exps["exps"]["K"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError("Fail to lambdify K. Check the symbolic expressions file.")
-        self.K_lambda = K_lambda
-
-        try:
-            D_lambda = sp.lambdify(params_syms_cat, sym_exps["exps"]["D"], "jax")
-        except ValueError:
-            raise ValueError("Fail to lambdify D. Check the symbolic expressions file.")
-        self.D_lambda = D_lambda
-
-        try:
-            alpha_lambda = sp.lambdify(
-                params_syms_cat
-                + sym_exps["state_syms"]["xi"]
-                + sym_exps["state_syms"]["phi"],
-                sym_exps["exps"]["alpha"],
-                "jax",
-            )
-        except ValueError:
-            raise ValueError(
-                "Fail to lambdify alpha. Check the symbolic expressions file."
-            )
-        self.alpha_lambda = alpha_lambda
+        # HSA supplies its own rod material model and therefore has no
+        # synthetic PlanarPCS material caches.
+        self.M_segments = None
+        self.K_full = None
+        self.K_active = None
+        self.D_full = None
+        self.D_active = None
+        self.actuators = ()
+        self.passive_elements = ()
 
     @property
     def is_planar(self) -> bool:
-        """Planar HSA is a 2D model."""
         return True
 
     @property
     def segment_length(self) -> Array:
-        """Per-segment backbone lengths."""
         return jnp.asarray(self.L)
 
-    def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
-        """Circular cross-section using max rod offset for the segment."""
-        segment_idx, _ = self.classify_segment(s)
-        roff = jnp.asarray(self.roff)
-        radius = jnp.max(jnp.abs(roff[segment_idx]))
-        tag = jnp.asarray(CrossSectionGeometry.CIRCULAR, dtype=jnp.int32)
-        return tag, jnp.array([radius])
+    def _set_hsa_params(self, params: PlanarHSAParams) -> None:
+        self.rod_offset = jnp.asarray(params.rod_offset, dtype=jnp.float64)
+        self.platform_dimension = jnp.asarray(params.platform_dimension, dtype=jnp.float64)
+        self.proximal_cap_length = jnp.asarray(params.proximal_cap_length, dtype=jnp.float64)
+        self.distal_cap_length = jnp.asarray(params.distal_cap_length, dtype=jnp.float64)
+        self.end_effector_offset = jnp.asarray(params.end_effector_offset, dtype=jnp.float64)
+        self.phi_max = jnp.asarray(params.phi_max, dtype=jnp.float64)
+        self.bending_reference = jnp.asarray(params.bending_reference, dtype=jnp.float64)
+        self.shear_reference = jnp.asarray(params.shear_reference, dtype=jnp.float64)
+        self.axial_reference = jnp.asarray(params.axial_reference, dtype=jnp.float64)
+        self.strain_coupling = jnp.asarray(params.strain_coupling, dtype=jnp.float64)
+        self.rod_height = jnp.asarray(params.rod_height, dtype=jnp.float64)
+        self.rod_outer_radius = jnp.asarray(params.rod_outer_radius, dtype=jnp.float64)
+        self.rod_inner_radius = jnp.asarray(params.rod_inner_radius, dtype=jnp.float64)
+        self.rod_density = jnp.asarray(params.rod_density, dtype=jnp.float64)
+        self.platform_density = jnp.asarray(params.platform_density, dtype=jnp.float64)
+        self.end_cap_density = jnp.asarray(params.end_cap_density, dtype=jnp.float64)
+        self.nominal_bending_stiffness = jnp.asarray(params.nominal_bending_stiffness, dtype=jnp.float64)
+        self.nominal_shear_stiffness = jnp.asarray(params.nominal_shear_stiffness, dtype=jnp.float64)
+        self.nominal_axial_stiffness = jnp.asarray(params.nominal_axial_stiffness, dtype=jnp.float64)
+        self.bending_shear_stiffness = jnp.asarray(params.bending_shear_stiffness, dtype=jnp.float64)
+        self.bending_stiffness_correction = jnp.asarray(params.bending_stiffness_correction, dtype=jnp.float64)
+        self.shear_stiffness_correction = jnp.asarray(params.shear_stiffness_correction, dtype=jnp.float64)
+        self.axial_stiffness_correction = jnp.asarray(params.axial_stiffness_correction, dtype=jnp.float64)
+        self.bending_damping = jnp.asarray(params.bending_damping, dtype=jnp.float64)
+        self.shear_damping = jnp.asarray(params.shear_damping, dtype=jnp.float64)
+        self.axial_damping = jnp.asarray(params.axial_damping, dtype=jnp.float64)
+        self.platform_mass = jnp.asarray(params.platform_mass, dtype=jnp.float64)
+        self.platform_center_of_gravity = jnp.asarray(params.platform_center_of_gravity, dtype=jnp.float64)
 
-    def _set_params(
-        self, params: dict[str, Array], consider_hysteresis: bool, num_dofs: int
-    ) -> None:
-        """
-        Set the parameters of the PlanarHSA model.
-
-        Args:
-            params (Dict[str, Array]):
-                Dictionary containing the robot parameters to update:
-                - "roff": Array of shape (num_segments, num_rods_per_segment)
-                    offset [m] of each rod from the centerline.
-                    The rows correspond to the segments.
-                - "kappa_b_ref": Array of shape (num_segments, num_rods_per_segment)
-                    bending reference curvatures of each rod
-                - "sigma_sh_ref": Array of shape (num_segments, num_rods_per_segment)
-                    shear reference curvatures of each rod
-                - "sigma_a_ref": Array of shape (num_segments, num_rods_per_segment)
-                    axial reference strains of each rod
-                - "pcudim": Array of shape (num_segments, 3)
-                    width, height, depth of each segment's platform [m]
-                - "lpc": Array of shape (num_segments,)
-                    length of the rigid proximal of the rods connecting to the base [m]
-                - "ldc": Array of shape (num_segments,)
-                    length of the rigid distal of the rods connecting to the platform [m]
-                - "chiee_off": Array of shape (3,)
-                    rigid offset transformation from the distal end of the platform to the end-effector [m]
-                    in the form [theta, p_x, p_y]
-                - "hysteresis": Dictionary containing hysteresis parameters if consider_hysteresis is True
-                    - "basis":
-                        Basis for the hysteresis model
-                    - Bouc-Wen model parameters:
-                        - "alpha": [-] Ratio of post-yield and pre-yield stiffness
-                        - "A": TODO
-                        - "n": [-] TODO
-                        - "beta": [-] TODO
-                        - "gamma": [-] TODO
-        """
-        try:
-            roff = params["roff"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'roff' not found in the parameters dictionary. Please provide it."
-            )
-        self.roff = roff
-        try:
-            kappa_b_ref = params["kappa_b_ref"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'kappa_b_ref' not found in the parameters dictionary. Please provide it."
-            )
-        self.kappa_b_ref = kappa_b_ref
-        try:
-            sigma_sh_ref = params["sigma_sh_ref"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'sigma_sh_ref' not found in the parameters dictionary. Please provide it."
-            )
-        self.sigma_sh_ref = sigma_sh_ref
-        try:
-            sigma_a_ref = params["sigma_a_ref"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'sigma_a_ref' not found in the parameters dictionary. Please provide it."
-            )
-        self.sigma_a_ref = sigma_a_ref
-
-        try:
-            pcudim = params["pcudim"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'pcudim' not found in the parameters dictionary. Please provide it."
-            )
-        self.pcudim = pcudim
-        try:
-            lpc = params["lpc"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'lpc' not found in the parameters dictionary. Please provide it."
-            )
-        self.lpc = lpc
-        try:
-            ldc = params["ldc"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'ldc' not found in the parameters dictionary. Please provide it."
-            )
-        self.ldc = ldc
-        try:
-            chiee_off = params["chiee_off"]
-        except KeyError:
-            raise KeyError(
-                "Parameter 'chiee_off' not found in the parameters dictionary. Please provide it."
-            )
-        self.chiee_off = chiee_off
-
-        if consider_hysteresis:
-            try:
-                hyst_params = params["hysteresis"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' parameters. Please generate the symbolic expressions first."
+    def _set_hysteresis(self, params: PlanarHSAParams) -> None:
+        if self.consider_hysteresis:
+            self.hysteresis_basis = jnp.asarray(params.hysteresis_basis, dtype=jnp.float64)
+            if self.hysteresis_basis.ndim != 2 or self.hysteresis_basis.shape[0] != self.num_strains:
+                raise ValueError(
+                    "hysteresis_basis must have shape (3 * num_segments, num_hysteresis)."
                 )
-            try:
-                B_hyst = hyst_params["basis"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' basis. Please generate the symbolic expressions first."
-                )
-            self.B_hyst = B_hyst
-
-            try:
-                num_hysteresis = B_hyst.shape[1]
-            except AttributeError:
-                raise AttributeError(
-                    "Symbolic expressions file does not contain 'hysteresis' basis. Please generate the symbolic expressions first."
-                )
-            self.num_hysteresis = num_hysteresis
-
-            try:
-                hyst_alpha = params["hysteresis"]["alpha"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' alpha. Please generate the symbolic expressions first."
-                )
-            self.hyst_alpha = hyst_alpha
-
-            try:
-                hyst_A = hyst_params["A"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' A. Please generate the symbolic expressions first."
-                )
-            self.hyst_A = hyst_A
-
-            try:
-                hyst_n = hyst_params["n"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' n. Please generate the symbolic expressions first."
-                )
-            self.hyst_n = hyst_n
-
-            try:
-                hyst_beta = hyst_params["beta"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' beta. Please generate the symbolic expressions first."
-                )
-            self.hyst_beta = hyst_beta
-
-            try:
-                hyst_gamma = hyst_params["gamma"]
-            except KeyError:
-                raise KeyError(
-                    "Symbolic expressions file does not contain 'hysteresis' gamma. Please generate the symbolic expressions first."
-                )
-            self.hyst_gamma = hyst_gamma
+            self.num_hysteresis = int(self.hysteresis_basis.shape[1])
+            self.hysteresis_alpha = jnp.asarray(params.hysteresis_alpha, dtype=jnp.float64)
+            self.hysteresis_A = jnp.asarray(params.hysteresis_A, dtype=jnp.float64)
+            self.hysteresis_n = jnp.asarray(params.hysteresis_n, dtype=jnp.float64)
+            self.hysteresis_beta = jnp.asarray(params.hysteresis_beta, dtype=jnp.float64)
+            self.hysteresis_gamma = jnp.asarray(params.hysteresis_gamma, dtype=jnp.float64)
         else:
             self.num_hysteresis = 0
-            self.B_hyst = jnp.zeros((num_dofs, 0))
-            self.hyst_alpha = jnp.zeros((num_dofs,))
-            self.hyst_A = jnp.zeros((1,))
-            self.hyst_n = jnp.zeros((1,))
-            self.hyst_beta = jnp.zeros((1,))
-            self.hyst_gamma = jnp.zeros((1,))
+            self.hysteresis_basis = jnp.zeros((self.num_strains, 0), dtype=jnp.float64)
+            self.hysteresis_alpha = jnp.zeros((self.num_dofs,), dtype=jnp.float64)
+            self.hysteresis_A = jnp.zeros((1,), dtype=jnp.float64)
+            self.hysteresis_n = jnp.zeros((1,), dtype=jnp.float64)
+            self.hysteresis_beta = jnp.zeros((1,), dtype=jnp.float64)
+            self.hysteresis_gamma = jnp.zeros((1,), dtype=jnp.float64)
 
     def with_params(self, params: PlanarHSAParams) -> "PlanarHSA":
-        """Return an updated copy with a full typed parameter object."""
         if not isinstance(params, PlanarHSAParams):
             raise TypeError("params must be a PlanarHSAParams instance.")
         params.validate()
+        if params.length.shape != self.L.shape:
+            raise ValueError("length shape changes the model structure; construct a new PlanarHSA.")
+        if params.rod_offset.shape != self.rod_offset.shape:
+            raise ValueError("rod_offset shape changes the model structure; construct a new PlanarHSA.")
 
-        arrays = (
-            jnp.asarray(params.base_pose),
-            jnp.asarray(params.length),
-            jnp.asarray(params.rod_offset),
-            jnp.asarray(params.bending_reference),
-            jnp.asarray(params.shear_reference),
-            jnp.asarray(params.axial_reference),
-            jnp.asarray(params.platform_dimension),
-            jnp.asarray(params.proximal_cap_length),
-            jnp.asarray(params.distal_cap_length),
-            jnp.asarray(params.end_effector_offset),
-            jnp.asarray(params.phi_max),
-        )
-        current_arrays = (
-            self.base_pose,
-            self.L,
-            self.roff,
-            self.kappa_b_ref,
-            self.sigma_sh_ref,
-            self.sigma_a_ref,
-            self.pcudim,
-            self.lpc,
-            self.ldc,
-            self.chiee_off,
-            self.phi_max,
-        )
-        names = (
-            "base_pose",
-            "length",
+        values = {
+            "params": params,
+            "base_pose": jnp.asarray(params.base_pose, dtype=jnp.float64),
+            "g": jnp.concatenate(
+                [jnp.zeros((1,), dtype=jnp.float64), jnp.asarray(params.gravity, dtype=jnp.float64)]
+            ),
+            "L": jnp.asarray(params.length, dtype=jnp.float64),
+            "L_cum": jnp.cumsum(jnp.concatenate([jnp.zeros((1,)), params.length])),
+        }
+        updated = self
+        for name, value in values.items():
+            updated = eqx.tree_at(
+                lambda model, field=name: getattr(model, field), updated, value
+            )
+        for name in (
             "rod_offset",
-            "bending_reference",
-            "shear_reference",
-            "axial_reference",
             "platform_dimension",
             "proximal_cap_length",
             "distal_cap_length",
             "end_effector_offset",
             "phi_max",
+            "bending_reference",
+            "shear_reference",
+            "axial_reference",
+            "strain_coupling",
+            "rod_height",
+            "rod_outer_radius",
+            "rod_inner_radius",
+            "rod_density",
+            "platform_density",
+            "end_cap_density",
+            "nominal_bending_stiffness",
+            "nominal_shear_stiffness",
+            "nominal_axial_stiffness",
+            "bending_shear_stiffness",
+            "bending_stiffness_correction",
+            "shear_stiffness_correction",
+            "axial_stiffness_correction",
+            "bending_damping",
+            "shear_damping",
+            "axial_damping",
+            "platform_mass",
+            "platform_center_of_gravity",
+        ):
+            value = getattr(params, name)
+            updated = eqx.tree_at(
+                lambda model, field=name: getattr(model, field),
+                updated,
+                jnp.asarray(value, dtype=jnp.float64),
+            )
+        updated = eqx.tree_at(
+            lambda model: model.xi_ref, updated, updated.ref_strains()
         )
-        for name, value, current in zip(names, arrays, current_arrays):
-            if value.shape != current.shape:
-                raise ValueError(
-                    f"{name} must have shape {current.shape}, got {value.shape}."
-                )
-
-        L = arrays[1]
-        L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros(1, dtype=L.dtype), L]))
-        symbolic_expression_params = self._symbolic_expression_params(
-            params, self.consider_hysteresis
-        )
-        params_for_lambdify = self._params_for_lambdify(
-            symbolic_expression_params, self.params_syms
-        )
-
         if self.consider_hysteresis:
-            hysteresis_arrays = (
-                jnp.asarray(params.hysteresis_basis),
-                jnp.asarray(params.hysteresis_alpha),
-                jnp.asarray(params.hysteresis_A),
-                jnp.asarray(params.hysteresis_n),
-                jnp.asarray(params.hysteresis_beta),
-                jnp.asarray(params.hysteresis_gamma),
-            )
-            current_hysteresis_arrays = (
-                self.B_hyst,
-                self.hyst_alpha,
-                self.hyst_A,
-                self.hyst_n,
-                self.hyst_beta,
-                self.hyst_gamma,
-            )
-            for name, value, current in zip(
-                (
-                    "hysteresis_basis",
-                    "hysteresis_alpha",
-                    "hysteresis_A",
-                    "hysteresis_n",
-                    "hysteresis_beta",
-                    "hysteresis_gamma",
+            updated = eqx.tree_at(
+                lambda model: (
+                    model.hysteresis_basis,
+                    model.hysteresis_alpha,
+                    model.hysteresis_A,
+                    model.hysteresis_n,
+                    model.hysteresis_beta,
+                    model.hysteresis_gamma,
                 ),
-                hysteresis_arrays,
-                current_hysteresis_arrays,
-            ):
-                if value.shape != current.shape:
-                    raise ValueError(
-                        f"{name} must have shape {current.shape}, got {value.shape}."
-                    )
-        else:
-            hysteresis_arrays = (
-                self.B_hyst,
-                self.hyst_alpha,
-                self.hyst_A,
-                self.hyst_n,
-                self.hyst_beta,
-                self.hyst_gamma,
+                updated,
+                (
+                    jnp.asarray(params.hysteresis_basis, dtype=jnp.float64),
+                    jnp.asarray(params.hysteresis_alpha, dtype=jnp.float64),
+                    jnp.asarray(params.hysteresis_A, dtype=jnp.float64),
+                    jnp.asarray(params.hysteresis_n, dtype=jnp.float64),
+                    jnp.asarray(params.hysteresis_beta, dtype=jnp.float64),
+                    jnp.asarray(params.hysteresis_gamma, dtype=jnp.float64),
+                ),
             )
-
-        return eqx.tree_at(
-            lambda model: (
-                model.params,
-                model.base_pose,
-                model.params_for_lambdify,
-                model.L,
-                model.L_cum,
-                model.Lmax,
-                model.roff,
-                model.kappa_b_ref,
-                model.sigma_sh_ref,
-                model.sigma_a_ref,
-                model.pcudim,
-                model.lpc,
-                model.ldc,
-                model.chiee_off,
-                model.B_hyst,
-                model.hyst_alpha,
-                model.hyst_A,
-                model.hyst_n,
-                model.hyst_beta,
-                model.hyst_gamma,
-                model.phi_max,
-            ),
-            self,
-            (
-                params,
-                arrays[0],
-                params_for_lambdify,
-                L,
-                L_cum,
-                L_cum[-1],
-                arrays[2],
-                arrays[3],
-                arrays[4],
-                arrays[5],
-                arrays[6],
-                arrays[7],
-                arrays[8],
-                arrays[9],
-                *hysteresis_arrays,
-                arrays[10],
-            ),
-        )
+        return updated
 
     def update_params(self, **updates: Array) -> "PlanarHSA":
-        """Return an updated copy with selected typed parameter fields replaced."""
         return self.with_params(self.params.replace(**updates))
 
-    @eqx.filter_jit
-    def classify_segment(self, s: Array) -> tuple[Array, Array]:
-        """
-        Classify the point along the robot to the corresponding segment.
-
-        Args:
-            s (Array): point coordinate along the robot in the interval [0, L].
-
-        Returns:
-            segment_idx (Array): index of the segment where the point is located
-            s_local (Array): point coordinate along the segment in the interval [0, l_segment]
-        """
-
-        # Classify the point along the robot to the corresponding segment
-        segment_idx = jnp.clip(jnp.sum(s > self.L_cum) - 1, 0, self.num_segments - 1)
-
-        # Compute the point coordinate along the segment in the interval [0, l_segment]
-        s_local = s - self.L_cum[segment_idx]
-
-        return segment_idx, s_local
-
-    @eqx.filter_jit
-    def strain(self, q: Array) -> Array:
-        """
-        Map the generalized coordinates to the strains in the virtual backbone
-        Args:
-            q: generalized coordinates of shape (num_dofs, )
-
-        Returns:
-            xi: strains of the virtual backbone of shape (num_dofs, )
-        """
-        # reference strains of the virtual backbone
-        xi_ref = self.ref_strains()
-
-        # map the configuration to the strains
-        xi = self.B_xi @ q + xi_ref
-
-        return xi
-
-    @eqx.filter_jit
-    def beta(self, vxi: Array) -> Array:
-        """
-        Map the generalized coordinates to the strains in the physical rods
-        Args:
-            vxi: strains of the virtual backbone of shape (num_dofs, )
-
-        Returns:
-            pxi: strains in the physical rods of shape (num_segments, num_rods_per_segment, 3)
-        """
-        # strains of the virtual rod
-        vxi = vxi.reshape((self.num_segments, 1, -1))
-
-        pxi = jnp.repeat(vxi, self.num_rods_per_segment, axis=1)
-        psigma_a = (
-            pxi[:, :, 2]
-            + self.roff * jnp.repeat(vxi, self.num_rods_per_segment, axis=1)[..., 0]
+    def cross_section_geometry(self, q: Array, s: Array) -> tuple[Array, Array]:
+        del q
+        segment_idx, _ = self.classify_segment(s)
+        radius = jnp.max(jnp.abs(self.rod_offset[segment_idx]))
+        return (
+            jnp.asarray(CrossSectionGeometry.CIRCULAR, dtype=jnp.int32),
+            jnp.array([radius]),
         )
-        pxi = pxi.at[:, :, 2].set(psigma_a)
 
-        return pxi
+    def _reference_physical_strains(self) -> Array:
+        return jnp.stack(
+            [self.bending_reference, self.shear_reference, self.axial_reference],
+            axis=-1,
+        )
 
-    @eqx.filter_jit
+    def beta(self, vxi: Array) -> Array:
+        vxi = jnp.asarray(vxi).reshape(self.num_segments, 3)
+        physical = jnp.broadcast_to(
+            vxi[:, None, :], (self.num_segments, self.num_rods_per_segment, 3)
+        )
+        return physical.at[:, :, 2].set(
+            physical[:, :, 2] + self.rod_offset * physical[:, :, 0]
+        )
+
     def beta_inv(self, pxi: Array) -> Array:
-        """
-        Map the strains in the physical rods to the strains of the virtual backbone
-        Args:
-            pxi: strains in the physical rods of shape (num_segments, num_rods_per_segment, 3)
+        pxi = jnp.asarray(pxi).reshape(self.num_segments, self.num_rods_per_segment, 3)
+        virtual = jnp.mean(pxi, axis=1)
+        virtual = virtual.at[:, 2].set(
+            virtual[:, 2] - jnp.mean(self.rod_offset * pxi[:, :, 0], axis=1)
+        )
+        return virtual.reshape(self.num_strains)
 
-        Returns:
-            vxi: strains of the virtual backbone of shape (num_dofs, )
-        """
-        vxi = jnp.mean(pxi, axis=1)
-        vxi = vxi.at[:, 2].set(vxi[:, 2] - jnp.mean(self.roff * pxi[..., 0], axis=1))
-        vxi = vxi.flatten()
-
-        return vxi
-
-    @eqx.filter_jit
     def ref_strains(self) -> Array:
-        """
-        Compute the ref strains of the virtual backbone
+        return self.beta_inv(self._reference_physical_strains())
 
-        Returns:
-            vxi_ref: ref strains of the virtual backbone of shape (num_dofs, )
-        """
-        # reference strains of the physical rods
-        pxi_ref = jnp.zeros((self.num_segments, self.num_rods_per_segment, 3))
-        pxi_ref = pxi_ref.at[:, :, 0].set(self.kappa_b_ref)
-        pxi_ref = pxi_ref.at[:, :, 1].set(self.sigma_sh_ref)
-        pxi_ref = pxi_ref.at[:, :, 2].set(self.sigma_a_ref)
+    def strain(self, q: Array) -> Array:
+        return self.B_xi @ q + self.ref_strains()
 
-        # map the reference strains from the physical rods to the virtual backbone
-        vxi_ref = self.beta_inv(pxi_ref)
-        return vxi_ref
-
-    @eqx.filter_jit
     def apply_eps_to_bend_strains(self, xi: Array, eps: float | None = None) -> Array:
-        """
-        Add a small number to the bending strain to avoid singularities
-        Args:
-            xi: strains of the virtual backbone of shape (num_dofs, )
-            eps: small number to add to the bending strain (optional). By default, it will be initialized to as self.global_eps
-        """
-        # initialize eps if not provided
         if eps is None:
             eps = self.global_eps
+        xi_rows = jnp.asarray(xi).reshape((-1, 3))
+        sign = jnp.sign(xi_rows[:, 0])
+        sign = jnp.where(sign == 0, 1.0, sign)
+        bending = jnp.where(jnp.abs(xi_rows[:, 0]) < eps, sign * eps, xi_rows[:, 0])
+        return jnp.stack((bending, xi_rows[:, 1], xi_rows[:, 2]), axis=1).reshape(-1)
 
-        xi_reshaped = xi.reshape((-1, 3))
-
-        xi_bend_sign = jnp.sign(xi_reshaped[:, 0])
-        # set zero sign to 1 (i.e. positive)
-        xi_bend_sign = jnp.where(xi_bend_sign == 0, 1, xi_bend_sign)
-        # add eps to the bending strain (i.e. the first column)
-        sigma_b_epsed = lax.select(
-            jnp.abs(xi_reshaped[:, 0]) < eps,
-            xi_bend_sign * eps,
-            xi_reshaped[:, 0],
-        )
-        xi_epsed = jnp.stack(
+    def _relative_pose(self, xi_i: Array, arc_length: Array, eps: Array) -> Array:
+        del eps
+        # The planar SE(2) operator is agnostic to the names of its two linear
+        # components. Passing HSA's [kappa, shear, axial] ordering directly
+        # reproduces its historical tangent convention while reusing the
+        # numerically stable PCS propagator.
+        pcs_xi = xi_i
+        relative = PlanarPCS._pcs_relative_pose(self, pcs_xi, arc_length)
+        return jnp.array(
             [
-                sigma_b_epsed,
-                xi_reshaped[:, 1],
-                xi_reshaped[:, 2],
-            ],
-            axis=1,
-        )
-
-        # flatten the array
-        xi_epsed = xi_epsed.flatten()
-
-        return xi_epsed
-
-    @eqx.filter_jit
-    def forward_kinematics_virtual_backbone(self, q: Array, s: Array) -> Array:
-        """
-        Evaluate the forward kinematics the virtual backbone
-        Args:
-            q: generalized coordinates of shape (num_dofs, )
-            s: point coordinate along the rod in the interval [0, L].
-
-        Returns:
-            chi: pose of the backbone point in Cartesian-space with shape (3, )
-                Consists of [theta, p_x, p_y]
-                where theta is the planar orientation with respect to the x-axis,
-                p_x is the x-position, p_y is the y-position,
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        # determine in which segment the point is located
-        segment_idx, s_local = self.classify_segment(s)
-
-        chi = lax.switch(
-            segment_idx,
-            self.chiv_lambda_sms,
-            *self.params_for_lambdify,
-            *xi_epsed,
-            s_local,
-        ).squeeze()
-
-        chi = jnp.roll(
-            chi, 1
-        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
-
-        return self._with_base_translation(chi)
-
-    _forward_kinematics = forward_kinematics_virtual_backbone
-
-    @eqx.filter_jit
-    def forward_kinematics_tips(self, q: Array) -> Array:
-        """
-        Compute virtual-backbone forward kinematics at all segment tips.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-
-        Returns:
-            chi_tips (Array): virtual-backbone poses at each segment tip, shape
-                (num_segments, 3).
-        """
-        return self.forward_kinematics_batched(q, self.L_cum[1:])
-
-    @eqx.filter_jit
-    def forward_kinematics_rod(
-        self,
-        q: Array,
-        s: Array,
-        rod_idx: Array,
-    ) -> Array:
-        """
-        Evaluate the forward kinematics of the physical rods
-        Args:
-            params: Dictionary of robot parameters
-            q: generalized coordinates of shape (num_dofs, )
-            s: point coordinate along the rod in the interval [0, L].
-            rod_idx: index of the rod. If there are two rods per segment, then rod_idx can be 0 or 1.
-
-        Returns:
-            chir: pose of the rod centerline point in Cartesian-space with shape (3, )
-                Consists of [theta, p_x, p_y]
-                where theta is the planar orientation with respect to the x-axis,
-                p_x is the x-position, p_y is the y-position,
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        # determine in which segment the point is located
-        segment_idx, s_local = self.classify_segment(s)
-
-        chir_lambda_sms_idx = segment_idx * self.num_rods_per_segment + rod_idx
-        chir = lax.switch(
-            chir_lambda_sms_idx,
-            self.chir_lambda_sms,
-            *self.params_for_lambdify,
-            *xi_epsed,
-            s_local,
-        ).squeeze()
-
-        chir = jnp.roll(
-            chir, 1
-        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
-
-        return self._with_base_translation(chir)
-
-    @eqx.filter_jit
-    def forward_kinematics_platform(self, q: Array, segment_idx: Array) -> Array:
-        """
-        Evaluate the forward kinematics the platform
-        Args:
-            q: generalized coordinates of shape (num_dofs, )
-            segment_idx: index of the segment
-
-        Returns:
-            chip: pose of the CoG of the platform in Cartesian-space with shape (3, )
-                Consists of [theta, p_x, p_y]
-                where theta is the planar orientation with respect to the x-axis,
-                p_x is the x-position, p_y is the y-position,
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        chip = lax.switch(
-            segment_idx, self.chip_lambda_sms, *self.params_for_lambdify, *xi_epsed
-        ).squeeze()
-
-        chip = jnp.roll(
-            chip, 1
-        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
-
-        return self._with_base_translation(chip)
-
-    @eqx.filter_jit
-    def forward_kinematics_end_effector(self, q: Array) -> Array:
-        """
-        Evaluate the forward kinematics of the end-effector
-        Args:
-            q: generalized coordinates of shape (num_dofs, )
-
-        Returns:
-            chiee: pose of the end-effector in Cartesian-space of shape (3, )
-                Consists of [theta, p_x, p_y]
-                where theta is the planar orientation with respect to the x-axis,
-                p_x is the x-position, p_y is the y-position,
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        # evaluate the symbolic expression
-        chiee = self.chiee_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
-
-        chiee = jnp.roll(
-            chiee, 1
-        )  # shift from [p_x, p_y, theta] (symbolic derivation def) to [theta, p_x, p_y] (SE(2) convention)
-
-        return self._with_base_translation(chiee)
-
-    @eqx.filter_jit
-    def jacobian_end_effector(self, q: Array) -> Array:
-        """
-        Evaluate the Jacobian of the end-effector
-        Args:
-            q: generalized coordinates of shape (num_dofs, )
-
-        Returns:
-            Jee: the Jacobian of the end-effector pose with respect to the generalized coordinates.
-                Jee is an array of shape (3, num_dofs).
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        # evaluate the symbolic expression
-        Jee = self.Jee_lambda(*self.params_for_lambdify, *xi_epsed)
-
-        return Jee
-
-    @eqx.filter_jit
-    def jacobian_virtual_backbone(self, q: Array, s: Array) -> Array:
-        """
-        Compute the Jacobian of the virtual backbone forward kinematics at a point s.
-
-        The Jacobian maps configuration space velocities to operational space
-        (Cartesian/task space) velocities at point s using the symbolic expressions.
-
-        Args:
-            q: Generalized coordinates of shape (num_dofs,).
-            s: Point coordinate along the robot in the interval [0, L].
-
-        Returns:
-            J: Jacobian matrix of shape (3, num_dofs), mapping velocities in
-                configuration space to velocities in operational space [omega_z, v_x, v_y].
-        """
-        # map the configuration to the strains
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi)
-
-        # determine in which segment the point is located
-        segment_idx, s_local = self.classify_segment(s)
-
-        # evaluate the symbolic Jacobian expression
-        # The symbolic Jacobian is with respect to strains xi, shape (3, num_dofs)
-        # with rows [p_x, p_y, theta] from symbolic derivation
-        J_xi = lax.switch(
-            segment_idx,
-            self.Jv_lambda_sms,
-            *self.params_for_lambdify,
-            *xi_epsed,
-            s_local,
-        )
-
-        # Reorder rows from [p_x, p_y, theta] to [theta, p_x, p_y] (SE(2) convention)
-        J_xi = jnp.roll(J_xi, 1, axis=0)
-
-        # Chain rule: J_q = J_xi @ B_xi (since xi = B_xi @ q + xi_ref)
-        J = J_xi @ self.B_xi
-
-        return J
-
-    @eqx.filter_jit
-    def _jacobian(self, q: Array, s: Array) -> Array:
-        """Protected SoftRobot hook for the virtual-backbone Jacobian."""
-        return self.jacobian_virtual_backbone(q, s)
-
-    @eqx.filter_jit
-    def jacobian_tips(self, q: Array) -> Array:
-        """
-        Compute inertial-frame virtual-backbone Jacobians at all segment tips.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-
-        Returns:
-            J_tips (Array): Jacobians at each segment tip, shape
-                (num_segments, 3, num_dofs).
-        """
-        return self.jacobian_batched(q, self.L_cum[1:])
-
-    @eqx.filter_jit
-    def jacobian_and_time_derivative_virtual_backbone(
-        self, q: Array, qd: Array, s: Array
-    ) -> tuple[Array, Array]:
-        """
-        Compute the Jacobian and its time derivative of the virtual backbone at point s.
-
-        Args:
-            q: Generalized coordinates of shape (num_dofs,).
-            qd: Generalized velocities of shape (num_dofs,).
-            s: Point coordinate along the robot in the interval [0, L].
-
-        Returns:
-            J: Jacobian matrix of shape (3, num_dofs).
-            Jd: Time derivative of the Jacobian, shape (3, num_dofs).
-        """
-        # Compute the Jacobian using the symbolic expression
-        J = self.jacobian_virtual_backbone(q, s)
-
-        # Compute the Jacobian time derivative: d/dt(J(q(t))) = d(J)/dq @ qd
-        # Define a function that computes the Jacobian for a given q
-        def jacobian_fn(q: Array) -> Array:
-            return self.jacobian_virtual_backbone(q, s)
-
-        # Compute dJ/dq (shape: 3, num_dofs, num_dofs)
-        dJ_dq = jacfwd(jacobian_fn, argnums=0)(q)
-
-        # Contract with qd to get Jd: Jd[i, j] = sum_k (dJ[i, j]/dq[k] * qd[k])
-        Jd = jnp.einsum("ijk,k->ij", dJ_dq, qd)
-
-        return J, Jd
-
-    @eqx.filter_jit
-    def _jacobian_and_time_derivative(
-        self, q: Array, qd: Array, s: Array
-    ) -> tuple[Array, Array]:
-        """Protected SoftRobot hook for the virtual-backbone Jacobian time derivative."""
-        return self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
-
-    @eqx.filter_jit
-    def inverse_kinematics_end_effector(self, chiee: Array) -> Array:
-        """
-        Evaluates the inverse kinematics for a given end-effector pose.
-            Important: only works for one segment!
-        Args:
-            params: Dictionary of robot parameters
-            chiee: pose of the end-effector in Cartesian-space of shape (3, )
-            eps: small number to avoid singularities (e.g., division by zero)
-
-        Returns:
-            q: generalized coordinates of shape (num_dofs, )
-        """
-        assert self.num_segments == 1, "Inverse kinematics only works for one segment!"
-
-        # height of platform
-        hp = self.pcudim[0, 1]
-        # length of the proximal rod caps
-        lpc = self.lpc[0]
-        # length of the distal rod caps
-        ldc = self.ldc[0]
-        # offset of the end-effector from the distal surface of the platform
-        chiee_off = self.chiee_off
-
-        # transformation from the base to the proximal end of the virtual backbone
-        T_b_to_pe = jnp.array(
-            [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, lpc],
-                [0.0, 0.0, 1.0],
+                jnp.arctan2(relative[1, 0], relative[0, 0]),
+                relative[0, 2],
+                relative[1, 2],
             ]
         )
 
-        # transformation from the base to the end-effector
+    @staticmethod
+    def _compose_pose(chi: Array, relative: Array) -> Array:
+        theta = chi[0]
+        c, s = jnp.cos(theta), jnp.sin(theta)
+        p = chi[1:] + jnp.array(
+            [c * relative[1] - s * relative[2], s * relative[1] + c * relative[2]]
+        )
+        return jnp.array([theta + relative[0], p[0], p[1]])
+
+    def _segment_base(self, chi_prev: Array, i: int | Array) -> Array:
+        return jnp.array(
+            [chi_prev[0], chi_prev[1], chi_prev[2] + self.proximal_cap_length[i]],
+            dtype=chi_prev.dtype,
+        )
+
+    def _forward_backbone_from_xi(self, xi: Array, s: Array) -> Array:
+        segment_idx, s_local = self.classify_segment(s)
+        eps = jnp.asarray(self.global_eps, dtype=xi.dtype)
+        xi_rows = xi.reshape(self.num_segments, 3)
+        chi0 = jnp.asarray(self.base_pose, dtype=xi.dtype)
+        zero = jnp.zeros_like(chi0)
+
+        def step(carry: tuple[Array, Array], i: Array) -> tuple[tuple[Array, Array], None]:
+            chi_prev, chi_target = carry
+            xi_i = xi_rows[i]
+            chi_base = self._segment_base(chi_prev, i)
+            arc = jnp.where(i == segment_idx, s_local, self.L[i])
+            chi_at_arc = self._compose_pose(
+                chi_base, self._relative_pose(xi_i, arc, eps)
+            )
+            chi_target = jnp.where(i == segment_idx, chi_at_arc, chi_target)
+
+            chi_tip = self._compose_pose(
+                chi_base, self._relative_pose(xi_i, self.L[i], eps)
+            )
+            theta = chi_tip[0]
+            c, sn = jnp.cos(theta), jnp.sin(theta)
+            cap_offset = self.distal_cap_length[i] + self.platform_dimension[i, 1]
+            next_p = chi_tip[1:] + jnp.array([-sn * cap_offset, c * cap_offset])
+            return (jnp.array([theta, next_p[0], next_p[1]]), chi_target), None
+
+        (_, chi_target), _ = lax.scan(
+            step,
+            (chi0, zero),
+            jnp.arange(self.num_segments, dtype=jnp.int32),
+        )
+        return chi_target
+
+    def _forward_rod_from_xi(self, xi: Array, s: Array, rod_idx: Array) -> Array:
+        segment_idx, _ = self.classify_segment(s)
+        chi = self._forward_backbone_from_xi(xi, s)
+        offset = self.rod_offset[segment_idx, rod_idx]
+        c, sn = jnp.cos(chi[0]), jnp.sin(chi[0])
+        p = chi[1:] + jnp.array([c * offset, sn * offset])
+        return jnp.array([chi[0], p[0], p[1]])
+
+    def _forward_platform_from_xi(self, xi: Array, segment_idx: Array) -> Array:
+        chi = self._forward_backbone_from_xi(xi, self.L_cum[segment_idx + 1])
+        offset = self.distal_cap_length[segment_idx] + self.platform_dimension[segment_idx, 1] / 2.0
+        c, sn = jnp.cos(chi[0]), jnp.sin(chi[0])
+        p = chi[1:] + jnp.array([-sn * offset, c * offset])
+        return jnp.array([chi[0], p[0], p[1]])
+
+    def _forward_end_effector_from_xi(self, xi: Array) -> Array:
+        chi_tip = self._forward_backbone_from_xi(xi, self.length)
+        last = self.num_segments - 1
+        offset = self.distal_cap_length[last] + self.platform_dimension[last, 1]
+        c, sn = jnp.cos(chi_tip[0]), jnp.sin(chi_tip[0])
+        p_platform_end = chi_tip[1:] + jnp.array([-sn * offset, c * offset])
+        p_ee = p_platform_end + jnp.array(
+            [
+                c * self.end_effector_offset[0] - sn * self.end_effector_offset[1],
+                sn * self.end_effector_offset[0] + c * self.end_effector_offset[1],
+            ]
+        )
+        return jnp.array([chi_tip[0] + self.end_effector_offset[2], p_ee[0], p_ee[1]])
+
+    def _kinematic_xi(self, q: Array, eps: Array | None = None) -> Array:
+        if eps is None:
+            eps = self.global_eps
+        return self.apply_eps_to_bend_strains(self.strain(q), eps)
+
+    def forward_kinematics_virtual_backbone(self, q: Array, s: Array) -> Array:
+        return self._forward_backbone_from_xi(self._kinematic_xi(q), s)
+
+    _forward_kinematics = forward_kinematics_virtual_backbone
+
+    def forward_kinematics_tips(self, q: Array) -> Array:
+        return vmap(lambda s: self.forward_kinematics_virtual_backbone(q, s))(
+            self.L_cum[1:]
+        )
+
+    def forward_kinematics_batched(self, q: Array, s_ps: Array) -> Array:
+        return vmap(lambda s: self.forward_kinematics_virtual_backbone(q, s))(s_ps)
+
+    def _forward_kinematics_arc_length_derivative(self, q: Array, s: Array) -> Array:
+        return jax.jvp(
+            lambda s_: self._forward_kinematics(q, s_),
+            (s,),
+            (jnp.ones_like(jnp.asarray(s)),),
+        )[1]
+
+    def _forward_kinematics_and_arc_length_derivative(
+        self, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        return self._forward_kinematics(q, s), self._forward_kinematics_arc_length_derivative(q, s)
+
+    def forward_kinematics_rod(self, q: Array, s: Array, rod_idx: Array) -> Array:
+        return self._forward_rod_from_xi(self._kinematic_xi(q), s, rod_idx)
+
+    def forward_kinematics_platform(self, q: Array, segment_idx: Array) -> Array:
+        return self._forward_platform_from_xi(self._kinematic_xi(q), segment_idx)
+
+    def forward_kinematics_end_effector(self, q: Array) -> Array:
+        return self._forward_end_effector_from_xi(self._kinematic_xi(q))
+
+    def jacobian_virtual_backbone(self, q: Array, s: Array) -> Array:
+        xi = self._kinematic_xi(q)
+        J_xi = jax.jacfwd(lambda xi_: self._forward_backbone_from_xi(xi_, s))(xi)
+        return J_xi @ self.B_xi
+
+    def _jacobian(self, q: Array, s: Array) -> Array:
+        return self.jacobian_virtual_backbone(q, s)
+
+    def jacobian_tips(self, q: Array) -> Array:
+        return vmap(lambda s: self.jacobian_virtual_backbone(q, s))(self.L_cum[1:])
+
+    def jacobian_batched(self, q: Array, s_ps: Array) -> Array:
+        return vmap(lambda s: self.jacobian_virtual_backbone(q, s))(s_ps)
+
+    def _jacobian_arc_length_derivative(self, q: Array, s: Array) -> Array:
+        return jax.jvp(
+            lambda s_: self._jacobian(q, s_),
+            (s,),
+            (jnp.ones_like(jnp.asarray(s)),),
+        )[1]
+
+    def _jacobian_and_arc_length_derivative(
+        self, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        return self._jacobian(q, s), self._jacobian_arc_length_derivative(q, s)
+
+    def jacobian_end_effector(self, q: Array) -> Array:
+        xi = self._kinematic_xi(q)
+
+        def ee_position_first(xi_: Array) -> Array:
+            ee = self._forward_end_effector_from_xi(xi_)
+            return jnp.array([ee[1], ee[2], ee[0]])
+
+        return jax.jacfwd(ee_position_first)(xi) @ self.B_xi
+
+    def jacobian_and_time_derivative_virtual_backbone(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array]:
+        return jax.jvp(
+            lambda q_: self.jacobian_virtual_backbone(q_, s), (q,), (qd,)
+        )
+
+    def _jacobian_and_time_derivative(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array]:
+        return self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
+
+    def jacobian_and_time_derivative_batched(
+        self, q: Array, qd: Array, s_ps: Array
+    ) -> tuple[Array, Array]:
+        return vmap(
+            lambda s: self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
+        )(s_ps)
+
+    def inverse_kinematics_end_effector(self, chiee: Array) -> Array:
+        if self.num_segments != 1:
+            raise AssertionError("Inverse kinematics only works for one segment!")
+        hp = self.platform_dimension[0, 1]
+        proximal_cap_length = self.proximal_cap_length[0]
+        distal_cap_length = self.distal_cap_length[0]
+        offset = self.end_effector_offset
+        T_b_to_pe = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, proximal_cap_length], [0.0, 0.0, 1.0]])
         T_b_to_ee = jnp.array(
             [
                 [jnp.cos(chiee[0]), -jnp.sin(chiee[0]), chiee[1]],
@@ -1368,456 +587,463 @@ class PlanarHSA(SoftRobot):
                 [0.0, 0.0, 1.0],
             ]
         )
-
-        # transformation from the distal end of the virtual backbone to the end-effector
         T_de_to_ee = jnp.array(
             [
-                [jnp.cos(chiee_off[0]), -jnp.sin(chiee_off[0]), chiee_off[1]],
-                [jnp.sin(chiee_off[0]), jnp.cos(chiee_off[0]), ldc + hp + chiee_off[2]],
+                [jnp.cos(offset[0]), -jnp.sin(offset[0]), offset[1]],
+                [jnp.sin(offset[0]), jnp.cos(offset[0]), distal_cap_length + hp + offset[2]],
                 [0.0, 0.0, 1.0],
             ]
         )
-
-        # compute the transformation from the proximal to the distal end of the virtual backbone
         T_pe_to_de = jnp.linalg.inv(T_b_to_pe) @ T_b_to_ee @ jnp.linalg.inv(T_de_to_ee)
-
-        # compute the SE(2) pose from the transformation matrix
-        vchi_pe_to_de = jnp.array(
+        th, px, py = (
+            jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
+            T_pe_to_de[0, 2],
+            T_pe_to_de[1, 2],
+        )
+        sign = jnp.where(jnp.sign(th) == 0, 1.0, jnp.sign(th))
+        th_eps = th + sign * self.global_eps
+        xi = th_eps / (2.0 * self.length) * jnp.array(
             [
-                jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
-                T_pe_to_de[0, 2],
-                T_pe_to_de[1, 2],
+                2.0,
+                py - px * jnp.sin(th_eps) / (jnp.cos(th_eps) - 1.0),
+                -px - py * jnp.sin(th_eps) / (jnp.cos(th_eps) - 1.0),
             ]
         )
+        return jnp.linalg.pinv(self.B_xi) @ (xi - self.ref_strains())
 
-        # extract the x and y position and the orientation
-        th, px, py = vchi_pe_to_de[0], vchi_pe_to_de[1], vchi_pe_to_de[2]
-
-        # add small eps for numerical stability
-        th_sign = jnp.sign(th)
-        # set zero sign to 1 (i.e. positive)
-        th_sign = jnp.where(th_sign == 0, 1, th_sign)
-        # add eps to the bending strain (i.e. the first column)
-        th_epsed = th + th_sign * self.global_eps
-
-        # compute the inverse kinematics for the virtual backbone
-        vxi = (
-            th_epsed
-            / (2 * self.Lmax)
-            * jnp.array(
-                [
-                    2,
-                    py - (px * jnp.sin(th_epsed)) / (jnp.cos(th_epsed) - 1),
-                    -px - (py * jnp.sin(th_epsed)) / (jnp.cos(th_epsed) - 1),
-                ]
-            )
+    def _quadrature(self) -> tuple[Array, Array]:
+        points = self.integration_points[1:-1]
+        weights = self.integration_weights[1:-1]
+        starts = self.L_cum[:-1]
+        return (
+            starts[:, None] + self.L[:, None] * points[None, :],
+            self.L[:, None] * weights[None, :],
         )
 
-        # reference strains of the virtual backbone
-        vxi_ref = self.ref_strains()
+    def _rod_strain_mapping(self) -> Array:
+        """Return the per-rod map from virtual to physical strains."""
+        mapping = jnp.broadcast_to(
+            jnp.eye(3, dtype=self.L.dtype),
+            (self.num_segments, self.num_rods_per_segment, 3, 3),
+        )
+        return mapping.at[..., 2, 0].set(self.rod_offset)
 
-        # map the strains to the generalized coordinates
-        q = jnp.linalg.pinv(self.B_xi) @ (vxi - vxi_ref)
+    def _platform_mass_properties(self, i: int | Array) -> tuple[Array, Array, Array]:
+        width, height, depth = self.platform_dimension[i]
+        m_platform = self.platform_density[i] * width * height * depth
+        I_platform = m_platform / 12.0 * (width**2 + height**2)
+        m_distal = jnp.sum(
+            self.end_cap_density[i] * self.distal_cap_length[i] * self.rod_outer_radius[i] ** 2
+        )
+        I_distal = jnp.sum(
+            self.end_cap_density[i]
+            * self.distal_cap_length[i]
+            * self.rod_outer_radius[i] ** 2
+            / 12.0
+            * (3.0 * self.rod_outer_radius[i] ** 2 + self.distal_cap_length[i] ** 2)
+        )
 
-        return q
+        if self.num_segments == 1:
+            m_proximal = jnp.asarray(0.0, dtype=self.L.dtype)
+            I_proximal = jnp.asarray(0.0, dtype=self.L.dtype)
+        else:
+            next_i = jnp.minimum(i + 1, self.num_segments - 1)
+            m_proximal = jnp.where(
+                i < self.num_segments - 1,
+                jnp.sum(
+                    self.end_cap_density[next_i]
+                    * self.proximal_cap_length[next_i]
+                    * self.rod_outer_radius[next_i] ** 2
+                ),
+                0.0,
+            )
+            I_proximal = jnp.where(
+                i < self.num_segments - 1,
+                jnp.sum(
+                    self.end_cap_density[next_i]
+                    * self.proximal_cap_length[next_i]
+                    * self.rod_outer_radius[next_i] ** 2
+                    / 12.0
+                    * (3.0 * self.rod_outer_radius[next_i] ** 2 + self.proximal_cap_length[next_i] ** 2)
+                ),
+                0.0,
+            )
 
-    @eqx.filter_jit
+        mass = m_platform + m_distal + m_proximal
+        rel_y_num = m_distal * self.distal_cap_length[i] / 2.0 + m_platform * (
+            self.distal_cap_length[i] + height / 2.0
+        )
+        rel_y_num = rel_y_num + jnp.where(
+            i < self.num_segments - 1,
+            m_proximal * (self.distal_cap_length[i] + height + self.proximal_cap_length[i + 1] / 2.0),
+            0.0,
+        )
+        rel_cog = jnp.array([0.0, rel_y_num / mass])
+        d_dc = jnp.array([0.0, self.distal_cap_length[i] / 2.0]) - rel_cog
+        d_pl = jnp.array([0.0, self.distal_cap_length[i] + height / 2.0]) - rel_cog
+        d_pc = jnp.where(
+            i < self.num_segments - 1,
+            jnp.array([0.0, self.proximal_cap_length[i + 1] / 2.0]) - rel_cog,
+            jnp.zeros((2,), dtype=self.L.dtype),
+        )
+        inertia = (
+            I_distal
+            + I_platform
+            + I_proximal
+            + m_distal * (d_dc @ d_dc)
+            + m_platform * (d_pl @ d_pl)
+            + m_proximal * (d_pc @ d_pc)
+        )
+        return mass, inertia, rel_cog
+
+    def _rod_mass_matrix_terms(self, xi: Array, i: int, j: int) -> Array:
+        area = jnp.pi * (
+            self.rod_outer_radius[i, j] ** 2 - self.rod_inner_radius[i, j] ** 2
+        )
+        moment = jnp.pi / 4.0 * (
+            self.rod_outer_radius[i, j] ** 4 - self.rod_inner_radius[i, j] ** 4
+        )
+        s_points, weights = self._quadrature()
+
+        def rod_pose(z: Array, s: Array) -> Array:
+            return self._forward_rod_from_xi(z, s, j)
+
+        jacobian = jax.jacfwd(rod_pose, argnums=0)
+        J = vmap(lambda s: jacobian(xi, s))(s_points[i])
+        linear = jnp.einsum("kri,krj->kij", J[:, 1:, :], J[:, 1:, :])
+        angular = jnp.einsum("ki,kj->kij", J[:, 0, :], J[:, 0, :])
+        terms = weights[i, :, None, None] * self.rod_density[i, j] * (
+            area * linear + moment * angular
+        )
+        return jnp.sum(terms, axis=0)
+
+    def _platform_mass_matrix_term(self, xi: Array, i: int) -> Array:
+        mass, inertia, rel_cog = self._platform_mass_properties(i)
+        s_tip = self.L_cum[i + 1]
+
+        def cog_pose(z: Array) -> Array:
+            tip = self._forward_backbone_from_xi(z, s_tip)
+            c, sn = jnp.cos(tip[0]), jnp.sin(tip[0])
+            p = tip[1:] + jnp.array(
+                [c * rel_cog[0] - sn * rel_cog[1], sn * rel_cog[0] + c * rel_cog[1]]
+            )
+            return jnp.array([tip[0], p[0], p[1]])
+
+        J = jax.jacfwd(cog_pose)(xi)
+        return mass * J[1:, :].T @ J[1:, :] + inertia * J[0:1, :].T @ J[0:1, :]
+
+    def _payload_mass_matrix_term(self, xi: Array) -> Array:
+        def payload_position(z: Array) -> Array:
+            ee = self._forward_end_effector_from_xi(z)
+            c, sn = jnp.cos(ee[0]), jnp.sin(ee[0])
+            return ee[1:] + jnp.array(
+                [
+                    c * self.platform_center_of_gravity[0]
+                    - sn * self.platform_center_of_gravity[1],
+                    sn * self.platform_center_of_gravity[0]
+                    + c * self.platform_center_of_gravity[1],
+                ]
+            )
+
+        J = jax.jacfwd(payload_position)(xi)
+        return self.platform_mass * J.T @ J
+
+    def _inertia_full_from_xi(self, xi: Array) -> Array:
+        indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+        rod_terms = vmap(
+            lambda i: vmap(
+                lambda j: self._rod_mass_matrix_terms(xi, i, j)
+            )(jnp.arange(self.num_rods_per_segment, dtype=jnp.int32))
+        )(indices)
+        platform_terms = vmap(
+            lambda i: self._platform_mass_matrix_term(xi, i)
+        )(indices)
+        return (
+            jnp.sum(rod_terms, axis=(0, 1))
+            + jnp.sum(platform_terms, axis=0)
+            + self._payload_mass_matrix_term(xi)
+        )
+
+    def _dynamic_xi(self, q: Array, eps: Array | None = None) -> Array:
+        if eps is None:
+            eps = 1e4 * self.global_eps
+        return self.apply_eps_to_bend_strains(self.strain(q), eps)
+
     def _inertia_full_matrix(self, q: Array, eps: float | None = None) -> Array:
-        """
-        Compute the full inertia matrix of the robot.
+        return self._inertia_full_from_xi(self._dynamic_xi(q, eps))
 
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
-
-        Returns:
-            B_full (Array): Full inertia matrix of shape (num_dofs_max, num_dofs_max).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi, eps)
-
-        B_full = self.B_lambda(*self.params_for_lambdify, *xi_epsed)
-
-        return B_full
-
-    @eqx.filter_jit
     def inertia_matrix(self, q: Array, eps: float | None = None) -> Array:
-        """
-        Compute the inertia matrix of the robot.
+        return self.B_xi.T @ self._inertia_full_matrix(q, eps) @ self.B_xi
 
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
-
-        Returns:
-            B (Array): Inertia matrix of shape (num_dofs, num_dofs).
-        """
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        B_full = self._inertia_full_matrix(q, eps)
-
-        B = self.B_xi.T @ B_full @ self.B_xi
-
-        return B
-
-    @eqx.filter_jit
     def _coriolis_full_matrix(
         self, q: Array, qd: Array, eps: float | None = None
     ) -> Array:
-        """
-        Compute the full Coriolis matrix of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
-
-        Returns:
-            C_full (Array): Full Coriolis matrix of shape (num_dofs_max, num_dofs_max).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        xi = self.strain(q)
+        xi = self._dynamic_xi(q, eps)
         xid = self.B_xi @ qd
+        dB = jax.jacfwd(self._inertia_full_from_xi)(xi)
+        return 0.5 * jnp.einsum(
+            "abk,k->ab",
+            dB + jnp.swapaxes(dB, 1, 2) - jnp.transpose(dB, (2, 1, 0)),
+            xid,
+        )
 
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi, eps)
+    def coriolis_matrix(
+        self, q: Array, qd: Array, eps: float | None = None
+    ) -> Array:
+        return self.B_xi.T @ self._coriolis_full_matrix(q, qd, eps) @ self.B_xi
 
-        C_full = self.C_lambda(*self.params_for_lambdify, *xi_epsed, *xid)
+    def _gravitational_energy_full_from_xi(self, xi: Array) -> Array:
+        gravity = self.g[1:]
+        # The potential is referenced to the base origin and therefore omits
+        # the constant energy offset caused by a translated base. Forces are
+        # unaffected, but preserving that offset convention keeps energy
+        # outputs compatible with the previous model.
+        base_translation = self.base_pose[1:]
+        s_points, weights = self._quadrature()
+        def segment_energy(i: Array) -> Array:
+            def rod_energy(j: Array) -> Array:
+                area = jnp.pi * (
+                    self.rod_outer_radius[i, j] ** 2
+                    - self.rod_inner_radius[i, j] ** 2
+                )
+                rods = vmap(
+                    lambda s: self._forward_rod_from_xi(xi, s, j)
+                )(s_points[i])
+                height = jnp.sum(
+                    weights[i]
+                    * ((rods[:, 1:] - base_translation) @ gravity)
+                )
+                return -self.rod_density[i, j] * area * height
 
-        return C_full
+            rod_energy_total = jnp.sum(
+                vmap(rod_energy)(
+                    jnp.arange(self.num_rods_per_segment, dtype=jnp.int32)
+                )
+            )
+            mass, _, rel_cog = self._platform_mass_properties(i)
+            tip = self._forward_backbone_from_xi(xi, self.L_cum[i + 1])
+            c, sn = jnp.cos(tip[0]), jnp.sin(tip[0])
+            p_cog = tip[1:] + jnp.array(
+                [c * rel_cog[0] - sn * rel_cog[1], sn * rel_cog[0] + c * rel_cog[1]]
+            )
+            return rod_energy_total - mass * (gravity @ (p_cog - base_translation))
 
-    @eqx.filter_jit
-    def coriolis_matrix(self, q: Array, qd: Array, eps: float | None = None) -> Array:
-        """
-        Compute the Coriolis matrix of the robot.
+        energy = jnp.sum(
+            vmap(segment_energy)(
+                jnp.arange(self.num_segments, dtype=jnp.int32)
+            )
+        )
 
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            qd (Array): time-derivative of the generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
+        ee = self._forward_end_effector_from_xi(xi)
+        c, sn = jnp.cos(ee[0]), jnp.sin(ee[0])
+        payload_cog = ee[1:] + jnp.array(
+            [
+                c * self.platform_center_of_gravity[0]
+                - sn * self.platform_center_of_gravity[1],
+                sn * self.platform_center_of_gravity[0]
+                + c * self.platform_center_of_gravity[1],
+            ]
+        )
+        return energy - self.platform_mass * (gravity @ (payload_cog - base_translation))
 
-        Returns:
-            C (Array): Coriolis matrix of shape (num_dofs, num_dofs).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        C_full = self._coriolis_full_matrix(q, qd, eps)
-
-        C = self.B_xi.T @ C_full @ self.B_xi
-
-        return C
-
-    @eqx.filter_jit
-    def _gravitational_full_force(self, q: Array, eps: float | None = None) -> Array:
-        """
-        Compute the full gravitational vector of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
-
-        Returns:
-            G (Array): Full gravitational vector of shape (num_dofs_max,).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        xi = self.strain(q)
-
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi, eps)
-
-        G_full = self.G_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
-
-        return G_full
-
-    @eqx.filter_jit
-    def _gravitational_force(self, q: Array, eps: float | None = None) -> Array:
-        """
-        Compute the gravitational vector of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            eps (float): small number to avoid singularities (e.g., division by zero). By default, it will be initialized to 1e4 * self.global_eps.
-
-        Returns:
-            G (Array): Gravitational vector of shape (num_dofs,).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
-
-        G_full = self._gravitational_full_force(q, eps)
-
-        G = self.B_xi.T @ G_full
-
-        return G
-
-    @eqx.filter_jit
-    def _stiffness_full_vector(self, q: Array) -> Array:
-        """
-        Compute the full stiffness vector of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-
-        Returns:
-            K_full (Array): Full stiffness vector of shape (num_dofs_max, ).
-        """
-        xi = self.strain(q)
-
-        K_full = self.K_lambda(*self.params_for_lambdify, *xi).squeeze()
-
-        return K_full
-
-    @eqx.filter_jit
-    def elastic_force(self, q: Array) -> Array:
-        """
-        Compute the conservative elastic force vector of the robot.
-
-        This is the gradient of ``elastic_energy(q)`` and intentionally excludes
-        hysteresis-state effects. Hysteresis contributions are provided by
-        ``hysteresis_force`` and are combined in ``forward_dynamics``.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-
-        Returns:
-            K (Array): Stiffness vector of shape (num_dofs, ).
-        """
-        return self.stiffness_matrix() @ q
-
-    @eqx.filter_jit
-    def hysteresis_force(self, q: Array, z: Array) -> Array:
-        """
-        Compute the hysteresis-state elastic force contribution.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            z (Array): hysteresis state vector of shape (num_hysteresis,).
-
-        Returns:
-            K_hyst (Array): Hysteresis force vector of shape (num_dofs,).
-        """
-        del q
-
-        Shat = self.Shat()
-        K_hyst_full = Shat @ (self.B_hyst @ z)
-        return self.B_xi.T @ K_hyst_full
-
-    @eqx.filter_jit
-    def _damping_full_matrix(self) -> Array:
-        """
-        Compute the full damping matrix of the robot.
-
-        Returns:
-            D (Array): Full damping matrix of shape (num_dofs_max, num_dofs_max).
-        """
-        D_full = self.D_lambda(*self.params_for_lambdify)
-
-        return D_full
-
-    @eqx.filter_jit
-    def damping_matrix(self, q: Array) -> Array:
-        """
-        Compute the damping matrix of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-
-        Returns:
-            D (Array): Damping matrix of shape (num_dofs, num_dofs).
-        """
-        D_full = self._damping_full_matrix()
-
-        D = self.B_xi.T @ D_full @ self.B_xi
-
-        return D
-
-    @eqx.filter_jit
-    def _actuation_full_matrix(self, q: Array, phi: Array) -> Array:
-        """
-        Compute the actuation matrix of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            phi (Array): motor positions / twist angles of shape (num_segments * num_rods_per_segment, )
-
-        Returns:
-            alpha (Array): Actuation matrix of shape (num_dofs, num_dofs).
-        """
-        xi = self.strain(q)
-
-        alpha = self.alpha_lambda(*self.params_for_lambdify, *xi, *phi).squeeze()
-
-        return alpha
-
-    @eqx.filter_jit
-    def actuation_force(self, q: Array, phi: Array) -> Array:
-        """
-        Compute the actuation matrix of the robot.
-
-        Args:
-            q (Array): generalized coordinates of shape (num_dofs,).
-            phi (Array): motor positions / twist angles of shape (num_segments * num_rods_per_segment, )
-
-        Returns:
-            alpha (Array): Actuation matrix of shape (num_dofs, num_dofs).
-        """
-        alpha = self._actuation_full_matrix(q, phi)
-
-        # apply the strain basis
-        alpha = self.B_xi.T @ alpha
-
-        return alpha
-
-    @eqx.filter_jit
-    def Shat(self) -> Array:
-        """
-        Compute the nominal stiffness of the robot.
-
-        Returns:
-            Array: Nominal stiffness matrix of shape (num_dofs, num_dofs).
-        """
-        Shat = self.Shat_lambda(*self.params_for_lambdify)
-
-        return Shat
-
-    @eqx.filter_jit
-    def stiffness_matrix(self) -> Array:
-        """
-        Compute the stiffness matrix of the robot in configuration space.
-
-        Returns:
-            K (Array): Stiffness matrix of shape (num_dofs, num_dofs).
-        """
-        Shat_full = self.Shat()
-        K = self.B_xi.T @ Shat_full @ self.B_xi
-        return K
-
-    # -----------------------------------------
-    # Energy methods
-    # -----------------------------------------
-
-    @eqx.filter_jit
     def _gravitational_energy(self, q: Array, eps: float | None = None) -> Array:
-        """
-        Compute the gravitational potential energy of the robot.
+        return self._gravitational_energy_full_from_xi(self._dynamic_xi(q, eps))
 
-        This uses the symbolic expression U_g derived from the gravitational
-        potential energy of all rods, platforms, and payload.
+    def _gravitational_full_force(self, q: Array, eps: float | None = None) -> Array:
+        xi = self._dynamic_xi(q, eps)
+        return jax.grad(self._gravitational_energy_full_from_xi)(xi)
 
-        Args:
-            q (Array): Generalized coordinates of shape (num_dofs,).
-            eps (float): Small number to avoid singularities. Defaults to 1e4 * global_eps.
+    def _gravitational_force(self, q: Array, eps: float | None = None) -> Array:
+        return self.B_xi.T @ self._gravitational_full_force(q, eps)
 
-        Returns:
-            U_g (Array): Gravitational potential energy [J] (scalar).
-        """
-        # initialize eps if not provided
-        if eps is None:
-            eps = 1e4 * self.global_eps
+    def _nominal_stiffness_full(self) -> Array:
+        zeros = jnp.zeros_like(self.nominal_bending_stiffness)
+        Shat_rod = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        self.nominal_bending_stiffness,
+                        self.bending_shear_stiffness,
+                        zeros,
+                    ],
+                    axis=-1,
+                ),
+                jnp.stack(
+                    [
+                        self.bending_shear_stiffness,
+                        self.nominal_shear_stiffness,
+                        zeros,
+                    ],
+                    axis=-1,
+                ),
+                jnp.stack(
+                    [zeros, zeros, self.nominal_axial_stiffness], axis=-1
+                ),
+            ],
+            axis=-2,
+        )
+        mapping = self._rod_strain_mapping()
+        blocks = jnp.einsum("...ji,...jk,...kl->...il", mapping, Shat_rod, mapping)
+        return blk_diag(jnp.sum(blocks, axis=1))
 
-        xi = self.strain(q)
+    def Shat(self) -> Array:
+        return self._nominal_stiffness_full()
 
-        # add a small number to the bending strain to avoid singularities
-        xi_epsed = self.apply_eps_to_bend_strains(xi, eps)
+    def stiffness_matrix(self) -> Array:
+        return self.B_xi.T @ self.Shat() @ self.B_xi
 
-        # evaluate the symbolic expression for gravitational potential energy
-        U_g = self.U_g_lambda(*self.params_for_lambdify, *xi_epsed).squeeze()
+    def _stiffness_full_vector(self, q: Array) -> Array:
+        return self.Shat() @ (self.strain(q) - self.ref_strains())
 
-        return U_g
+    def elastic_force(self, q: Array) -> Array:
+        return self.B_xi.T @ self._stiffness_full_vector(q)
 
-    @eqx.filter_jit
+    def _elastic_energy(self, q: Array) -> Array:
+        return 0.5 * q @ self.stiffness_matrix() @ q
+
+    def _damping_full_matrix(self) -> Array:
+        zeros = jnp.zeros_like(self.bending_damping)
+        damping_rod = jnp.stack(
+            [
+                jnp.stack(
+                    [self.bending_damping, zeros, zeros], axis=-1
+                ),
+                jnp.stack(
+                    [zeros, self.shear_damping, zeros], axis=-1
+                ),
+                jnp.stack(
+                    [zeros, zeros, self.axial_damping], axis=-1
+                ),
+            ],
+            axis=-2,
+        )
+        mapping = self._rod_strain_mapping()
+        blocks = jnp.einsum(
+            "...ji,...jk,...kl->...il", mapping, damping_rod, mapping
+        )
+        return blk_diag(jnp.sum(blocks, axis=1))
+
+    def damping_matrix(self, q: Array) -> Array:
+        del q
+        return self.B_xi.T @ self._damping_full_matrix() @ self.B_xi
+
+    def _actuation_full_matrix(self, q: Array, phi: Array) -> Array:
+        xi_rows = self.strain(q).reshape(self.num_segments, 3)
+        physical = self.beta(xi_rows.reshape(-1))
+        references = self._reference_physical_strains()
+        phi = jnp.asarray(phi).reshape(-1)
+        scale = (
+            self.rod_height / self.L[:, None]
+        ) * phi.reshape(self.num_segments, self.num_rods_per_segment)
+        delta = jnp.stack(
+            [
+                self.bending_stiffness_correction * scale,
+                self.shear_stiffness_correction * scale,
+                self.axial_stiffness_correction * scale,
+            ],
+            axis=-1,
+        )
+        zeros = jnp.zeros_like(delta[..., 0])
+        Sr = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        self.nominal_bending_stiffness + delta[..., 0],
+                        self.bending_shear_stiffness,
+                        zeros,
+                    ],
+                    axis=-1,
+                ),
+                jnp.stack(
+                    [
+                        self.bending_shear_stiffness,
+                        self.nominal_shear_stiffness + delta[..., 1],
+                        zeros,
+                    ],
+                    axis=-1,
+                ),
+                jnp.stack(
+                    [zeros, zeros, self.nominal_axial_stiffness + delta[..., 2]],
+                    axis=-1,
+                ),
+            ],
+            axis=-2,
+        )
+        coupling = jnp.stack(
+            [zeros, zeros, self.strain_coupling * scale], axis=-1
+        )
+        physical_error = physical - references
+        rod_force_physical = -delta * physical_error + jnp.einsum(
+            "...jk,...k->...j", Sr, coupling
+        )
+        rod_force_virtual = jnp.einsum(
+            "...ji,...j->...i", self._rod_strain_mapping(), rod_force_physical
+        )
+        return jnp.sum(rod_force_virtual, axis=1).reshape(self.num_strains)
+
+    def actuation_force(
+        self, q: Array, phi: Array, qd: Array | None = None
+    ) -> Array:
+        del qd
+        if not self.consider_underactuation:
+            return jnp.asarray(phi)
+        return self.B_xi.T @ self._actuation_full_matrix(q, phi)
+
+    def hysteresis_force(self, q: Array, z: Array) -> Array:
+        del q
+        return self.B_xi.T @ self.Shat() @ (self.hysteresis_basis @ z)
+
+    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+        B = self.inertia_matrix(q)
+        Cqd = self.coriolis_matrix(q, qd) @ qd
+        G = self._gravitational_force(q)
+        return B, Cqd, G
+
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple[Array, Array | None]
     ) -> Array:
-        """
-        Forward dynamics function.
+        """Compute the autonomous HSA state derivative.
 
-        Args:
-            t (Array): Current time.
-            y (Array): State vector containing configuration, velocity, and possibly hysteresis state.
-                Shape is (2 * num_dofs + num_hysteresis,).
-            actuation_args (Tuple): Additional arguments for the actuation function.
-                - u (Array): Actuation input.
-                    If consider_underactuation is True, this is an array of shape (num_actuators, )
-                    with motor positions / twist angles of the proximal end of the rods.
-                    If consider_underactuation is False, this is an array of shape (num_dofs, )
-                    with the configuration-space torques.
-                - tau_ext (Array, optional): External generalized forces, shape (num_dofs,).
-
-        Returns:
-            yd: Time derivative of the state vector of shape (2 * num_dofs + num_hysteresis, ).
+        ``t`` is part of the Diffrax/dynamical-system callback signature, but
+        this model has no explicit time-dependent parameters or inputs.
         """
+        del t
         u, tau_ext = actuation_args
         if tau_ext is None:
             tau_ext = jnp.zeros((self.num_dofs,), dtype=y.dtype)
-
         if self.consider_hysteresis:
             q, qd, z = jnp.split(y, [self.num_dofs, 2 * self.num_dofs])
-        else:
-            q, qd = jnp.split(y, [self.num_dofs])
-            z = jnp.zeros((self.num_hysteresis,), dtype=y.dtype)
-
-        if self.consider_hysteresis:
-            zd = (self.B_hyst.T @ qd) * (
-                self.hyst_A
-                - jnp.abs(z) ** self.hyst_n
+            hysteresis_basis_active = self.B_xi.T @ self.hysteresis_basis
+            zd = (hysteresis_basis_active.T @ qd) * (
+                self.hysteresis_A
+                - jnp.abs(z) ** self.hysteresis_n
                 * (
-                    self.hyst_gamma
-                    + self.hyst_beta * jnp.sign((self.B_hyst.T @ qd) * z)
+                    self.hysteresis_gamma
+                    + self.hysteresis_beta
+                    * jnp.sign((hysteresis_basis_active.T @ qd) * z)
                 )
             )
         else:
-            zd = jnp.zeros((self.num_hysteresis,), dtype=y.dtype)
+            q, qd = jnp.split(y, [self.num_dofs])
+            z = jnp.zeros((0,), dtype=y.dtype)
+            zd = z
 
-        if self.consider_underactuation is True:
-            phi = u
-            B = self.inertia_matrix(q)
-            C = self.coriolis_matrix(q, qd)
-            G = self._gravitational_force(q)
-            tau_el = self.elastic_force(q)
-            if self.consider_hysteresis:
-                tau_hyst = self.hysteresis_force(q, z)
-                tau_el = self.hyst_alpha * tau_el + (1 - self.hyst_alpha) * tau_hyst
-            D = self.damping_matrix(q)
-            alpha = self.actuation_force(q, phi)
-
-        else:
-            B = self.inertia_matrix(q)
-            C = self.coriolis_matrix(q, qd)
-            G = self._gravitational_force(q)
-            tau_el = self.elastic_force(q)
-            if self.consider_hysteresis:
-                tau_hyst = self.hysteresis_force(q, z)
-                tau_el = self.hyst_alpha * tau_el + (1 - self.hyst_alpha) * tau_hyst
-            D = self.damping_matrix(q)
-
-            phi = jnp.zeros((self.num_segments * self.num_rods_per_segment,))
-
-            alpha = u
-
-        qdd = jnp.linalg.solve(
-            B, -C @ qd - G - tau_el - D @ qd + alpha + tau_ext
-        )  # Compute the acceleration
-
+        tau_u = self.actuation_force(q, u) if self.consider_underactuation else jnp.asarray(u)
         if self.consider_hysteresis:
-            yd = jnp.concatenate([qd, qdd, zd])
+            tau_el_full = self._stiffness_full_vector(q)
+            tau_hyst_full = self.Shat() @ (self.hysteresis_basis @ z)
+            tau_el = self.B_xi.T @ (
+                self.hysteresis_alpha * tau_el_full
+                + (1.0 - self.hysteresis_alpha) * tau_hyst_full
+            )
         else:
-            yd = jnp.concatenate([qd, qdd])
-
-        return yd
+            tau_el = self.elastic_force(q)
+        B, Cqd, G = self.dynamics_terms(q, qd)
+        qdd = jnp.linalg.solve(
+            B, tau_u + tau_ext - Cqd - G - tau_el - self.damping_matrix(q) @ qd
+        )
+        return (
+            jnp.concatenate((qd, qdd, zd))
+            if self.consider_hysteresis
+            else jnp.concatenate((qd, qdd))
+        )

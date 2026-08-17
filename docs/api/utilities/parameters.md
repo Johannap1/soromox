@@ -16,8 +16,8 @@ Each system separates dynamic numeric values from static model structure:
 - **Params objects** store JAX arrays that may be optimized, differentiated,
   vmapped, and replaced without changing the PyTree layout.
 - **Structure objects** store static choices such as quadrature counts, active
-  strain masks, GVS joint/basis/cross-section choices, symbolic expression
-  paths, and padding sizes. Changing structure means constructing a new system
+  strain masks, GVS joint/basis/cross-section choices, and padding sizes.
+  Changing structure means constructing a new system
   and may recompile jitted methods.
 - **Spec objects** are ergonomic construction inputs for model families that
   need richer setup. For GVS, `GVSSegment`, `LinkSpec`, `JointSpec`, and
@@ -185,7 +185,7 @@ and mechanical parameters use immutable component updates.
 The public static objects are named `PCSStructure`, `GVSStructure`, and
 `PlanarHSAStructure`. `Topology` was considered, but it is too narrow for
 objects that also contain quadrature counts, active strain masks, basis padding,
-and symbolic evaluation choices. `Layout` was also considered, but it reads as
+and numerical evaluation choices. `Layout` was also considered, but it reads as
 array-shape-only. `Structure` is the least misleading umbrella for static model
 choices that affect compilation.
 

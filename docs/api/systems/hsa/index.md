@@ -15,16 +15,16 @@ HSA systems model soft robots that use handed shearing auxetics - materials that
 
 ### [Planar HSA](planar-hsa.md)
 
-Planar HSA soft robots with symbolic computation.
+Planar HSA soft robots with JAX-native numerical computation.
 
-- Piecewise constant strain with symbolic Cosserat rod model
+- Piecewise constant strain with numerical Cosserat rod model
 - Support for hysteresis modeling via Bouc-Wen model
-- Precompiled lambda functions for efficient evaluation
+- Fixed Gauss-Legendre quadrature for differentiable evaluation
 - Multiple physical rods per segment
 
 ## Key Features
 
-- **Symbolic Derivation**: Uses SymPy for symbolic computation of kinematics and dynamics
+- **Numeric PCS integration**: Builds on the planar PCS propagation and dynamics interfaces
 - **Hysteresis Support**: Optional Bouc-Wen hysteresis model for accurate material behavior
 - **Multi-Rod Segments**: Multiple physical rods per virtual backbone segment
 - **Platform Modeling**: Includes platform kinematics between segments

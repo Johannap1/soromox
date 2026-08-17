@@ -109,12 +109,10 @@ classifiers = [  # Optional
 # https://packaging.python.org/discussions/install-requires-vs-requirements/
 dependencies = [
   "diffrax>=0.7.2",
-  "dill",
   "equinox",
   "jax>=0.10.0",
   "numpy",
   "scipy",
-  "sympy",
   "tqdm",
 ]
 
@@ -276,11 +274,6 @@ include-package-data = false
 [tool.setuptools.packages.find]
 where = ["src"]  # list of folders that contain the packages (["."] by default)
 # exclude = ["build", "examples", "tests"]
-# If there are data files included in your packages that need to be
-# installed, specify them here.
-[tool.setuptools.package-data]
-soromox = ["symbolic_expressions/*.dill"]
-
 [tool.check-manifest]
 # The PyPI source distribution intentionally contains the installable package
 # and packaging metadata, not the repository's research data, examples, docs,

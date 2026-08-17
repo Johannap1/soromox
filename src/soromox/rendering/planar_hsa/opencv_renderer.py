@@ -113,10 +113,10 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
         h, w = self.height, self.width
 
         # Pixel per meter
-        ppm = h / (2.0 * jnp.sum(robot.lpc + robot.L + robot.ldc))
+        ppm = h / (2.0 * jnp.sum(robot.proximal_cap_length + robot.L + robot.distal_cap_length))
 
         # Arc-length points
-        s_ps = jnp.linspace(0, robot.Lmax, self.num_points)
+        s_ps = jnp.linspace(0, robot.length, self.num_points)
 
         # Get poses
         chiv_ps = self._batched_fk_backbone(q, s_ps)  # virtual backbone
@@ -164,15 +164,15 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
         # Add proximal and distal cap points to backbone
         chiv_ps = jnp.concatenate(
             [
-                (chiv_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
+                (chiv_ps[:, 0] - jnp.array([0.0, 0.0, robot.proximal_cap_length[0]])).reshape(3, 1),
                 chiv_ps,
                 (
                     chiv_ps[:, -1]
                     + jnp.array(
                         [
                             chiv_ps[0, -1],
-                            -jnp.sin(chiv_ps[0, -1]) * robot.ldc[-1],
-                            jnp.cos(chiv_ps[0, -1]) * robot.ldc[-1],
+                            -jnp.sin(chiv_ps[0, -1]) * robot.distal_cap_length[-1],
+                            jnp.cos(chiv_ps[0, -1]) * robot.distal_cap_length[-1],
                         ]
                     )
                 ).reshape(3, 1),
@@ -191,15 +191,15 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
         # Add cap points to left rod
         chiL_ps = jnp.concatenate(
             [
-                (chiL_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
+                (chiL_ps[:, 0] - jnp.array([0.0, 0.0, robot.proximal_cap_length[0]])).reshape(3, 1),
                 chiL_ps,
                 (
                     chiL_ps[:, -1]
                     + jnp.array(
                         [
                             chiL_ps[0, -1],
-                            -jnp.sin(chiL_ps[0, -1]) * robot.ldc[-1],
-                            jnp.cos(chiL_ps[0, -1]) * robot.ldc[-1],
+                            -jnp.sin(chiL_ps[0, -1]) * robot.distal_cap_length[-1],
+                            jnp.cos(chiL_ps[0, -1]) * robot.distal_cap_length[-1],
                         ]
                     )
                 ).reshape(3, 1),
@@ -218,15 +218,15 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
         # Add cap points to right rod
         chiR_ps = jnp.concatenate(
             [
-                (chiR_ps[:, 0] - jnp.array([0.0, 0.0, robot.lpc[0]])).reshape(3, 1),
+                (chiR_ps[:, 0] - jnp.array([0.0, 0.0, robot.proximal_cap_length[0]])).reshape(3, 1),
                 chiR_ps,
                 (
                     chiR_ps[:, -1]
                     + jnp.array(
                         [
                             chiR_ps[0, -1],
-                            -jnp.sin(chiR_ps[0, -1]) * robot.ldc[-1],
-                            jnp.cos(chiR_ps[0, -1]) * robot.ldc[-1],
+                            -jnp.sin(chiR_ps[0, -1]) * robot.distal_cap_length[-1],
+                            jnp.cos(chiR_ps[0, -1]) * robot.distal_cap_length[-1],
                         ]
                     )
                 ).reshape(3, 1),
@@ -252,16 +252,16 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
                 ]
             )
             platform_llc = chip_ps[i, :] + platform_R @ jnp.array(
-                [0, -robot.pcudim[i, 0] / 2, -robot.pcudim[i, 1] / 2]
+                [0, -robot.platform_dimension[i, 0] / 2, -robot.platform_dimension[i, 1] / 2]
             )
             platform_ulc = chip_ps[i, :] + platform_R @ jnp.array(
-                [0, -robot.pcudim[i, 0] / 2, +robot.pcudim[i, 1] / 2]
+                [0, -robot.platform_dimension[i, 0] / 2, +robot.platform_dimension[i, 1] / 2]
             )
             platform_urc = chip_ps[i, :] + platform_R @ jnp.array(
-                [0, +robot.pcudim[i, 0] / 2, +robot.pcudim[i, 1] / 2]
+                [0, +robot.platform_dimension[i, 0] / 2, +robot.platform_dimension[i, 1] / 2]
             )
             platform_lrc = chip_ps[i, :] + platform_R @ jnp.array(
-                [0, +robot.pcudim[i, 0] / 2, -robot.pcudim[i, 1] / 2]
+                [0, +robot.platform_dimension[i, 0] / 2, -robot.platform_dimension[i, 1] / 2]
             )
             platform_curve = jnp.stack(
                 [platform_llc, platform_ulc, platform_urc, platform_lrc, platform_llc],
