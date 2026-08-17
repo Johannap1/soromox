@@ -32,7 +32,6 @@ are family-local:
 |---------------|----------------|-------------------|--------------------|
 | PCS | `soromox.systems.pcs.params` | `soromox.systems.pcs.structures` | - |
 | GVS | `soromox.systems.gvs.params` | `soromox.systems.gvs.structures` | `soromox.systems.gvs.specs` |
-| PCS (including HSA) | `soromox.systems.pcs.params` | `soromox.systems.pcs.structures` | - |
 | Pendulum | `soromox.systems.pendulum.params` | - | - |
 | Articulated | `soromox.systems.articulated.params` | - | - |
 
