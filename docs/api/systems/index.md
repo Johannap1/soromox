@@ -65,7 +65,7 @@ SoRoMoX organizes systems into the following categories:
 | Category | Description | Dimension |
 |----------|-------------|-----------|
 | [Articulated Systems](articulated/index.md) | Planar and spatial articulated chains, including compliant joints and tendon actuation | 2D & 3D |
-| [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots, including HSA | 2D & 3D |
+| [PCS Systems](pcs/index.md) | Piecewise Constant Strain continuum robots, including PlanarHSA | 2D & 3D |
 | [GVS Systems](gvs/index.md) | Geometric Variable Strain robots | 3D |
 
 ## System Summary

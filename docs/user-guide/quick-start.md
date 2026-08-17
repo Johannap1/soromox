@@ -164,7 +164,7 @@ from soromox.systems import (
 # For spatial articulated soft robots
 robot = ArticulatedSoftRobot(params=ArticulatedSoftRobotParams(...))
 
-# For soft continuum robots (PCS, GVS, HSA)
+# For soft continuum robots (PCS or GVS; PlanarHSA is a PCS variant)
 robot = PCS(params=PCSParams(...))
 ```
 

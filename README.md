@@ -62,7 +62,7 @@ Following the model organization in Table II of the paper:
 | Model family | Planar implementation | Actuation modalities | Example instantiations |
 | --- | --- | --- | --- |
 | Articulated soft robot | [Soft pendulum](https://github.com/tud-phi/soromox/tree/main/examples/simulation/pendulum) | Generalized-coordinate (joint-torque), articulated-tendon, and McKibben actuation | [UMArm](https://tud-phi.github.io/soromox/api/systems/articulated/mckibben-umarm/) |
-| Piecewise constant strain (PCS) | [Planar PCS](https://github.com/tud-phi/soromox/blob/main/examples/simulation/pcs/simulate_planar_pcs.py) | Generalized-strain, threadlike, and functional-metamaterial (HSA) actuation | [I-SUPPORT](https://tud-phi.github.io/soromox/api/systems/pcs/isupport/) and [planar HSA](https://tud-phi.github.io/soromox/api/systems/hsa/planar-hsa/) |
+| Piecewise constant strain (PCS) | [Planar PCS](https://github.com/tud-phi/soromox/blob/main/examples/simulation/pcs/simulate_planar_pcs.py) | Generalized-strain, threadlike, and functional-metamaterial (HSA) actuation | [I-SUPPORT](https://tud-phi.github.io/soromox/api/systems/pcs/isupport/) and [planar HSA](https://tud-phi.github.io/soromox/api/systems/pcs/planar-hsa/) |
 | Geometric variable strain (GVS) | — | Generalized-coordinate and threadlike actuation | [Tapered cable-driven soft tentacle](https://github.com/tud-phi/soromox/blob/main/examples/simulation/gvs/simulate_tendon_actuated_gvs.py) |
 
 ## Installation
