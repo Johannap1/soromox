@@ -10,7 +10,12 @@ __all__ = ["skew", "vee", "exp", "log"]
 import jax.numpy as jnp
 from jax import Array, lax
 
-from soromox.utils._numerics import eps_for_dtype
+from soromox.utils.numerics import eps_for_dtype, safe_norm, safe_sqrt
+
+from .jacobian_coefficients import (
+    one_minus_cosine_over_angle_squared,
+    sine_over_angle,
+)
 
 
 def _rotation_magnitude(omega: Array, eps: float | Array) -> Array:
@@ -28,12 +33,11 @@ def _rotation_magnitude(omega: Array, eps: float | Array) -> Array:
         Scalar array containing the regularized rotation angle.
     """
     theta_sq = jnp.dot(omega, omega)
-    return lax.cond(
-        theta_sq <= eps**2,
-        lambda _: jnp.zeros((), dtype=omega.dtype),
-        lambda _: jnp.sqrt(theta_sq),
-        operand=None,
-    )
+    eps_arr = jnp.asarray(eps, dtype=omega.dtype)
+    small = theta_sq <= eps_arr**2
+    theta_sq_safe = jnp.where(small, jnp.ones_like(theta_sq), theta_sq)
+    theta_regular = jnp.sqrt(theta_sq_safe)
+    return jnp.where(small, jnp.zeros_like(theta_sq), theta_regular)
 
 
 def vee(matrix: Array) -> Array:
@@ -73,9 +77,9 @@ def _normalize_vector(vec: Array, eps: float | Array) -> Array:
         Vector with shape ``(3,)``. Nonzero vectors are unit length; near-zero
         vectors remain finite.
     """
-    norm = jnp.linalg.norm(vec)
-    safe_norm = jnp.where(norm > eps, norm, jnp.ones((), dtype=vec.dtype))
-    return jnp.where(norm > eps, vec / safe_norm, vec)
+    norm = safe_norm(vec)
+    denominator = jnp.where(norm > eps, norm, jnp.ones((), dtype=vec.dtype))
+    return jnp.where(norm > eps, vec / denominator, vec)
 
 
 def _axis_near_pi(R: Array, eps: float | Array) -> Array:
@@ -97,7 +101,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
     """
 
     def _x_axis(_: None) -> Array:
-        x = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[0, 0] - R[1, 1] - R[2, 2]))
+        x = 0.5 * safe_sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
         denom = jnp.maximum(4.0 * x, eps)
         return jnp.array(
             [x, (R[0, 1] + R[1, 0]) / denom, (R[0, 2] + R[2, 0]) / denom],
@@ -105,7 +109,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
         )
 
     def _y_axis(_: None) -> Array:
-        y = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[1, 1] - R[0, 0] - R[2, 2]))
+        y = 0.5 * safe_sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
         denom = jnp.maximum(4.0 * y, eps)
         return jnp.array(
             [(R[0, 1] + R[1, 0]) / denom, y, (R[1, 2] + R[2, 1]) / denom],
@@ -113,7 +117,7 @@ def _axis_near_pi(R: Array, eps: float | Array) -> Array:
         )
 
     def _z_axis(_: None) -> Array:
-        z = 0.5 * jnp.sqrt(jnp.maximum(0.0, 1.0 + R[2, 2] - R[0, 0] - R[1, 1]))
+        z = 0.5 * safe_sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
         denom = jnp.maximum(4.0 * z, eps)
         return jnp.array(
             [(R[0, 2] + R[2, 0]) / denom, (R[1, 2] + R[2, 1]) / denom, z],
@@ -173,19 +177,15 @@ def exp(omega: Array, eps: float | Array = 1e-10) -> Array:
     omega = jnp.asarray(omega).reshape(-1)
     theta = _rotation_magnitude(omega, eps)
     omega_hat = skew(omega)
+    return _exp_from_skew(omega_hat, theta, eps)
+
+
+def _exp_from_skew(omega_hat: Array, theta: Array, eps: float | Array) -> Array:
+    """Evaluate Rodrigues' formula from a precomputed skew matrix and angle."""
     omega_hat_sq = omega_hat @ omega_hat
-
-    def _series(_: None) -> Array:
-        return jnp.eye(3, dtype=omega.dtype) + omega_hat + 0.5 * omega_hat_sq
-
-    def _general(theta_val: Array) -> Array:
-        return (
-            jnp.eye(3, dtype=omega.dtype)
-            + (jnp.sin(theta_val) / theta_val) * omega_hat
-            + ((1.0 - jnp.cos(theta_val)) / theta_val**2) * omega_hat_sq
-        )
-
-    return lax.cond(theta <= eps, _series, _general, theta)
+    sinc = sine_over_angle(theta, eps)
+    cosc = one_minus_cosine_over_angle_squared(theta, eps)
+    return jnp.eye(3, dtype=omega_hat.dtype) + sinc * omega_hat + cosc * omega_hat_sq
 
 
 def log(R: Array, eps: float | Array = 1e-10) -> Array:
@@ -214,11 +214,12 @@ def log(R: Array, eps: float | Array = 1e-10) -> Array:
 
     cos_theta = jnp.clip((trace_R - 1.0) * 0.5, -1.0, 1.0)
     skew_norm_sq = jnp.dot(skew_vec, skew_vec)
-    sin_theta = 0.5 * lax.cond(
-        skew_norm_sq <= eps_arr**2,
-        lambda _: jnp.zeros((), dtype=R.dtype),
-        lambda _: jnp.sqrt(skew_norm_sq),
-        operand=None,
+    small_sine = skew_norm_sq <= eps_arr**2
+    skew_norm_sq_safe = jnp.where(
+        small_sine, jnp.ones_like(skew_norm_sq), skew_norm_sq
+    )
+    sin_theta = 0.5 * jnp.where(
+        small_sine, jnp.zeros_like(skew_norm_sq), jnp.sqrt(skew_norm_sq_safe)
     )
     theta = jnp.arctan2(sin_theta, cos_theta)
     pi = jnp.asarray(jnp.pi, dtype=R.dtype)
@@ -230,7 +231,10 @@ def log(R: Array, eps: float | Array = 1e-10) -> Array:
         return 0.5 * skew_vec
 
     def _regular(_: None) -> Array:
-        scale = theta / (2.0 * jnp.sin(theta))
+        sine_safe = jnp.where(
+            theta <= small_threshold, jnp.ones_like(theta), jnp.sin(theta)
+        )
+        scale = theta / (2.0 * sine_safe)
         return scale * skew_vec
 
     def _large(_: None) -> Array:

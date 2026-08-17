@@ -9,12 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Reverse-mode-safe numerical primitives, strict singularity diagnostics, and
+  pytree finiteness reporting for locating and handling degenerate model
+  configurations.
+- Public, dtype-aware ``jacobian_coefficients`` for forward and inverse
+  Lie-group Jacobians, together with a reproducible Lie-algebra benchmark
+  covering primal, Jacobian, Hessian, and analytic constant-strain derivative
+  paths.
+- Public ``constant_strain.se2.operators`` and
+  ``constant_strain.se3.operators`` bundles with a fixed named result for
+  callers that need adjoints, tangents, and an optional analytic tangent
+  derivative at the same strain and arclength.
+- Public ``se2`` and ``se3`` left Jacobians and analytic directional
+  derivatives for accumulated Lie-algebra coordinates, independent of any
+  constant-strain rod interpretation.
+
 ### Changed
+
+- Reworked ``SO(3)``, ``SE(2)``, and ``SE(3)`` exponential/logarithmic maps,
+  constant-strain adjoint and tangent operators, and PlanarPCS pose integration
+  around stable closed forms and high-order near-zero series. Constant-strain
+  tangent derivatives remain explicit analytic production paths; runtime
+  autodiff is used only as a test oracle.
+- Organized constant-strain operators into dedicated ``se2`` and ``se3``
+  modules with unsuffixed names. General left-Jacobian machinery now belongs
+  to the rigid-body Lie-algebra modules; the constant-strain package retains
+  arclength scaling, prepared powers, rod-specific adjoints, and the shared
+  ``ConstantStrainOperators`` result.
+- Fused repeated constant-strain operator evaluation in PlanarPCS, PCS, and
+  GVS. The planar path uses direct SE(2) blocks; the spatial operators share
+  exact fourth-order matrix powers and tangent coefficients. PCS additionally
+  prepares arclength-independent powers once per segment, assembles transported
+  tangents directly, and propagates the contracted ``Jd @ qd`` needed by
+  forward dynamics instead of materializing unused matrices. PlanarPCS and GVS
+  now use the same contracted-derivative strategy in their dynamics-only
+  recurrences while preserving full Jacobian derivatives in public kinematics.
+- Replaced generated symbolic PlanarHSA expressions with a JAX-native
+  PlanarPCS implementation, reusing shared planar kinematics, Jacobians,
+  quadrature, and dynamics; migrated parameter files to the ``xi_ref`` schema
+  and removed the obsolete symbolic and legacy-parameter modules.
+- Compared with ``main`` on CPU/JAX 0.11.0 across five fresh processes, the
+  40-case Lie benchmark reduced geometric-mean steady-state and compile time by
+  24.3% and 5.3%. A fresh raw before/after table is reported in this PR for
+  PlanarPCS, PCS, and GVS.
 
 - Updated the dependency metadata and lockfile for a CUDA 13-enabled JAX and
   PyTorch stack, and declared `ipywidgets` with the optional Open3D extras.
 
 ### Fixed
+
+- Kept values and reverse-mode gradients finite at degenerate normalization,
+  division, square-root, inverse-kinematics, and thread-routing sites across
+  PCS, GVS, Planar HSA, articulated, McKibben, rotation, and reference-trajectory
+  code paths.
+- Sanitized inactive square-root and quotient inputs in SO(3)/SE(3) magnitude
+  and quaternion-conversion branches, preventing batched selection from
+  exposing NaNs under nested JVP/reverse-mode transforms; the SoftRobot
+  forward-kinematics and spatial-Jacobian regressions from PR #148 now pass.
+- Kept Lie exponential/logarithmic values, first derivatives, and Hessians
+  finite and accurate at zero and small rotations, including batched SE(2) and
+  arbitrary-axis SE(3) inputs, without adding autodiff to production paths.
+- Made simulation benchmark timing treat Python solver/save parameters as static
+  JAX arguments so the existing rollout benchmark can compile and run.
 
 ## [0.2.2] - 2026-08-11
 

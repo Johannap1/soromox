@@ -3,6 +3,7 @@ import pytest
 from jax import numpy as jnp
 from numpy.testing import assert_allclose
 
+from soromox.autodiff import strict_singularities_mode
 from soromox.utils.lie_algebra import so2, so3
 from soromox.utils.tolerance import Tolerance
 
@@ -12,6 +13,24 @@ jax.config.update("jax_enable_x64", True)
 RTOL = Tolerance.rtol()
 ATOL = Tolerance.atol()
 EPS = float(jnp.finfo(jnp.float64).eps)
+
+
+def _nested_grad_of_vmap(fn, singular, regular, tangent):
+    values = jnp.stack([singular, regular])
+    return jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(
+                lambda value: jnp.sum(jax.jvp(fn, (value,), (tangent,))[1])
+            )(batch)
+        )
+    )(values)
+
+
+def test_strict_mode_exposes_exp_quotient_at_zero():
+    with strict_singularities_mode():
+        result = so3.exp(jnp.zeros(3), 0.0)
+
+    assert not jnp.isfinite(result).all()
 
 
 def test_skew_so3_matches_z_axis_planar_generator():
@@ -117,3 +136,33 @@ def test_log_so3_is_forward_and_reverse_mode_autodiff_finite(omega):
 
     assert jnp.isfinite(jac_fwd).all()
     assert jnp.isfinite(jac_rev).all()
+
+
+@pytest.mark.parametrize(
+    ("name", "fn", "singular", "regular", "tangent"),
+    [
+        (
+            "so3.exp",
+            lambda omega: so3.exp(omega, EPS),
+            jnp.zeros(3),
+            jnp.array([0.3, -0.2, 0.1]),
+            jnp.array([0.1, 0.2, 0.3]),
+        ),
+        (
+            "so3.log",
+            lambda R: so3.log(R, EPS),
+            jnp.eye(3),
+            so3.exp(jnp.array([0.3, -0.2, 0.1]), EPS),
+            so3.skew(jnp.array([0.1, 0.2, 0.3])),
+        ),
+    ],
+    ids=["so3.exp", "so3.log"],
+)
+def test_nested_grad_of_vmap_is_finite_at_so3_branch_points(
+    name, fn, singular, regular, tangent
+):
+    gradient = _nested_grad_of_vmap(fn, singular, regular, tangent)
+
+    assert jnp.isfinite(gradient).all(), (
+        f"{name} produced a non-finite nested batched gradient"
+    )

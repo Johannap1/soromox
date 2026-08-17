@@ -1308,6 +1308,18 @@ def test_integration_kinematics_matches_existing_batched_path(
     assert_allclose(J_quads, J_expected, rtol=RTOL, atol=ATOL)
     assert_allclose(Jd_quads, Jd_expected, rtol=RTOL, atol=ATOL)
 
+    _, g_convective, J_convective, Jd_qd = model._integration_kinematics(
+        q, qd, convective_only_jd=True
+    )
+    assert_allclose(g_convective, g_quads, rtol=RTOL, atol=ATOL)
+    assert_allclose(J_convective, J_quads, rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        Jd_qd,
+        jnp.einsum("...ij,j->...i", Jd_quads, qd),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
 
 @pytest.mark.parametrize("num_segments", [1, 3])
 @pytest.mark.parametrize(
@@ -1955,6 +1967,116 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration(
     assert not jnp.isnan(dU_dq).any(), "dU/dq contains NaN!"
     assert not jnp.isnan(dE_dq).any(), "dE/dq contains NaN!"
     assert not jnp.isnan(dE_dqd).any(), "dE/dqd contains NaN!"
+
+
+def test_reverse_mode_of_vmap_at_zero_configuration() -> None:
+    """Differentiate a batch that contains the exactly-straight configuration.
+
+    ``vmap`` rewrites the small-angle ``lax.cond`` guards into ``select_n``, a
+    lowering that bare ``jacrev`` never exercises, so this covers a path the
+    other zero-configuration tests cannot reach.
+    """
+    model, _ = make_pcs(num_segments=1, total_length=PCS_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    s_ps = jnp.array([0.5, 1.0]) * PCS_TOTAL_LENGTH
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.zeros((dof,)).at[0].set(0.3)])
+    qd_batch = jnp.zeros_like(q_batch)
+
+    for name, fn in (
+        (
+            "forward_kinematics_batched",
+            lambda q: jnp.sum(model.forward_kinematics_batched(q, s_ps)),
+        ),
+        ("inertia_matrix", lambda q: jnp.sum(model.inertia_matrix(q))),
+        ("gravitational_force", lambda q: jnp.sum(model.gravitational_force(q))),
+        ("elastic_force", lambda q: jnp.sum(model.elastic_force(q))),
+        ("actuation_matrix", lambda q: jnp.sum(model.actuation_matrix(q))),
+    ):
+        grad = jax.grad(lambda batch, fn=fn: jnp.sum(jax.vmap(fn)(batch)))(q_batch)
+        assert not jnp.isnan(grad).any(), f"d(vmap({name}))/dq contains NaN!"
+
+    coriolis = jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(lambda q, qd: jnp.sum(model.coriolis_matrix(q, qd)))(
+                batch, qd_batch
+            )
+        )
+    )(q_batch)
+    assert not jnp.isnan(coriolis).any(), "d(vmap(coriolis_matrix))/dq contains NaN!"
+
+
+def test_reverse_mode_of_vmap_over_jacobian_mixed_jvp_at_zero_configuration() -> None:
+    """The Jacobian custom-JVP mixed fallback stays finite in a batched reverse pass."""
+    model, _ = make_pcs(num_segments=1, total_length=PCS_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    s = model.L_cum[-1]
+    qd = jnp.linspace(0.01, 0.06, dof, dtype=jnp.float64)
+    sd = jnp.asarray(0.07, dtype=jnp.float64)
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.zeros((dof,)).at[0].set(0.3)])
+
+    grad = jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(
+                lambda q: jnp.sum(
+                    jax.jvp(
+                        lambda q_, s_: model.jacobian(q_, s_),
+                        (q, s),
+                        (qd, sd),
+                    )[1]
+                )
+            )(batch)
+        )
+    )(q_batch)
+
+    assert jnp.isfinite(grad).all(), (
+        "d(vmap(jvp(jacobian, q, s)))/dq contains NaN!"
+    )
+
+
+def test_reverse_mode_of_vmap_over_energy_custom_jvps_at_zero_configuration() -> None:
+    """Kinetic and total-energy custom JVPs stay finite in a batched reverse pass."""
+    model, _ = make_pcs(num_segments=1, total_length=PCS_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    qd = jnp.linspace(0.01, 0.06, dof, dtype=jnp.float64)
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.zeros((dof,)).at[0].set(0.3)])
+
+    for name, fn in (
+        ("kinetic_energy", lambda q: model.kinetic_energy(q, qd)),
+        ("gravitational_energy", lambda q: model.gravitational_energy(q)),
+        ("elastic_energy", lambda q: model.elastic_energy(q)),
+        ("potential_energy", lambda q: model.potential_energy(q)),
+        ("total_energy", lambda q: model.total_energy(q, qd)),
+    ):
+        grad = jax.grad(lambda batch, fn=fn: jnp.sum(jax.vmap(fn)(batch)))(q_batch)
+        assert jnp.isfinite(grad).all(), (
+            f"d(vmap({name}))/dq contains NaN!"
+        )
+
+    q = jnp.zeros((dof,))
+    qd_batch = jnp.stack([jnp.zeros_like(qd), qd])
+    for name, fn in (
+        ("kinetic_energy", lambda qd_: model.kinetic_energy(q, qd_)),
+        ("total_energy", lambda qd_: model.total_energy(q, qd_)),
+    ):
+        grad = jax.grad(lambda batch, fn=fn: jnp.sum(jax.vmap(fn)(batch)))(qd_batch)
+        assert jnp.isfinite(grad).all(), (
+            f"d(vmap({name}))/dqd contains NaN!"
+        )
+
+
+def test_reverse_mode_of_vmap_over_forward_kinematics_at_zero_configuration() -> None:
+    model, _ = make_pcs(num_segments=1, total_length=PCS_TOTAL_LENGTH)
+    dof = int(model.num_active_strains.item())
+    s = model.L_cum[-1]
+    q_batch = jnp.stack([jnp.zeros((dof,)), jnp.zeros((dof,)).at[0].set(0.3)])
+
+    grad = jax.grad(
+        lambda batch: jnp.sum(
+            jax.vmap(lambda q: jnp.sum(model.forward_kinematics(q, s)))(batch)
+        )
+    )(q_batch)
+
+    assert not jnp.isnan(grad).any(), "d(vmap(forward_kinematics))/dq contains NaN!"
 
 
 if __name__ == "__main__":

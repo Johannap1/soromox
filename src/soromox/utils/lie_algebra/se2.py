@@ -6,12 +6,21 @@ __all__ = [
     "coadjoint",
     "adjoint",
     "adjoint_inverse",
+    "left_jacobian",
+    "left_jacobian_and_directional_derivative",
+    "left_jacobian_directional_derivative",
 ]
 
 import jax.numpy as jnp
-from jax import Array, lax
+from jax import Array
 
 from . import so2
+from .jacobian_coefficients import (
+    _forward_coefficients_and_x_derivatives,
+    half_angle_cotangent,
+    one_minus_cosine_over_angle_squared,
+    sine_over_angle,
+)
 
 
 def hat(xi: Array) -> Array:
@@ -56,39 +65,37 @@ def exp(xi: Array, eps: float | Array) -> Array:
     Args:
         xi: Planar twist with shape ``(3,)`` or ``(3, 1)`` in
             ``[theta, v_x, v_y]`` order.
-        eps: Small positive scalar threshold. For ``abs(theta) <= eps`` the
-            function uses a truncated Taylor series to avoid singular
-            divisions and keep autodiff finite near zero rotation.
+        eps: Minimum small-angle series threshold. A dtype-aware threshold may
+            select the series over a larger interval to preserve Hessian
+            accuracy near zero rotation.
 
     Returns:
         Homogeneous ``SE(2)`` transform with shape ``(3, 3)``.
     """
+    R, p = _exp_rotation_and_translation(xi, eps)
+
+    return jnp.block(
+        [
+            [R, p.reshape((2, 1))],
+            [jnp.zeros((1, 2), dtype=R.dtype), jnp.ones((1, 1), dtype=R.dtype)],
+        ]
+    )
+
+
+def _exp_rotation_and_translation(xi: Array, eps: float | Array) -> tuple[Array, Array]:
+    """Return the stable rotation and translation blocks of ``exp(xi)``."""
     xi = jnp.asarray(xi).reshape(-1)
-    theta = jnp.abs(xi[0])
-    xi_hat = hat(xi)
+    return so2.exp(xi[0]), _exp_translation(xi, eps)
 
-    costheta = jnp.cos(theta)
-    sintheta = jnp.sin(theta)
 
-    def _series(_: None) -> Array:
-        return (
-            jnp.eye(3, dtype=xi.dtype)
-            + xi_hat
-            + 0.5 * jnp.linalg.matrix_power(xi_hat, 2)
-            + (1.0 / 6.0) * jnp.linalg.matrix_power(xi_hat, 3)
-        )
-
-    def _closed(_: None) -> Array:
-        theta_sq = theta**2
-        theta_cu = theta**3
-        return (
-            jnp.eye(3, dtype=xi.dtype)
-            + xi_hat
-            + ((1 - costheta) / theta_sq) * jnp.linalg.matrix_power(xi_hat, 2)
-            + ((theta - sintheta) / theta_cu) * jnp.linalg.matrix_power(xi_hat, 3)
-        )
-
-    return lax.cond(theta <= eps, _series, _closed, operand=None)
+def _exp_translation(xi: Array, eps: float | Array) -> Array:
+    """Return the stable translation block of ``exp(xi)``."""
+    xi = jnp.asarray(xi).reshape(-1)
+    theta = xi[0]
+    v = xi[1:]
+    sinc = sine_over_angle(theta, eps)
+    theta_cosc = theta * one_minus_cosine_over_angle_squared(theta, eps)
+    return jnp.stack([sinc * v[0] - theta_cosc * v[1], theta_cosc * v[0] + sinc * v[1]])
 
 
 def log(g: Array, eps: float | Array) -> Array:
@@ -104,8 +111,9 @@ def log(g: Array, eps: float | Array) -> Array:
     Args:
         g: Homogeneous ``SE(2)`` transform with shape ``(3, 3)``. The rotation
             is read from ``g[:2, :2]`` and the translation from ``g[:2, 2]``.
-        eps: Small positive scalar threshold. Angles with magnitude below this
-            threshold use the small-angle inverse-Jacobian series.
+        eps: Small positive scalar threshold forwarded to :func:`so2.log`.
+            Recovered angles with magnitude below this threshold are rounded
+            to zero.
 
     Returns:
         Array with shape ``(3,)`` containing twist coordinates
@@ -116,18 +124,9 @@ def log(g: Array, eps: float | Array) -> Array:
 
     theta = so2.log(R, eps=eps)
     J = so2.skew(jnp.ones((), dtype=R.dtype))
-    omega = so2.skew(theta)
-
-    def _small(_: None) -> Array:
-        omega_sq = omega @ omega
-        return jnp.eye(2, dtype=R.dtype) - 0.5 * omega + (1.0 / 12.0) * omega_sq
-
-    def _general(_: None) -> Array:
-        a = jnp.sin(theta) / theta
-        b = (1.0 - jnp.cos(theta)) / theta
-        return (a * jnp.eye(2, dtype=R.dtype) - b * J) / (a**2 + b**2)
-
-    V_inv = lax.cond(jnp.abs(theta) <= eps, _small, _general, operand=None)
+    half_theta = 0.5 * theta
+    half_theta_cotangent = half_angle_cotangent(theta)
+    V_inv = half_theta_cotangent * jnp.eye(2, dtype=R.dtype) - half_theta * J
     v = V_inv @ p
 
     return jnp.concatenate([jnp.array([theta], dtype=R.dtype), v.reshape(-1)])
@@ -159,6 +158,238 @@ def small_adjoint(xi: Array) -> Array:
             jnp.concatenate([-J @ v, omega * J], axis=1),
         ]
     )
+
+
+def _left_jacobian_cutoff(eps: float | Array, dtype: jnp.dtype) -> Array:
+    """Return the stable cutoff for full SE(2) Jacobian derivatives.
+
+    The requested threshold is combined with a dtype-aware derivative
+    threshold. This keeps the scalar coefficient and derivative formulas on
+    their stable series branch when the requested cutoff is too small for the
+    available floating-point precision.
+
+    Args:
+        eps: Requested non-negative dimensionless small-angle threshold.
+        dtype: JAX floating-point dtype used for the returned cutoff.
+
+    Returns:
+        Scalar array with ``dtype`` containing the effective cutoff.
+    """
+    requested = jnp.abs(jnp.asarray(eps, dtype=dtype))
+    derivative_threshold = jnp.asarray(
+        jnp.finfo(dtype).eps ** (1.0 / 14.0), dtype=dtype
+    )
+    return jnp.maximum(requested, derivative_threshold)
+
+
+def _left_jacobian_coefficients_and_x_derivatives(
+    theta: Array, eps: float | Array
+) -> tuple[tuple[Array, Array, Array], tuple[Array, Array, Array]]:
+    r"""Return stable SE(2) left-Jacobian coefficients and derivatives.
+
+    The coefficients are the scalar functions used to assemble
+    ``J_l([theta, v])``. The derivative tuple contains their derivatives with
+    respect to ``x = theta**2`` rather than with respect to ``theta``; the
+    assembly helper applies the remaining chain rule.
+
+    Args:
+        theta: Scalar planar rotation coordinate in accumulated twist units.
+        eps: Requested non-negative dimensionless small-angle threshold.
+
+    Returns:
+        Tuple ``(coefficients, x_derivatives)``. ``coefficients`` is the
+        triple ``(sinc(theta), cosc(theta), tanc(theta))`` and
+        ``x_derivatives`` contains the corresponding derivatives with respect
+        to ``theta**2``.
+    """
+    cutoff = _left_jacobian_cutoff(eps, theta.dtype)
+    return _forward_coefficients_and_x_derivatives(theta, cutoff)
+
+
+def _left_jacobian_from_coefficients(
+    xi: Array,
+    theta: Array,
+    coefficients: tuple[Array, Array, Array],
+) -> Array:
+    """Assemble an SE(2) left Jacobian from stable scalar coefficients.
+
+    Args:
+        xi: Planar accumulated twist with shape ``(3,)`` in
+            ``[theta, v_x, v_y]`` order.
+        theta: Rotational coordinate ``xi[0]``.
+        coefficients: Triple ``(sinc, cosc, tanc)`` evaluated at ``theta``.
+
+    Returns:
+        Array with shape ``(3, 3)`` containing the left Jacobian in the
+        angular-first planar twist basis.
+    """
+    sinc, cosc, tanc = coefficients
+    v = xi[1:]
+    minus_j_v = jnp.stack([v[1], -v[0]])
+    theta_cosc = theta * cosc
+    theta_tanc = theta * tanc
+    lower_left = cosc * minus_j_v + theta_tanc * v
+    zero = jnp.zeros((), dtype=xi.dtype)
+    one = jnp.ones((), dtype=xi.dtype)
+    return jnp.stack(
+        [
+            jnp.stack([one, zero, zero]),
+            jnp.stack([lower_left[0], sinc, -theta_cosc]),
+            jnp.stack([lower_left[1], theta_cosc, sinc]),
+        ]
+    )
+
+
+def _left_jacobian_derivative_from_coefficients(
+    xi: Array,
+    xid: Array,
+    theta: Array,
+    coefficients: tuple[Array, Array, Array],
+    derivatives: tuple[Array, Array, Array],
+) -> Array:
+    """Assemble ``D J_l(xi)[xid]`` from analytic scalar derivatives.
+
+    Args:
+        xi: Planar accumulated twist with shape ``(3,)`` in
+            ``[theta, v_x, v_y]`` order.
+        xid: Direction with the same shape and coordinate order as ``xi``.
+        theta: Rotational coordinate ``xi[0]``.
+        coefficients: Triple ``(sinc, cosc, tanc)`` evaluated at ``theta``.
+        derivatives: Derivatives of those coefficients with respect to
+            ``theta**2``.
+
+    Returns:
+        Array with shape ``(3, 3)`` containing the directional derivative of
+        the left Jacobian along ``xid``.
+    """
+    sinc, cosc, tanc = coefficients
+    sinc_x, cosc_x, tanc_x = derivatives
+    v = xi[1:]
+    vd = xid[1:]
+    minus_j_v = jnp.stack([v[1], -v[0]])
+    minus_j_vd = jnp.stack([vd[1], -vd[0]])
+    theta_dot = xid[0]
+    x = theta**2
+    sinc_dot = 2.0 * theta * sinc_x * theta_dot
+    cosc_dot = 2.0 * theta * cosc_x * theta_dot
+    theta_cosc_dot = theta_dot * (cosc + 2.0 * x * cosc_x)
+    theta_tanc = theta * tanc
+    theta_tanc_dot = theta_dot * (tanc + 2.0 * x * tanc_x)
+    lower_left_dot = (
+        cosc_dot * minus_j_v + cosc * minus_j_vd + theta_tanc_dot * v + theta_tanc * vd
+    )
+    zero = jnp.zeros((), dtype=xi.dtype)
+    return jnp.stack(
+        [
+            jnp.stack([zero, zero, zero]),
+            jnp.stack([lower_left_dot[0], sinc_dot, -theta_cosc_dot]),
+            jnp.stack([lower_left_dot[1], theta_cosc_dot, sinc_dot]),
+        ]
+    )
+
+
+def left_jacobian(xi: Array, eps: float | Array) -> Array:
+    r"""Return the left Jacobian of the :math:`SE(2)` exponential.
+
+    For an accumulated planar twist ``xi``, this evaluates
+
+    .. math::
+
+        J_l(\xi) = \int_0^1
+        \exp(\sigma\,\operatorname{ad}_\xi)\,d\sigma.
+
+    The operation is intrinsic to ``SE(2)`` and does not assume that ``xi``
+    came from a constant-strain rod segment.
+
+    The angular-first convention makes the first coordinate the accumulated
+    rotation and the remaining coordinates the accumulated translation. The
+    result is a coordinate Jacobian in the same basis as ``xi``; it is not an
+    arclength-scaled constant-strain tangent operator.
+
+    Args:
+        xi: Accumulated planar twist with shape ``(3,)`` or ``(3, 1)`` in
+            ``[theta, v_x, v_y]`` order.
+        eps: Minimum dimensionless small-angle threshold for the stable
+            coefficient series. The implementation also applies a
+            dtype-aware threshold so first and higher derivatives remain
+            finite near zero.
+
+    Returns:
+        Left Jacobian with shape ``(3, 3)``.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    theta = xi[0]
+    coefficients, _ = _left_jacobian_coefficients_and_x_derivatives(theta, eps)
+    return _left_jacobian_from_coefficients(xi, theta, coefficients)
+
+
+def left_jacobian_directional_derivative(
+    xi: Array, xid: Array, eps: float | Array
+) -> Array:
+    r"""Return ``D J_l(xi)[xid]`` for the :math:`SE(2)` left Jacobian.
+
+    ``xid`` is an arbitrary direction in the Lie algebra; it need not be a
+    physical time derivative or a constant-strain rate.
+
+    This is the Fréchet derivative of the full matrix-valued function
+    ``left_jacobian`` along ``xid``. Both the rotational and translational
+    components of ``xid`` contribute to the result.
+
+    Args:
+        xi: Accumulated planar twist with shape ``(3,)`` or ``(3, 1)`` in
+            ``[theta, v_x, v_y]`` order.
+        xid: Direction with the same shape and coordinate order as ``xi``.
+            It is interpreted as a directional derivative, not necessarily a
+            physical time derivative.
+        eps: Minimum dimensionless small-angle threshold for the stable
+            coefficient series.
+
+    Returns:
+        Directional derivative with shape ``(3, 3)``.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    xid = jnp.asarray(xid).reshape(-1)
+    theta = xi[0]
+    coefficients, derivatives = _left_jacobian_coefficients_and_x_derivatives(
+        theta, eps
+    )
+    return _left_jacobian_derivative_from_coefficients(
+        xi, xid, theta, coefficients, derivatives
+    )
+
+
+def left_jacobian_and_directional_derivative(
+    xi: Array, xid: Array, eps: float | Array
+) -> tuple[Array, Array]:
+    r"""Evaluate ``J_l(xi)`` and ``D J_l(xi)[xid]`` with shared work.
+
+    This bundle is numerically equivalent to calling
+    :func:`left_jacobian` and
+    :func:`left_jacobian_directional_derivative` separately, but reuses the
+    scalar coefficients needed by both evaluations. Use it when both the
+    Jacobian and its directional derivative are required at the same point.
+
+    Args:
+        xi: Accumulated planar twist with shape ``(3,)`` or ``(3, 1)`` in
+            ``[theta, v_x, v_y]`` order.
+        xid: Direction with the same shape and coordinate order as ``xi``.
+        eps: Minimum dimensionless small-angle threshold for the stable
+            coefficient series.
+
+    Returns:
+        Tuple ``(J, Jd)`` whose arrays both have shape ``(3, 3)``.
+    """
+    xi = jnp.asarray(xi).reshape(-1)
+    xid = jnp.asarray(xid).reshape(-1)
+    theta = xi[0]
+    coefficients, derivatives = _left_jacobian_coefficients_and_x_derivatives(
+        theta, eps
+    )
+    jacobian = _left_jacobian_from_coefficients(xi, theta, coefficients)
+    jacobian_derivative = _left_jacobian_derivative_from_coefficients(
+        xi, xid, theta, coefficients, derivatives
+    )
+    return jacobian, jacobian_derivative
 
 
 def coadjoint(xi: Array) -> Array:
