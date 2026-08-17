@@ -34,9 +34,7 @@ class PlanarHSAParams(BaseSoftRobotParams):
     rod_outer_radius: Array
     rod_inner_radius: Array
     rod_offset: Array
-    bending_reference: Array
-    shear_reference: Array
-    axial_reference: Array
+    xi_ref: Array
     strain_coupling: Array
     platform_dimension: Array
     rod_density: Array
@@ -108,9 +106,6 @@ class PlanarHSAParams(BaseSoftRobotParams):
             "rod_height",
             "rod_inner_radius",
             "rod_offset",
-            "bending_reference",
-            "shear_reference",
-            "axial_reference",
             "strain_coupling",
             "rod_density",
             "nominal_bending_stiffness",
@@ -130,6 +125,13 @@ class PlanarHSAParams(BaseSoftRobotParams):
                 raise ValueError(
                     f"{name} must have shape {rod_shape}, got {value.shape}."
                 )
+
+        xi_ref = jnp.asarray(self.xi_ref)
+        if xi_ref.shape != rod_shape + (3,):
+            raise ValueError(
+                "xi_ref must have shape "
+                f"{rod_shape + (3,)}, got {xi_ref.shape}."
+            )
 
         per_segment_shapes = {
             "proximal_cap_length": (n_segments,),

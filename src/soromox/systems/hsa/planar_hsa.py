@@ -1,7 +1,6 @@
 from typing import Any
 
 import equinox as eqx
-import jax
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 
@@ -11,7 +10,12 @@ from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
 from soromox.utils.array_math import blk_diag
 from soromox.utils.dof import build_active_dof_basis
-from soromox.utils.integration import gauss_quadrature
+from soromox.utils.geometry import poses
+from soromox.utils.integration import (
+    gauss_quadrature,
+    scale_interior_gaussian_quadrature,
+)
+from soromox.utils.lie_algebra import constant_strain, se2
 
 __all__ = ["PlanarHSA"]
 
@@ -29,9 +33,9 @@ class PlanarHSA(PlanarPCS):
     PlanarHSA reuses the planar PCS layout, SE(2) propagation, fixed
     Gauss--Legendre quadrature, strain selection, and differentiable-system
     interfaces. Kinematics, Jacobians, energies, forces, and forward dynamics
-    are evaluated numerically with JAX and support JIT compilation and
-    autodiff. Optional underactuation maps motor inputs to rod forces, while
-    optional Bouc--Wen hysteresis augments the elastic response.
+    are evaluated numerically with JAX and support JIT compilation.
+    Optional underactuation maps motor inputs to rod forces, while optional
+    Bouc--Wen hysteresis augments the elastic response.
 
     Based on:
         Stölzle, M., Rus, D., & Della Santina, C. (2024). An experimental study
@@ -56,9 +60,7 @@ class PlanarHSA(PlanarPCS):
         proximal_cap_length: Rigid proximal cap lengths.
         distal_cap_length: Rigid distal cap lengths.
         end_effector_offset: End-effector pose offset ``[theta, x, y]``.
-        bending_reference: Reference bending strains per physical rod.
-        shear_reference: Reference shear strains per physical rod.
-        axial_reference: Reference axial strains per physical rod.
+        xi_ref: Reference virtual-backbone strain.
         phi_max: Motor limits for underactuated operation.
         hysteresis_basis: Basis mapping hysteresis states to full strains.
         hysteresis_alpha: Post-yield to pre-yield stiffness ratios.
@@ -80,9 +82,6 @@ class PlanarHSA(PlanarPCS):
     distal_cap_length: Array
     end_effector_offset: Array
     phi_max: Array
-    bending_reference: Array
-    shear_reference: Array
-    axial_reference: Array
     strain_coupling: Array
     rod_height: Array
     rod_outer_radius: Array
@@ -179,7 +178,7 @@ class PlanarHSA(PlanarPCS):
         self.num_dofs = int(self.num_active_strains.item())
 
         self._set_hsa_params(params)
-        self.xi_ref = self.ref_strains()
+        self.xi_ref = self.beta_inv(self._reference_physical_strains())
         self._set_hysteresis(params)
 
         # HSA supplies its own rod material model and therefore has no
@@ -207,9 +206,6 @@ class PlanarHSA(PlanarPCS):
         self.distal_cap_length = jnp.asarray(params.distal_cap_length, dtype=jnp.float64)
         self.end_effector_offset = jnp.asarray(params.end_effector_offset, dtype=jnp.float64)
         self.phi_max = jnp.asarray(params.phi_max, dtype=jnp.float64)
-        self.bending_reference = jnp.asarray(params.bending_reference, dtype=jnp.float64)
-        self.shear_reference = jnp.asarray(params.shear_reference, dtype=jnp.float64)
-        self.axial_reference = jnp.asarray(params.axial_reference, dtype=jnp.float64)
         self.strain_coupling = jnp.asarray(params.strain_coupling, dtype=jnp.float64)
         self.rod_height = jnp.asarray(params.rod_height, dtype=jnp.float64)
         self.rod_outer_radius = jnp.asarray(params.rod_outer_radius, dtype=jnp.float64)
@@ -282,9 +278,6 @@ class PlanarHSA(PlanarPCS):
             "distal_cap_length",
             "end_effector_offset",
             "phi_max",
-            "bending_reference",
-            "shear_reference",
-            "axial_reference",
             "strain_coupling",
             "rod_height",
             "rod_outer_radius",
@@ -312,7 +305,9 @@ class PlanarHSA(PlanarPCS):
                 jnp.asarray(value, dtype=jnp.float64),
             )
         updated = eqx.tree_at(
-            lambda model: model.xi_ref, updated, updated.ref_strains()
+            lambda model: model.xi_ref,
+            updated,
+            updated.beta_inv(updated._reference_physical_strains()),
         )
         if self.consider_hysteresis:
             updated = eqx.tree_at(
@@ -349,10 +344,7 @@ class PlanarHSA(PlanarPCS):
         )
 
     def _reference_physical_strains(self) -> Array:
-        return jnp.stack(
-            [self.bending_reference, self.shear_reference, self.axial_reference],
-            axis=-1,
-        )
+        return jnp.asarray(self.params.xi_ref, dtype=self.L.dtype)
 
     def beta(self, vxi: Array) -> Array:
         vxi = jnp.asarray(vxi).reshape(self.num_segments, 3)
@@ -372,137 +364,102 @@ class PlanarHSA(PlanarPCS):
         return virtual.reshape(self.num_strains)
 
     def ref_strains(self) -> Array:
-        return self.beta_inv(self._reference_physical_strains())
+        return self.xi_ref
 
     def strain(self, q: Array) -> Array:
-        return self.B_xi @ q + self.ref_strains()
-
-    def apply_eps_to_bend_strains(self, xi: Array, eps: float | None = None) -> Array:
-        if eps is None:
-            eps = self.global_eps
-        xi_rows = jnp.asarray(xi).reshape((-1, 3))
-        sign = jnp.sign(xi_rows[:, 0])
-        sign = jnp.where(sign == 0, 1.0, sign)
-        bending = jnp.where(jnp.abs(xi_rows[:, 0]) < eps, sign * eps, xi_rows[:, 0])
-        return jnp.stack((bending, xi_rows[:, 1], xi_rows[:, 2]), axis=1).reshape(-1)
-
-    def _relative_pose(self, xi_i: Array, arc_length: Array, eps: Array) -> Array:
-        del eps
-        # The planar SE(2) operator is agnostic to the names of its two linear
-        # components. Passing HSA's [kappa, shear, axial] ordering directly
-        # reproduces its historical tangent convention while reusing the
-        # numerically stable PCS propagator.
-        pcs_xi = xi_i
-        relative = PlanarPCS._pcs_relative_pose(self, pcs_xi, arc_length)
-        return jnp.array(
-            [
-                jnp.arctan2(relative[1, 0], relative[0, 0]),
-                relative[0, 2],
-                relative[1, 2],
-            ]
-        )
+        return self.B_xi @ q + self.xi_ref
 
     @staticmethod
-    def _compose_pose(chi: Array, relative: Array) -> Array:
-        theta = chi[0]
-        c, s = jnp.cos(theta), jnp.sin(theta)
-        p = chi[1:] + jnp.array(
-            [c * relative[1] - s * relative[2], s * relative[1] + c * relative[2]]
-        )
-        return jnp.array([theta + relative[0], p[0], p[1]])
-
-    def _segment_base(self, chi_prev: Array, i: int | Array) -> Array:
-        return jnp.array(
-            [chi_prev[0], chi_prev[1], chi_prev[2] + self.proximal_cap_length[i]],
-            dtype=chi_prev.dtype,
+    def _translation_transform(x: Array, y: Array) -> Array:
+        return poses.planar_pose_to_transform(
+            jnp.stack([jnp.zeros_like(x), x, y])
         )
 
-    def _forward_backbone_from_xi(self, xi: Array, s: Array) -> Array:
-        segment_idx, s_local = self.classify_segment(s)
-        eps = jnp.asarray(self.global_eps, dtype=xi.dtype)
-        xi_rows = xi.reshape(self.num_segments, 3)
-        chi0 = jnp.asarray(self.base_pose, dtype=xi.dtype)
-        zero = jnp.zeros_like(chi0)
+    def _segment_bases_and_tips(self, xi: Array) -> tuple[Array, Array]:
+        xi = xi.reshape(self.num_segments, 3)
+        g0 = poses.planar_pose_to_transform(jnp.asarray(self.base_pose, dtype=xi.dtype))
 
-        def step(carry: tuple[Array, Array], i: Array) -> tuple[tuple[Array, Array], None]:
-            chi_prev, chi_target = carry
-            xi_i = xi_rows[i]
-            chi_base = self._segment_base(chi_prev, i)
-            arc = jnp.where(i == segment_idx, s_local, self.L[i])
-            chi_at_arc = self._compose_pose(
-                chi_base, self._relative_pose(xi_i, arc, eps)
+        def scan_body(g_prev: Array, i: Array) -> tuple[Array, tuple[Array, Array]]:
+            # The established HSA geometry places proximal-cap lengths along
+            # the world y-axis. Keep that convention while reusing the PCS
+            # exponential for the flexible section and the local post-section
+            # transform below.
+            g_base = g_prev.at[1, 2].add(self.proximal_cap_length[i])
+            xi_i = xi[i]
+            g_tip = g_base @ se2.exp(self.L[i] * xi_i, eps=self.global_eps)
+            post = self._translation_transform(
+                jnp.zeros_like(self.distal_cap_length[i]),
+                self.distal_cap_length[i] + self.platform_dimension[i, 1],
             )
-            chi_target = jnp.where(i == segment_idx, chi_at_arc, chi_target)
+            return g_tip @ post, (g_base, g_tip)
 
-            chi_tip = self._compose_pose(
-                chi_base, self._relative_pose(xi_i, self.L[i], eps)
-            )
-            theta = chi_tip[0]
-            c, sn = jnp.cos(theta), jnp.sin(theta)
-            cap_offset = self.distal_cap_length[i] + self.platform_dimension[i, 1]
-            next_p = chi_tip[1:] + jnp.array([-sn * cap_offset, c * cap_offset])
-            return (jnp.array([theta, next_p[0], next_p[1]]), chi_target), None
-
-        (_, chi_target), _ = lax.scan(
-            step,
-            (chi0, zero),
+        _, (g_bases, g_tips) = lax.scan(
+            scan_body,
+            g0,
             jnp.arange(self.num_segments, dtype=jnp.int32),
         )
-        return chi_target
+        return g_bases, g_tips
+
+    def _backbone_transform(self, xi: Array, s: Array) -> Array:
+        segment_idx, s_local = self.classify_segment(s)
+        g_bases, _ = self._segment_bases_and_tips(xi)
+        g_base = g_bases[segment_idx]
+        return g_base @ se2.exp(s_local * xi.reshape(self.num_segments, 3)[segment_idx], eps=self.global_eps)
+
+    def _forward_backbone_from_xi(self, xi: Array, s: Array) -> Array:
+        return poses.planar_pose_from_transform(
+            self._backbone_transform(xi, s), eps=self.global_eps
+        )
 
     def _forward_rod_from_xi(self, xi: Array, s: Array, rod_idx: Array) -> Array:
         segment_idx, _ = self.classify_segment(s)
-        chi = self._forward_backbone_from_xi(xi, s)
         offset = self.rod_offset[segment_idx, rod_idx]
-        c, sn = jnp.cos(chi[0]), jnp.sin(chi[0])
-        p = chi[1:] + jnp.array([c * offset, sn * offset])
-        return jnp.array([chi[0], p[0], p[1]])
+        rod_transform = self._translation_transform(offset, jnp.zeros_like(offset))
+        return poses.planar_pose_from_transform(
+            self._backbone_transform(xi, s) @ rod_transform,
+            eps=self.global_eps,
+        )
 
     def _forward_platform_from_xi(self, xi: Array, segment_idx: Array) -> Array:
-        chi = self._forward_backbone_from_xi(xi, self.L_cum[segment_idx + 1])
+        _, g_tips = self._segment_bases_and_tips(xi)
         offset = self.distal_cap_length[segment_idx] + self.platform_dimension[segment_idx, 1] / 2.0
-        c, sn = jnp.cos(chi[0]), jnp.sin(chi[0])
-        p = chi[1:] + jnp.array([-sn * offset, c * offset])
-        return jnp.array([chi[0], p[0], p[1]])
+        platform_transform = self._translation_transform(
+            jnp.zeros_like(offset), offset
+        )
+        return poses.planar_pose_from_transform(
+            g_tips[segment_idx] @ platform_transform, eps=self.global_eps
+        )
+
+    def _end_effector_transform_from_tip(self, g_tip: Array) -> Array:
+        last = self.num_segments - 1
+        platform_end = self._translation_transform(
+            jnp.zeros_like(self.distal_cap_length[last]),
+            self.distal_cap_length[last] + self.platform_dimension[last, 1],
+        )
+        return g_tip @ platform_end @ poses.planar_pose_to_transform(self.end_effector_offset)
 
     def _forward_end_effector_from_xi(self, xi: Array) -> Array:
-        chi_tip = self._forward_backbone_from_xi(xi, self.length)
-        last = self.num_segments - 1
-        offset = self.distal_cap_length[last] + self.platform_dimension[last, 1]
-        c, sn = jnp.cos(chi_tip[0]), jnp.sin(chi_tip[0])
-        p_platform_end = chi_tip[1:] + jnp.array([-sn * offset, c * offset])
-        p_ee = p_platform_end + jnp.array(
-            [
-                c * self.end_effector_offset[0] - sn * self.end_effector_offset[1],
-                sn * self.end_effector_offset[0] + c * self.end_effector_offset[1],
-            ]
+        _, g_tips = self._segment_bases_and_tips(xi)
+        return poses.planar_pose_from_transform(
+            self._end_effector_transform_from_tip(g_tips[-1]), eps=self.global_eps
         )
-        return jnp.array([chi_tip[0] + self.end_effector_offset[2], p_ee[0], p_ee[1]])
 
-    def _kinematic_xi(self, q: Array, eps: Array | None = None) -> Array:
-        if eps is None:
-            eps = self.global_eps
-        return self.apply_eps_to_bend_strains(self.strain(q), eps)
+    def _kinematic_xi(self, q: Array) -> Array:
+        return self.strain(q)
 
-    def forward_kinematics_virtual_backbone(self, q: Array, s: Array) -> Array:
+    def _forward_kinematics(self, q: Array, s: Array) -> Array:
         return self._forward_backbone_from_xi(self._kinematic_xi(q), s)
 
-    _forward_kinematics = forward_kinematics_virtual_backbone
-
-    def forward_kinematics_tips(self, q: Array) -> Array:
-        return vmap(lambda s: self.forward_kinematics_virtual_backbone(q, s))(
-            self.L_cum[1:]
-        )
-
-    def forward_kinematics_batched(self, q: Array, s_ps: Array) -> Array:
-        return vmap(lambda s: self.forward_kinematics_virtual_backbone(q, s))(s_ps)
-
     def _forward_kinematics_arc_length_derivative(self, q: Array, s: Array) -> Array:
-        return jax.jvp(
-            lambda s_: self._forward_kinematics(q, s_),
-            (s,),
-            (jnp.ones_like(jnp.asarray(s)),),
-        )[1]
+        xi = self._kinematic_xi(q).reshape(self.num_segments, 3)
+        segment_idx, _ = self.classify_segment(s)
+        g = self._backbone_transform(self._kinematic_xi(q), s)
+        return jnp.concatenate(
+            [
+                xi[segment_idx, :1],
+                g[:2, :2] @ xi[segment_idx, 1:],
+            ]
+        )
 
     def _forward_kinematics_and_arc_length_derivative(
         self, q: Array, s: Array
@@ -518,26 +475,114 @@ class PlanarHSA(PlanarPCS):
     def forward_kinematics_end_effector(self, q: Array) -> Array:
         return self._forward_end_effector_from_xi(self._kinematic_xi(q))
 
-    def jacobian_virtual_backbone(self, q: Array, s: Array) -> Array:
-        xi = self._kinematic_xi(q)
-        J_xi = jax.jacfwd(lambda xi_: self._forward_backbone_from_xi(xi_, s))(xi)
-        return J_xi @ self.B_xi
+    def _segment_bases_and_jacobians(
+        self, xi: Array, xid: Array
+    ) -> tuple[Array, Array, Array, Array, Array, Array]:
+        xi = xi.reshape(self.num_segments, 3)
+        xid = xid.reshape(self.num_segments, 3)
+        zeros = jnp.zeros((self.num_segments, 3, 3), dtype=xi.dtype)
+        g0 = poses.planar_pose_to_transform(jnp.asarray(self.base_pose, dtype=xi.dtype))
+
+        def scan_body(
+            carry: tuple[Array, Array, Array], i: Array
+        ) -> tuple[tuple[Array, Array, Array], tuple[Array, Array, Array, Array, Array, Array]]:
+            g_prev, J_prev, Jd_prev = carry
+            g_base = g_prev.at[1, 2].add(self.proximal_cap_length[i])
+            J_base = J_prev
+            Jd_base = Jd_prev
+
+            xi_i = xi[i]
+            xid_i = xid[i]
+            g_tip = g_base @ se2.exp(self.L[i] * xi_i, eps=self.global_eps)
+            Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, self.L[i])
+            Td = constant_strain.tangent_derivative_se2(
+                xi_i, xid_i, self.L[i], eps=self.tangent_eps
+            )
+            J_tip, Jd_tip = self._update_body_jacobian_time_derivative_step(
+                J_base, Jd_base, i, xid_i, Ad_inv, T, Td
+            )
+
+            post = self._translation_transform(
+                jnp.zeros_like(self.distal_cap_length[i]),
+                self.distal_cap_length[i] + self.platform_dimension[i, 1],
+            )
+            Ad_inv_post = se2.adjoint_inverse(post)
+            return (
+                g_tip @ post,
+                Ad_inv_post @ J_tip,
+                Ad_inv_post @ Jd_tip,
+            ), (g_base, J_base, Jd_base, g_tip, J_tip, Jd_tip)
+
+        _, values = lax.scan(
+            scan_body,
+            (g0, zeros, zeros),
+            jnp.arange(self.num_segments, dtype=jnp.int32),
+        )
+        return values
+
+    def _body_kinematics_at(
+        self, q: Array, qd: Array, s: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        xi = self.strain(q)
+        xid = self.B_xi @ qd
+        segment_idx, s_local = self.classify_segment(s)
+        g_bases, J_bases, Jd_bases, _, _, _ = self._segment_bases_and_jacobians(xi, xid)
+        xi_rows = xi.reshape(self.num_segments, 3)
+        xid_rows = xid.reshape(self.num_segments, 3)
+        xi_i = xi_rows[segment_idx]
+        xid_i = xid_rows[segment_idx]
+        J_base = J_bases[segment_idx]
+        Jd_base = Jd_bases[segment_idx]
+        g_base = g_bases[segment_idx]
+        Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, s_local)
+        Td = constant_strain.tangent_derivative_se2(
+            xi_i, xid_i, s_local, eps=self.tangent_eps
+        )
+        g = g_base @ se2.exp(s_local * xi_i, eps=self.global_eps)
+        J_full, Jd_full = self._update_body_jacobian_time_derivative_step(
+            J_base, Jd_base, segment_idx, xid_i, Ad_inv, T, Td
+        )
+        return (
+            g,
+            self._final_size_jacobian(J_full) @ self.B_xi,
+            self._final_size_jacobian(Jd_full) @ self.B_xi,
+            xi_i,
+        )
+
+    def _jacobian_bodyframe_with_pose(self, q: Array, s: Array) -> tuple[Array, Array]:
+        g, J, _, _ = self._body_kinematics_at(q, jnp.zeros_like(q), s)
+        return poses.planar_pose_from_transform(g, eps=self.global_eps), J
 
     def _jacobian(self, q: Array, s: Array) -> Array:
-        return self.jacobian_virtual_backbone(q, s)
-
-    def jacobian_tips(self, q: Array) -> Array:
-        return vmap(lambda s: self.jacobian_virtual_backbone(q, s))(self.L_cum[1:])
-
-    def jacobian_batched(self, q: Array, s_ps: Array) -> Array:
-        return vmap(lambda s: self.jacobian_virtual_backbone(q, s))(s_ps)
+        chi, J_local = self._jacobian_bodyframe_with_pose(q, s)
+        return self._body_jacobian_to_inertial(chi, J_local)
 
     def _jacobian_arc_length_derivative(self, q: Array, s: Array) -> Array:
-        return jax.jvp(
-            lambda s_: self._jacobian(q, s_),
-            (s,),
-            (jnp.ones_like(jnp.asarray(s)),),
-        )[1]
+        xi = self.strain(q)
+        segment_idx, s_local = self.classify_segment(s)
+        xi_rows = xi.reshape(self.num_segments, 3)
+        xi_i = xi_rows[segment_idx]
+        g_bases, J_bases, _, _, _, _ = self._segment_bases_and_jacobians(
+            xi, jnp.zeros_like(xi)
+        )
+        g_base = g_bases[segment_idx]
+        J_base = J_bases[segment_idx]
+        Ad_inv, T, dAd_inv_ds, dT_ds = self._pcs_jacobian_arc_length_step_terms(
+            xi_i, s_local
+        )
+        g = g_base @ se2.exp(s_local * xi_i, eps=self.global_eps)
+        J_full = self._update_body_jacobian_step(J_base, segment_idx, Ad_inv, T)
+        J_local = self._final_size_jacobian(J_full) @ self.B_xi
+        Js_full = self._update_body_jacobian_arc_length_derivative_step(
+            J_base, segment_idx, Ad_inv, T, dAd_inv_ds, dT_ds
+        )
+        Js_local = self._final_size_jacobian(Js_full) @ self.B_xi
+        chi = poses.planar_pose_from_transform(g, eps=self.global_eps)
+        Ad_rot = self._rotation_adjoint_from_pose(chi)
+        Ad_rot_s = Ad_rot @ se2.small_adjoint(
+            jnp.array([xi_i[0], 0.0, 0.0], dtype=xi_i.dtype)
+        )
+        return Ad_rot_s @ J_local + Ad_rot @ Js_local
 
     def _jacobian_and_arc_length_derivative(
         self, q: Array, s: Array
@@ -545,61 +590,87 @@ class PlanarHSA(PlanarPCS):
         return self._jacobian(q, s), self._jacobian_arc_length_derivative(q, s)
 
     def jacobian_end_effector(self, q: Array) -> Array:
-        xi = self._kinematic_xi(q)
+        last_s = self.length
+        J_tip = self.jacobian(q, last_s)
+        chi_tip = self.forward_kinematics(q, last_s)
+        h = self._translation_transform(
+            jnp.zeros_like(self.distal_cap_length[-1]),
+            self.distal_cap_length[-1] + self.platform_dimension[-1, 1],
+        ) @ poses.planar_pose_to_transform(self.end_effector_offset)
+        J_pose = self._body_jacobian_to_inertial(
+            self._forward_end_effector_from_xi(self.strain(q)),
+            se2.adjoint_inverse(h) @ self._inertial_jacobian_to_bodyframe(chi_tip, J_tip),
+        )
+        return J_pose[jnp.array([1, 2, 0])]
 
-        def ee_position_first(xi_: Array) -> Array:
-            ee = self._forward_end_effector_from_xi(xi_)
-            return jnp.array([ee[1], ee[2], ee[0]])
-
-        return jax.jacfwd(ee_position_first)(xi) @ self.B_xi
-
-    def jacobian_and_time_derivative_virtual_backbone(
-        self, q: Array, qd: Array, s: Array
+    def jacobian_and_time_derivative_end_effector(
+        self, q: Array, qd: Array
     ) -> tuple[Array, Array]:
-        return jax.jvp(
-            lambda q_: self.jacobian_virtual_backbone(q_, s), (q,), (qd,)
+        g_tip, J_tip_local, Jd_tip_local, _ = self._body_kinematics_at(
+            q, qd, self.length
+        )
+        last = self.num_segments - 1
+        h = self._translation_transform(
+            jnp.zeros_like(self.distal_cap_length[last]),
+            self.distal_cap_length[last] + self.platform_dimension[last, 1],
+        ) @ poses.planar_pose_to_transform(self.end_effector_offset)
+        g_ee = g_tip @ h
+        Ad_h_inv = se2.adjoint_inverse(h)
+        J_ee_local = Ad_h_inv @ J_tip_local
+        Jd_ee_local = Ad_h_inv @ Jd_tip_local
+        chi_ee = poses.planar_pose_from_transform(g_ee, eps=self.global_eps)
+        Ad_rot = self._rotation_adjoint_from_pose(chi_ee)
+        eta = J_ee_local @ qd
+        Ad_rot_dot = Ad_rot @ se2.small_adjoint(
+            jnp.array([eta[0], 0.0, 0.0], dtype=eta.dtype)
+        )
+        J_pose = Ad_rot @ J_ee_local
+        Jd_pose = Ad_rot @ Jd_ee_local + Ad_rot_dot @ J_ee_local
+        return (
+            J_pose[jnp.array([1, 2, 0])],
+            Jd_pose[jnp.array([1, 2, 0])],
         )
 
     def _jacobian_and_time_derivative(
         self, q: Array, qd: Array, s: Array
     ) -> tuple[Array, Array]:
-        return self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
+        g, J_local, Jd_local, _ = self._body_kinematics_at(q, qd, s)
+        chi = poses.planar_pose_from_transform(g, eps=self.global_eps)
+        Ad_rot = self._rotation_adjoint_from_pose(chi)
+        eta = J_local @ qd
+        eta_rot = jnp.array([eta[0], 0.0, 0.0], dtype=eta.dtype)
+        Ad_rot_dot = Ad_rot @ se2.small_adjoint(eta_rot)
+        return (
+            Ad_rot @ J_local,
+            Ad_rot @ Jd_local + Ad_rot_dot @ J_local,
+        )
 
     def jacobian_and_time_derivative_batched(
         self, q: Array, qd: Array, s_ps: Array
     ) -> tuple[Array, Array]:
-        return vmap(
-            lambda s: self.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
-        )(s_ps)
+        return vmap(lambda s: self.jacobian_and_time_derivative(q, qd, s))(s_ps)
 
-    def inverse_kinematics_end_effector(self, chiee: Array) -> Array:
+    def inverse_kinematics(self, chi_ee: Array) -> Array:
         if self.num_segments != 1:
             raise AssertionError("Inverse kinematics only works for one segment!")
+        # Keep the historical one-segment target inversion, including its
+        # small-angle regularization.  The forward and differential paths use
+        # the protected Lie-group operators directly; this closed form is only
+        # used to preserve the documented inverse-kinematics result.
         hp = self.platform_dimension[0, 1]
         proximal_cap_length = self.proximal_cap_length[0]
         distal_cap_length = self.distal_cap_length[0]
         offset = self.end_effector_offset
-        T_b_to_pe = jnp.array([[1.0, 0.0, 0.0], [0.0, 1.0, proximal_cap_length], [0.0, 0.0, 1.0]])
-        T_b_to_ee = jnp.array(
-            [
-                [jnp.cos(chiee[0]), -jnp.sin(chiee[0]), chiee[1]],
-                [jnp.sin(chiee[0]), jnp.cos(chiee[0]), chiee[2]],
-                [0.0, 0.0, 1.0],
-            ]
+        T_b_to_pe = self._translation_transform(
+            jnp.zeros_like(proximal_cap_length), proximal_cap_length
         )
-        T_de_to_ee = jnp.array(
-            [
-                [jnp.cos(offset[0]), -jnp.sin(offset[0]), offset[1]],
-                [jnp.sin(offset[0]), jnp.cos(offset[0]), distal_cap_length + hp + offset[2]],
-                [0.0, 0.0, 1.0],
-            ]
+        T_b_to_ee = poses.planar_pose_to_transform(chi_ee)
+        T_de_to_ee = poses.planar_pose_to_transform(
+            jnp.array([offset[0], offset[1], distal_cap_length + hp + offset[2]])
         )
         T_pe_to_de = jnp.linalg.inv(T_b_to_pe) @ T_b_to_ee @ jnp.linalg.inv(T_de_to_ee)
-        th, px, py = (
-            jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0]),
-            T_pe_to_de[0, 2],
-            T_pe_to_de[1, 2],
-        )
+        th = jnp.arctan2(T_pe_to_de[1, 0], T_pe_to_de[0, 0])
+        px, py = T_pe_to_de[0, 2], T_pe_to_de[1, 2]
         sign = jnp.where(jnp.sign(th) == 0, 1.0, jnp.sign(th))
         th_eps = th + sign * self.global_eps
         xi = th_eps / (2.0 * self.length) * jnp.array(
@@ -609,7 +680,7 @@ class PlanarHSA(PlanarPCS):
                 -px - py * jnp.sin(th_eps) / (jnp.cos(th_eps) - 1.0),
             ]
         )
-        return jnp.linalg.pinv(self.B_xi) @ (xi - self.ref_strains())
+        return jnp.linalg.pinv(self.B_xi) @ (xi - self.xi_ref)
 
     def _quadrature(self) -> tuple[Array, Array]:
         points = self.integration_points[1:-1]
@@ -696,101 +767,293 @@ class PlanarHSA(PlanarPCS):
         )
         return mass, inertia, rel_cog
 
-    def _rod_mass_matrix_terms(self, xi: Array, i: int, j: int) -> Array:
-        area = jnp.pi * (
-            self.rod_outer_radius[i, j] ** 2 - self.rod_inner_radius[i, j] ** 2
+    def _integration_kinematics_full(
+        self, q: Array, qd: Array, convective_only_jd: bool = False
+    ) -> tuple[Array, Array, Array, Array]:
+        xi = self.strain(q).reshape(self.num_segments, 3)
+        xid = (self.B_xi @ qd).reshape(self.num_segments, 3)
+        Xs_scaled, Ws_scaled = vmap(
+            scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
         )
-        moment = jnp.pi / 4.0 * (
-            self.rod_outer_radius[i, j] ** 4 - self.rod_inner_radius[i, j] ** 4
-        )
-        s_points, weights = self._quadrature()
-
-        def rod_pose(z: Array, s: Array) -> Array:
-            return self._forward_rod_from_xi(z, s, j)
-
-        jacobian = jax.jacfwd(rod_pose, argnums=0)
-        J = vmap(lambda s: jacobian(xi, s))(s_points[i])
-        linear = jnp.einsum("kri,krj->kij", J[:, 1:, :], J[:, 1:, :])
-        angular = jnp.einsum("ki,kj->kij", J[:, 0, :], J[:, 0, :])
-        terms = weights[i, :, None, None] * self.rod_density[i, j] * (
-            area * linear + moment * angular
-        )
-        return jnp.sum(terms, axis=0)
-
-    def _platform_mass_matrix_term(self, xi: Array, i: int) -> Array:
-        mass, inertia, rel_cog = self._platform_mass_properties(i)
-        s_tip = self.L_cum[i + 1]
-
-        def cog_pose(z: Array) -> Array:
-            tip = self._forward_backbone_from_xi(z, s_tip)
-            c, sn = jnp.cos(tip[0]), jnp.sin(tip[0])
-            p = tip[1:] + jnp.array(
-                [c * rel_cog[0] - sn * rel_cog[1], sn * rel_cog[0] + c * rel_cog[1]]
-            )
-            return jnp.array([tip[0], p[0], p[1]])
-
-        J = jax.jacfwd(cog_pose)(xi)
-        return mass * J[1:, :].T @ J[1:, :] + inertia * J[0:1, :].T @ J[0:1, :]
-
-    def _payload_mass_matrix_term(self, xi: Array) -> Array:
-        def payload_position(z: Array) -> Array:
-            ee = self._forward_end_effector_from_xi(z)
-            c, sn = jnp.cos(ee[0]), jnp.sin(ee[0])
-            return ee[1:] + jnp.array(
-                [
-                    c * self.platform_center_of_gravity[0]
-                    - sn * self.platform_center_of_gravity[1],
-                    sn * self.platform_center_of_gravity[0]
-                    + c * self.platform_center_of_gravity[1],
-                ]
-            )
-
-        J = jax.jacfwd(payload_position)(xi)
-        return self.platform_mass * J.T @ J
-
-    def _inertia_full_from_xi(self, xi: Array) -> Array:
-        indices = jnp.arange(self.num_segments, dtype=jnp.int32)
-        rod_terms = vmap(
-            lambda i: vmap(
-                lambda j: self._rod_mass_matrix_terms(xi, i, j)
-            )(jnp.arange(self.num_rods_per_segment, dtype=jnp.int32))
-        )(indices)
-        platform_terms = vmap(
-            lambda i: self._platform_mass_matrix_term(xi, i)
-        )(indices)
-        return (
-            jnp.sum(rod_terms, axis=(0, 1))
-            + jnp.sum(platform_terms, axis=0)
-            + self._payload_mass_matrix_term(xi)
+        s_local = Xs_scaled - self.L_cum[:-1, None]
+        g_bases, J_bases, Jd_bases, _, _, _ = self._segment_bases_and_jacobians(
+            xi, xid
         )
 
-    def _dynamic_xi(self, q: Array, eps: Array | None = None) -> Array:
-        if eps is None:
-            eps = 1e4 * self.global_eps
-        return self.apply_eps_to_bend_strains(self.strain(q), eps)
+        def segment_kinematics(
+            i: Array,
+            xi_i: Array,
+            xid_i: Array,
+            g_base: Array,
+            J_base: Array,
+            Jd_base: Array,
+            s_local_i: Array,
+        ) -> tuple[Array, Array, Array]:
+            def point_kinematics(s_local_ij: Array) -> tuple[Array, Array, Array]:
+                Ad_inv, T = self._pcs_jacobian_step_terms(xi_i, s_local_ij)
+                Td = constant_strain.tangent_derivative_se2(
+                    xi_i, xid_i, s_local_ij, eps=self.tangent_eps
+                )
+                g_ij = g_base @ se2.exp(s_local_ij * xi_i, eps=self.global_eps)
+                J_ij, Jd_ij = self._update_body_jacobian_time_derivative_step(
+                    J_base,
+                    Jd_base,
+                    i,
+                    xid_i,
+                    Ad_inv,
+                    T,
+                    Td,
+                )
+                if convective_only_jd:
+                    eta = (Ad_inv @ T) @ xid_i
+                    Ad_inv_dot = -se2.small_adjoint(eta) @ Ad_inv
+                    Jd_ij = (
+                        jnp.einsum("ab,nbc->nac", Ad_inv, Jd_base)
+                        + jnp.einsum("ab,nbc->nac", Ad_inv_dot, J_base)
+                    ).at[i].set(Ad_inv @ Td)
+                return (
+                    g_ij,
+                    self._final_size_jacobian(J_ij),
+                    self._final_size_jacobian(Jd_ij),
+                )
 
-    def _inertia_full_matrix(self, q: Array, eps: float | None = None) -> Array:
-        return self._inertia_full_from_xi(self._dynamic_xi(q, eps))
+            return vmap(point_kinematics)(s_local_i)
 
-    def inertia_matrix(self, q: Array, eps: float | None = None) -> Array:
-        return self.B_xi.T @ self._inertia_full_matrix(q, eps) @ self.B_xi
-
-    def _coriolis_full_matrix(
-        self, q: Array, qd: Array, eps: float | None = None
-    ) -> Array:
-        xi = self._dynamic_xi(q, eps)
-        xid = self.B_xi @ qd
-        dB = jax.jacfwd(self._inertia_full_from_xi)(xi)
-        return 0.5 * jnp.einsum(
-            "abk,k->ab",
-            dB + jnp.swapaxes(dB, 1, 2) - jnp.transpose(dB, (2, 1, 0)),
+        g_ps, J_ps, Jd_ps = vmap(segment_kinematics)(
+            jnp.arange(self.num_segments, dtype=jnp.int32),
+            xi,
             xid,
+            g_bases,
+            J_bases,
+            Jd_bases,
+            s_local,
+        )
+        return Ws_scaled, g_ps, J_ps, Jd_ps
+
+    def _integration_kinematics(
+        self, q: Array, qd: Array, convective_only_jd: bool = False
+    ) -> tuple[Array, Array, Array, Array]:
+        Ws_scaled, g_ps, J_full, Jd_full = self._integration_kinematics_full(
+            q, qd, convective_only_jd
+        )
+        return (
+            Ws_scaled,
+            g_ps,
+            jnp.einsum("sqab,bd->sqad", J_full, self.B_xi),
+            jnp.einsum("sqab,bd->sqad", Jd_full, self.B_xi),
         )
 
-    def coriolis_matrix(
-        self, q: Array, qd: Array, eps: float | None = None
-    ) -> Array:
-        return self.B_xi.T @ self._coriolis_full_matrix(q, qd, eps) @ self.B_xi
+    def integration_kinematics(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
+        _, g_ps, J_ps, Jd_ps = self._integration_kinematics(q, qd)
+        return g_ps, J_ps, Jd_ps
+
+    def _mass_properties_kinematics(
+        self,
+        q: Array,
+        qd: Array,
+        convective_only_jd: bool = False,
+        full: bool = False,
+    ) -> tuple[Array, ...]:
+        Ws, g_ps, J_full, Jd_full = self._integration_kinematics_full(
+            q, qd, convective_only_jd
+        )
+        basis = (
+            jnp.eye(self.num_strains, dtype=J_full.dtype)
+            if full
+            else self.B_xi
+        )
+        J_ps = jnp.einsum("sqab,bd->sqad", J_full, basis)
+        Jd_ps = jnp.einsum("sqab,bd->sqad", Jd_full, basis)
+        xi = self.strain(q)
+        xid = self.B_xi @ qd
+        _, _, _, g_tips, J_tips, Jd_tips = self._segment_bases_and_jacobians(
+            xi, xid
+        )
+
+        rod_transforms = vmap(
+            lambda offsets: vmap(
+                lambda offset: self._translation_transform(
+                    offset, jnp.zeros_like(offset)
+                )
+            )(offsets)
+        )(self.rod_offset)
+        rod_adjoint_inverses = vmap(vmap(se2.adjoint_inverse))(rod_transforms)
+        J_rods = jnp.einsum("srab,sqbd->sqrad", rod_adjoint_inverses, J_ps)
+        Jd_rods = jnp.einsum("srab,sqbd->sqrad", rod_adjoint_inverses, Jd_ps)
+        g_rods = jnp.einsum("sqab,srbc->sqrac", g_ps, rod_transforms)
+        area = jnp.pi * (
+            self.rod_outer_radius**2 - self.rod_inner_radius**2
+        )
+        second_moment = jnp.pi / 4.0 * (
+            self.rod_outer_radius**4 - self.rod_inner_radius**4
+        )
+        rod_mass_matrices = jnp.zeros(
+            (*area.shape, 3, 3), dtype=area.dtype
+        )
+        rod_mass_matrices = rod_mass_matrices.at[..., 0, 0].set(
+            self.rod_density * second_moment
+        )
+        rod_mass_matrices = rod_mass_matrices.at[..., 1, 1].set(
+            self.rod_density * area
+        )
+        rod_mass_matrices = rod_mass_matrices.at[..., 2, 2].set(
+            self.rod_density * area
+        )
+
+        masses, inertias, rel_cogs = vmap(self._platform_mass_properties)(
+            jnp.arange(self.num_segments, dtype=jnp.int32)
+        )
+        cog_transforms = vmap(
+            lambda rel_cog: self._translation_transform(
+                jnp.zeros_like(rel_cog[1]), rel_cog[1]
+            )
+        )(rel_cogs)
+        cog_adjoint_inverses = vmap(se2.adjoint_inverse)(cog_transforms)
+        tip_indices = jnp.arange(self.num_segments, dtype=jnp.int32)
+        J_tips = J_tips[tip_indices, tip_indices]
+        Jd_tips = Jd_tips[tip_indices, tip_indices]
+        J_tips = jnp.einsum("sab,bd->sad", J_tips, basis)
+        Jd_tips = jnp.einsum("sab,bd->sad", Jd_tips, basis)
+        J_cogs = jnp.einsum("sab,sbd->sad", cog_adjoint_inverses, J_tips)
+        Jd_cogs = jnp.einsum("sab,sbd->sad", cog_adjoint_inverses, Jd_tips)
+        g_cogs = jnp.einsum("sab,sbc->sac", g_tips, cog_transforms)
+
+        payload_cog = self._translation_transform(
+            self.platform_center_of_gravity[0],
+            self.platform_center_of_gravity[1],
+        )
+        last = self.num_segments - 1
+        platform_end = self._translation_transform(
+            jnp.zeros_like(self.distal_cap_length[last]),
+            self.distal_cap_length[last] + self.platform_dimension[last, 1],
+        )
+        payload_transform = (
+            platform_end
+            @ poses.planar_pose_to_transform(self.end_effector_offset)
+            @ payload_cog
+        )
+        payload_adjoint_inverse = se2.adjoint_inverse(payload_transform)
+        J_payload = payload_adjoint_inverse @ J_tips[-1]
+        Jd_payload = payload_adjoint_inverse @ Jd_tips[-1]
+        g_payload = g_tips[-1] @ payload_transform
+        payload_mass_matrix = jnp.diag(
+            jnp.array([0.0, self.platform_mass, self.platform_mass], dtype=xi.dtype)
+        )
+        return (
+            Ws,
+            g_rods,
+            J_rods,
+            Jd_rods,
+            rod_mass_matrices,
+            g_cogs,
+            J_cogs,
+            Jd_cogs,
+            masses,
+            inertias,
+            J_payload,
+            Jd_payload,
+            g_payload,
+            payload_mass_matrix,
+        )
+
+    def _assemble_dynamics_terms(
+        self,
+        q: Array,
+        qd: Array,
+        *,
+        convective_only_jd: bool = False,
+        full: bool = False,
+        return_matrix: bool = False,
+    ) -> tuple[Array, Array, Array]:
+        (
+            Ws,
+            g_rods,
+            J_rods,
+            Jd_rods,
+            rod_mass_matrices,
+            g_cogs,
+            J_cogs,
+            Jd_cogs,
+            masses,
+            inertias,
+            J_payload,
+            Jd_payload,
+            g_payload,
+            payload_mass_matrix,
+        ) = self._mass_properties_kinematics(
+            q, qd, convective_only_jd, full=full
+        )
+        velocity = self.B_xi @ qd if full else qd
+
+        rod_eta = jnp.einsum("sqrad,d->sqra", J_rods, velocity)
+        rod_coad = vmap(vmap(vmap(se2.coadjoint)))(rod_eta)
+        rod_g_inv = vmap(vmap(vmap(se2.adjoint_inverse)))(g_rods)
+        rod_mj = jnp.einsum("srab,sqrbd->sqrad", rod_mass_matrices, J_rods)
+        rod_mjd = jnp.einsum("srab,sqrbd->sqrad", rod_mass_matrices, Jd_rods)
+        rod_local_gravity = jnp.einsum(
+            "sqrab,b->sqra", rod_g_inv, self.g
+        )
+        rod_gravity_wrench = jnp.einsum(
+            "srab,sqrb->sqra", rod_mass_matrices, rod_local_gravity
+        )
+        B_rods = jnp.einsum(
+            "sq,sqrad,srab,sqrbe->de",
+            Ws,
+            J_rods,
+            rod_mass_matrices,
+            J_rods,
+        )
+        C_rods = jnp.einsum(
+            "sq,sqrad,sqrae->de", Ws, J_rods, rod_mjd + jnp.einsum(
+                "sqrae,sqred->sqrad", rod_coad, rod_mj
+            )
+        )
+        G_rods = -jnp.einsum("sq,sqrad,sqra->d", Ws, J_rods, rod_gravity_wrench)
+
+        cog_matrices = jnp.zeros((*masses.shape, 3, 3), dtype=Ws.dtype)
+        cog_matrices = cog_matrices.at[:, 0, 0].set(inertias)
+        cog_matrices = cog_matrices.at[:, 1, 1].set(masses)
+        cog_matrices = cog_matrices.at[:, 2, 2].set(masses)
+        cog_velocity = jnp.einsum("sad,d->sa", J_cogs, velocity)
+        cog_coad = vmap(se2.coadjoint)(cog_velocity)
+        cog_mj = jnp.einsum("sab,sbd->sad", cog_matrices, J_cogs)
+        cog_mjd = jnp.einsum("sab,sbd->sad", cog_matrices, Jd_cogs)
+        cog_g_inv = vmap(se2.adjoint_inverse)(g_cogs)
+        cog_local_gravity = jnp.einsum("sab,b->sa", cog_g_inv, self.g)
+        cog_gravity_wrench = jnp.einsum(
+            "sab,sb->sa", cog_matrices, cog_local_gravity
+        )
+        B_cogs = jnp.einsum("sad,sab,sbe->de", J_cogs, cog_matrices, J_cogs)
+        C_cogs = jnp.einsum("sad,sae->de", J_cogs, cog_mjd + jnp.einsum(
+            "sab,sbe->sae", cog_coad, cog_mj
+        ))
+        G_cogs = -jnp.einsum("sad,sa->d", J_cogs, cog_gravity_wrench)
+
+        payload_velocity = J_payload @ velocity
+        payload_coad = se2.coadjoint(payload_velocity)
+        payload_mj = payload_mass_matrix @ J_payload
+        payload_mjd = payload_mass_matrix @ Jd_payload
+        payload_gravity_wrench = payload_mass_matrix @ (
+            se2.adjoint_inverse(g_payload) @ self.g
+        )
+        B_payload = J_payload.T @ payload_mass_matrix @ J_payload
+        C_payload = J_payload.T @ (payload_mjd + payload_coad @ payload_mj)
+        G_payload = -J_payload.T @ payload_gravity_wrench
+
+        B = B_rods + B_cogs + B_payload
+        C = C_rods + C_cogs + C_payload
+        return (
+            B,
+            C if return_matrix else C @ velocity,
+            G_rods + G_cogs + G_payload,
+        )
 
     def _gravitational_energy_full_from_xi(self, xi: Array) -> Array:
         gravity = self.g[1:]
@@ -846,15 +1109,91 @@ class PlanarHSA(PlanarPCS):
         )
         return energy - self.platform_mass * (gravity @ (payload_cog - base_translation))
 
-    def _gravitational_energy(self, q: Array, eps: float | None = None) -> Array:
-        return self._gravitational_energy_full_from_xi(self._dynamic_xi(q, eps))
+    def _gravitational_energy(self, q: Array) -> Array:
+        return self._gravitational_energy_full_from_xi(self.strain(q))
 
-    def _gravitational_full_force(self, q: Array, eps: float | None = None) -> Array:
-        xi = self._dynamic_xi(q, eps)
-        return jax.grad(self._gravitational_energy_full_from_xi)(xi)
+    def _inertia_full_matrix(self, q: Array) -> Array:
+        return self._assemble_dynamics_terms(
+            q, jnp.zeros((self.num_dofs,), dtype=q.dtype), full=True
+        )[0]
 
-    def _gravitational_force(self, q: Array, eps: float | None = None) -> Array:
-        return self.B_xi.T @ self._gravitational_full_force(q, eps)
+    def inertia_matrix(self, q: Array) -> Array:
+        return self._assemble_dynamics_terms(
+            q, jnp.zeros((self.num_dofs,), dtype=q.dtype)
+        )[0]
+
+    def _inertia_derivative_matrix(self, q: Array) -> Array:
+        """Compute ``dB/dq`` from the analytical Jacobian derivatives."""
+        directions = jnp.eye(self.num_dofs, dtype=q.dtype)
+
+        def directional_derivative(direction: Array) -> Array:
+            (
+                Ws,
+                _,
+                J_rods,
+                Jd_rods,
+                rod_mass_matrices,
+                _,
+                J_cogs,
+                Jd_cogs,
+                masses,
+                inertias,
+                J_payload,
+                Jd_payload,
+                _,
+                payload_mass_matrix,
+            ) = self._mass_properties_kinematics(q, direction)
+            rod_term = jnp.einsum(
+                "sq,sqrad,srab,sqrbe->de",
+                Ws,
+                Jd_rods,
+                rod_mass_matrices,
+                J_rods,
+            ) + jnp.einsum(
+                "sq,sqrad,srab,sqrbe->de",
+                Ws,
+                J_rods,
+                rod_mass_matrices,
+                Jd_rods,
+            )
+            cog_matrices = jnp.zeros((*masses.shape, 3, 3), dtype=q.dtype)
+            cog_matrices = cog_matrices.at[:, 0, 0].set(inertias)
+            cog_matrices = cog_matrices.at[:, 1, 1].set(masses)
+            cog_matrices = cog_matrices.at[:, 2, 2].set(masses)
+            cog_term = jnp.einsum(
+                "sad,sab,sbe->de", Jd_cogs, cog_matrices, J_cogs
+            ) + jnp.einsum("sad,sab,sbe->de", J_cogs, cog_matrices, Jd_cogs)
+            payload_term = Jd_payload.T @ payload_mass_matrix @ J_payload + (
+                J_payload.T @ payload_mass_matrix @ Jd_payload
+            )
+            return rod_term + cog_term + payload_term
+
+        return jnp.moveaxis(vmap(directional_derivative)(directions), 0, -1)
+
+    def _coriolis_full_matrix(self, q: Array, qd: Array) -> Array:
+        return self._assemble_dynamics_terms(
+            q, qd, full=True, return_matrix=True
+        )[1]
+
+    def coriolis_matrix(self, q: Array, qd: Array) -> Array:
+        dB = self._inertia_derivative_matrix(q)
+        return 0.5 * jnp.einsum(
+            "abk,k->ab",
+            dB
+            + jnp.swapaxes(dB, 1, 2)
+            - jnp.transpose(dB, (2, 1, 0)),
+            qd,
+        )
+
+    def _gravitational_full_force(self, q: Array) -> Array:
+        return self._assemble_dynamics_terms(
+            q, jnp.zeros((self.num_dofs,), dtype=q.dtype), full=True
+        )[2]
+
+    def _gravitational_force(self, q: Array) -> Array:
+        return self._assemble_dynamics_terms(
+            q, jnp.zeros((self.num_dofs,), dtype=q.dtype)
+        )[2]
 
     def _nominal_stiffness_full(self) -> Array:
         zeros = jnp.zeros_like(self.nominal_bending_stiffness)
@@ -994,21 +1333,25 @@ class PlanarHSA(PlanarPCS):
         return self.B_xi.T @ self.Shat() @ (self.hysteresis_basis @ z)
 
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
-        B = self.inertia_matrix(q)
-        Cqd = self.coriolis_matrix(q, qd) @ qd
-        G = self._gravitational_force(q)
-        return B, Cqd, G
+        return self._assemble_dynamics_terms(
+            q, qd, convective_only_jd=True
+        )
 
+    @eqx.filter_jit
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: tuple[Array, Array | None]
+        self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
-        """Compute the autonomous HSA state derivative.
-
-        ``t`` is part of the Diffrax/dynamical-system callback signature, but
-        this model has no explicit time-dependent parameters or inputs.
-        """
-        del t
-        u, tau_ext = actuation_args
+        """Compute the HSA state derivative."""
+        if actuation_args is None:
+            u, tau_ext = None, None
+        elif len(actuation_args) == 1:
+            u, tau_ext = actuation_args[0], None
+        elif len(actuation_args) == 2:
+            u, tau_ext = actuation_args
+        else:
+            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
+        if u is None:
+            u = jnp.zeros((self.num_actuators,), dtype=y.dtype)
         if tau_ext is None:
             tau_ext = jnp.zeros((self.num_dofs,), dtype=y.dtype)
         if self.consider_hysteresis:
@@ -1028,7 +1371,7 @@ class PlanarHSA(PlanarPCS):
             z = jnp.zeros((0,), dtype=y.dtype)
             zd = z
 
-        tau_u = self.actuation_force(q, u) if self.consider_underactuation else jnp.asarray(u)
+        tau_u = self.actuation_force(q, u, qd=qd)
         if self.consider_hysteresis:
             tau_el_full = self._stiffness_full_vector(q)
             tau_hyst_full = self.Shat() @ (self.hysteresis_basis @ z)

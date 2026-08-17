@@ -58,7 +58,7 @@ def test_end_effector_kinematics(seed: int = 0):
         # forward kinematics
         chiee = robot.forward_kinematics_end_effector(q)
         # inverse kinematics
-        q_rec = robot.inverse_kinematics_end_effector(chiee)
+        q_rec = robot.inverse_kinematics(chiee)
 
         if not jnp.allclose(q, q_rec, atol=1e-6):
             print("q = ", q)
@@ -92,11 +92,11 @@ def test_planar_hsa_npz_uses_environment_defaults_when_fields_are_absent(tmp_pat
     assert jnp.allclose(params.gravity, jnp.array([0.0, -9.81]))
 
 
-def test_jacobian_virtual_backbone(seed: int = 0):
+def test_jacobian_matches_forward_kinematics_derivative(seed: int = 0):
     """
     Test that the numerical Jacobian matches the autograd Jacobian of forward kinematics.
     """
-    print("Testing jacobian_virtual_backbone...")
+    print("Testing analytic Jacobian...")
     robot = _create_robot()
 
     rng = random.PRNGKey(seed)
@@ -109,24 +109,24 @@ def test_jacobian_virtual_backbone(seed: int = 0):
 
         for s in s_values:
             # Numerical Jacobian
-            J_sym = robot.jacobian_virtual_backbone(q, s)
+            J_analytic = robot.jacobian(q, s)
 
             # Autograd Jacobian (computed from forward_kinematics)
-            J_autograd = jacfwd(robot.forward_kinematics_virtual_backbone, argnums=0)(
-                q, s
-            )
+            J_autograd = jacfwd(robot.forward_kinematics, argnums=0)(q, s)
 
-            if not jnp.allclose(J_sym, J_autograd, atol=1e-6):
+            if not jnp.allclose(J_analytic, J_autograd, atol=1e-6):
                 print(f"s = {s}")
-                print(f"J_sym =\n{J_sym}")
+                print(f"J_analytic =\n{J_analytic}")
                 print(f"J_autograd =\n{J_autograd}")
-                print(f"diff =\n{J_sym - J_autograd}")
-                raise ValueError("Numerical Jacobian does not match autograd Jacobian")
+                print(f"diff =\n{J_analytic - J_autograd}")
+                raise ValueError(
+                    "Analytic Jacobian does not match forward-kinematics derivative"
+                )
 
 
-def test_jacobian_wrapper_matches_virtual_backbone(seed: int = 0):
+def test_jacobian_matches_base_system_api(seed: int = 0):
     """
-    Test that jacobian matches jacobian_virtual_backbone.
+    Test the standard SoftRobot Jacobian API.
     """
     print("Testing jacobian wrapper...")
     robot = _create_robot()
@@ -137,11 +137,9 @@ def test_jacobian_wrapper_matches_virtual_backbone(seed: int = 0):
     s = random.uniform(subrng, (), minval=0.0, maxval=robot.length)
 
     J1 = robot.jacobian(q, s)
-    J2 = robot.jacobian_virtual_backbone(q, s)
+    J2 = robot._jacobian(q, s)
 
-    assert jnp.allclose(J1, J2, atol=1e-12), (
-        "jacobian should match jacobian_virtual_backbone"
-    )
+    assert jnp.allclose(J1, J2, atol=1e-12), "jacobian should use the analytic hook"
 
 
 def test_jacobian_tips(seed: int = 0):
@@ -163,11 +161,11 @@ def test_jacobian_tips(seed: int = 0):
     )
 
 
-def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
+def test_jacobian_and_time_derivative(seed: int = 0):
     """
     Test the Jacobian and its time derivative.
     """
-    print("Testing jacobian_and_time_derivative_virtual_backbone...")
+    print("Testing analytic Jacobian time derivative...")
     robot = _create_robot()
 
     rng = random.PRNGKey(seed)
@@ -179,10 +177,10 @@ def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
         rng, subrng = random.split(rng)
         s = random.uniform(subrng, (), minval=0.1 * robot.length, maxval=0.9 * robot.length)
 
-        J, Jd = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
+        J, Jd = robot.jacobian_and_time_derivative(q, qd, s)
 
         # Verify J matches the Jacobian method
-        J_direct = robot.jacobian_virtual_backbone(q, s)
+        J_direct = robot.jacobian(q, s)
         assert jnp.allclose(J, J_direct, atol=1e-10), (
             "J from jacobian_and_time_derivative should match jacobian"
         )
@@ -190,7 +188,7 @@ def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
         # Verify Jd by numerical differentiation
         eps_t = 1e-6
         q_plus = q + eps_t * qd
-        J_plus = robot.jacobian_virtual_backbone(q_plus, s)
+        J_plus = robot.jacobian(q_plus, s)
         Jd_numerical = (J_plus - J) / eps_t
 
         if not jnp.allclose(Jd, Jd_numerical, atol=1e-4):
@@ -200,9 +198,9 @@ def test_jacobian_and_time_derivative_virtual_backbone(seed: int = 0):
             raise ValueError("Jd does not match numerical derivative")
 
 
-def test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone(seed: int = 0):
+def test_jacobian_and_time_derivative_matches_analytic_hook(seed: int = 0):
     """
-    Test that jacobian_and_time_derivative matches jacobian_and_time_derivative_virtual_backbone.
+    Test that the standard derivative API uses the analytic hook.
     """
     print("Testing jacobian_and_time_derivative wrapper...")
     robot = _create_robot()
@@ -215,7 +213,7 @@ def test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone(seed: int
     s = random.uniform(subrng, (), minval=0.0, maxval=robot.length)
 
     J1, Jd1 = robot.jacobian_and_time_derivative(q, qd, s)
-    J2, Jd2 = robot.jacobian_and_time_derivative_virtual_backbone(q, qd, s)
+    J2, Jd2 = robot._jacobian_and_time_derivative(q, qd, s)
 
     assert jnp.allclose(J1, J2, atol=1e-12), (
         "jacobian_and_time_derivative J should match"
@@ -397,10 +395,10 @@ def test_total_energy(seed: int = 0):
 
 if __name__ == "__main__":
     test_end_effector_kinematics()
-    test_jacobian_virtual_backbone()
-    test_jacobian_wrapper_matches_virtual_backbone()
-    test_jacobian_and_time_derivative_virtual_backbone()
-    test_jacobian_and_time_derivative_wrapper_matches_virtual_backbone()
+    test_jacobian_matches_forward_kinematics_derivative()
+    test_jacobian_matches_base_system_api()
+    test_jacobian_and_time_derivative()
+    test_jacobian_and_time_derivative_matches_analytic_hook()
     test_gravitational_energy()
     test_kinetic_energy()
     test_elastic_energy()

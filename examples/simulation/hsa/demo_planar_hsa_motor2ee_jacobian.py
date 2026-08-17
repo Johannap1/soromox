@@ -139,9 +139,9 @@ def factory_fn(
         H_qphi = mixed_residual_fn(q, phi)
         J_phi2q = -jnp.linalg.solve(H_qq, H_qphi)
 
-        # Differentiate the numerical forward kinematics in the same pose
+        # Use the model's analytic end-effector Jacobian in the same pose
         # ordering returned by ``phi2chi_static_model_fn``.
-        J_q2chi = jacrev(robot.forward_kinematics_end_effector)(q)
+        J_q2chi = robot.jacobian_end_effector(q)
 
         # evaluate the Jacobian between the actuation and the task-space
         J_phi2chi = J_q2chi @ J_phi2q

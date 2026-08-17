@@ -69,7 +69,7 @@ class OpenCVPlanarHSARenderer(BaseOpenCVRenderer):
 
         # Cache HSA-specific FK functions
         self._batched_fk_backbone = vmap(
-            robot.forward_kinematics_virtual_backbone,
+            robot.forward_kinematics,
             in_axes=(None, 0),
             out_axes=-1,
         )
