@@ -1,19 +1,20 @@
-"""AM-I Support: soromox rollout of the exp_veronica pre-impact TAIL fit (W5).
+"""AM-I Support: soromox rollout of the exp_veronica pre-impact TAIL fit (W6).
 
 Sibling of `simulate_isupport_exp.py`, restricted to ONE run: the
-`W5_veronica_tail_t12` MATLAB fit -- the pre-impact tail (t=[12, 13.06] s) of
+`W6_veronica_tail_t11` MATLAB fit -- the pre-impact tail (t=[11, 13.06] s) of
 the longest exp_veronica bag (`Eco50_3bar_default_intermadiate_170006`), perm
-[2 1 3] / roll -7 deg / clock 0, Eta+gains refit on the tail alone. Every
-parameter is read from the `.mat` exported by `python_exporter_veronica_last.m`
--- no model literals here either.
+[2 1 3] / roll -7 deg / clock 0, Eta+gains refit on the tail. Every parameter
+is read from the `.mat` exported by `python_exporter_veronica_last.m` -- no
+model literals here either.
 
-UNLIKE the square/chirp export, this one is NOT at rest at the window start:
-the robot is mid-actuation at t=12 s, so the export carries a NONZERO `x0`
-(MATLAB's own `[q; qd]` state at t=12, taken from the W2 full-window rollout --
-i.e. "restart the model from where its own full-window fit says it was", not an
-independent measurement -- see NEXT_SESSION context / CLAUDE.md). `x0` is split
-into q0/qd0 below instead of assuming rest, which is the one structural
-difference from `simulate_isupport_exp.py`.
+x0 is TRUE REST here (all-zero, verified: MATLAB checked tip position holds to
+<0.6 mm over the first 0.19 s of the window, well before the actuation step at
+~11.66 s) -- same convention as the square/chirp export. An earlier version of
+this run (W5) warm-started x0 from the model's OWN simulated state at t=12 s
+instead of moving the window back to a genuine rest point; that was flagged on
+review as not an independent measurement and dropped. The export still carries
+`x0` and this script still splits it into q0/qd0 for structural symmetry with
+that contract, but it is a no-op here (q0 = qd0 = 0).
 
 Usage (inside the WSL venv, from examples/simulation/pcs):
 
@@ -445,21 +446,20 @@ def run_rollout(robot, info, data, rtol=1e-3, atol=1e-4, tmax=None, solver=None)
 
     n_q = robot.num_active_strains
 
-    # NONZERO warm start: the robot is mid-actuation at the window start, not
-    # at rest. x0 is MATLAB's own [q; qd] state at t=12s (2*ndof,), taken from
-    # the W2 full-window rollout -- see the module docstring. q/qd ordering is
-    # trusted from the full-trajectory parity already established at x0=0
-    # (0.019 mm tip RMS over the whole square window), which only holds if the
-    # two sides' strain-coordinate bases already agree throughout the
-    # trajectory, not just at rest.
+    # x0 is TRUE REST here (all-zero, verified on the MATLAB side -- see the
+    # module docstring), so this split is a no-op in practice. Kept generic
+    # (reads x0 from the export rather than hardcoding zeros) for structural
+    # symmetry with the W5 warm-start contract, and so a future export with a
+    # genuine nonzero x0 does not need this function touched again.
     x0_mat = np.asarray(data["x0"], dtype=float).ravel()
     assert x0_mat.size == 2 * n_q, (
         f"exported x0 has {x0_mat.size} entries, expected 2*ndof = {2 * n_q}"
     )
     q0 = jnp.asarray(x0_mat[:n_q])
     qd0 = jnp.asarray(x0_mat[n_q:])
-    print(f"[warm start] |q0| = {float(jnp.linalg.norm(q0)):.4e} | "
-          f"|qd0| = {float(jnp.linalg.norm(qd0)):.4e}  (NOT rest)")
+    rest_tag = "true rest" if bool(jnp.all(x0_mat == 0.0)) else "NONZERO warm start"
+    print(f"[initial state] |q0| = {float(jnp.linalg.norm(q0)):.4e} | "
+          f"|qd0| = {float(jnp.linalg.norm(qd0)):.4e}  ({rest_tag})")
 
     t0 = float(exp_time[0])
     t1 = float(exp_time[-1])
