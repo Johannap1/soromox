@@ -21,7 +21,10 @@ for path in (CODE_DIR, PAPER_RESULTS_DIR):
 
 from paper_style import PAPER_COLORS as COLORS  # noqa: E402
 from paper_style import PAPER_STYLE_PATH as PAPER_STYLE  # noqa: E402
-from secvd_results import load_results  # noqa: E402
+from secvd_results import (  # noqa: E402
+    improvement_over_initial_median,
+    load_results,
+)
 
 FIGURE_SIZE_CM = (28.0, 16.0)
 
@@ -62,16 +65,39 @@ def _format_axes(ax: plt.Axes, panel: str) -> None:
     )
 
 
-def plot_loss(ax: plt.Axes, history_loss: np.ndarray, panel: str) -> None:
-    """Plot the one recorded run; B=1 intentionally has no artificial band."""
-    if history_loss.ndim != 2 or history_loss.shape[1] != 1:
+def plot_loss(
+    ax: plt.Axes, history_loss: np.ndarray, finite_mask: np.ndarray, panel: str
+) -> None:
+    """Plot the spread across starts and the best loss reached at each iteration."""
+    if history_loss.ndim != 2 or history_loss.shape[0] < 1:
         raise ValueError(
-            f"Expected single-start loss with shape (iterations, 1), got {history_loss.shape}"
+            f"Expected loss with shape (iterations, starts), got {history_loss.shape}"
         )
+    # Frozen starts must not drag the band; they are excluded, not plotted as NaN.
+    valid = np.where(finite_mask, history_loss, np.nan)
     iterations = np.arange(1, history_loss.shape[0] + 1)
+    lowest = np.nanmin(valid, axis=1)
+
+    if history_loss.shape[1] > 1:
+        ax.fill_between(
+            iterations,
+            lowest,
+            np.nanmax(valid, axis=1),
+            color=COLORS["pre_opt_2"],
+            alpha=0.5,
+            linewidth=0,
+            label="Min-max range",
+        )
     ax.plot(
-        iterations, history_loss[:, 0], "-o", color=COLORS["pre_opt_1"], markersize=3
+        iterations,
+        lowest,
+        "-o",
+        color=COLORS["pre_opt_1"],
+        markersize=3,
+        label="Best",
     )
+    if history_loss.shape[1] > 1:
+        ax.legend(loc="upper right")
     ax.set(xlabel="Iterations", ylabel="Loss", xlim=(1, max(1, len(iterations))))
     _format_axes(ax, panel)
 
@@ -82,28 +108,72 @@ def _plot_three_channels(
     initial: np.ndarray,
     best: np.ndarray,
     target: np.ndarray,
+    best_batch: int,
     *,
     ylabel: str,
     panel: str,
     legend: bool,
 ) -> None:
+    """Plot target, initial spread, and the best start, per channel.
+
+    ``initial`` and ``best`` carry a leading start axis. The initial band shows
+    where the sampled initializations started; the optimized band shows where
+    they ended, with the best start drawn as the solid line.
+    """
     colors = [COLORS["x_t"], COLORS["y_t"], COLORS["z_t"]]
+    batched = initial.shape[0] > 1
     for channel, color in enumerate(colors):
         ax.plot(t, target[:, channel], "--", linewidth=2, color=color)
-        ax.plot(t, initial[:, channel], "-.", linewidth=1.5, color=color)
-        ax.plot(t, best[:, channel], "-", linewidth=1.25, color=color)
+        if batched:
+            ax.fill_between(
+                t,
+                initial[:, :, channel].min(axis=0),
+                initial[:, :, channel].max(axis=0),
+                color=color,
+                alpha=0.35,
+                linewidth=0,
+            )
+        ax.plot(
+            t,
+            np.median(initial[:, :, channel], axis=0),
+            "-.",
+            linewidth=1.5,
+            color=color,
+        )
+        if batched:
+            ax.fill_between(
+                t,
+                best[:, :, channel].min(axis=0),
+                best[:, :, channel].max(axis=0),
+                color=color,
+                alpha=0.5,
+                linewidth=0,
+            )
+        ax.plot(t, best[best_batch, :, channel], "-", linewidth=1.25, color=color)
     if legend:
+        initial_label = "Initial (median $\\pm$ range)" if batched else "Initial"
+        best_label = "Optimized (best $\\pm$ range)" if batched else "Optimized"
         ax.legend(
             [
                 Line2D([], [], color="k", linestyle="--", linewidth=2),
                 Line2D([], [], color="k", linestyle="-.", linewidth=1.5),
                 Line2D([], [], color="k", linestyle="-", linewidth=1.25),
             ],
-            ["Target", "Initial", "Optimized"],
+            ["Target", initial_label, best_label],
             loc="best",
         )
     ax.set(xlabel="Time [s]", ylabel=ylabel, xlim=(float(t[0]), float(t[-1])))
     _format_axes(ax, panel)
+
+
+def report_improvement(name: str, data: dict[str, np.ndarray]) -> None:
+    """Print the loss reduction the paper reports, recomputed from the archive."""
+    improvement = improvement_over_initial_median(
+        data["history_loss"], data["history_finite_mask"]
+    )
+    print(
+        f"  {name:12s} improvement over the initial median: {100 * improvement:5.2f} %"
+    )
 
 
 def build_figure(data_dir: Path) -> plt.Figure:
@@ -115,29 +185,50 @@ def build_figure(data_dir: Path) -> plt.Figure:
         figsize=(FIGURE_SIZE_CM[0] / 2.54, FIGURE_SIZE_CM[1] / 2.54),
         constrained_layout=True,
     )
-    plot_loss(axes[0, 0], collocated["history_loss"] / 100.0, "A")
+    # Each method selects from its own losses. Deriving one index from the
+    # collocated run and reusing it for the synergistic panel was issue #128.
+    collocated_best = int(collocated["best_batch"])
+    synergistic_best = int(synergistic["best_batch"])
+
+    plot_loss(
+        axes[0, 0],
+        collocated["history_loss"] / 100.0,
+        collocated["history_finite_mask"],
+        "A",
+    )
     _plot_three_channels(
         axes[0, 1],
-        collocated["t_ts"][0],
-        collocated["q_ts_init"][0, :, :3],
-        collocated["q_ts_best"][0, :, :3],
-        collocated["q_des_ts"][0, :, :3],
+        collocated["t_ts"],
+        collocated["q_ts_init"][:, :, :3],
+        collocated["q_ts_best"][:, :, :3],
+        collocated["q_des_ts"][:, :3],
+        collocated_best,
         ylabel="Angular strains [rad/m]",
         panel="B",
         legend=True,
     )
-    plot_loss(axes[1, 0], synergistic["history_loss"], "C")
+    plot_loss(
+        axes[1, 0],
+        synergistic["history_loss"],
+        synergistic["history_finite_mask"],
+        "C",
+    )
     # Pose layout is [rotation-vector xyz, Cartesian position xyz].
     _plot_three_channels(
         axes[1, 1],
-        synergistic["t_ts"][0],
-        synergistic["x_ts_init"][0, :, 3:6],
-        synergistic["x_ts_best"][0, :, 3:6],
-        synergistic["x_des_ts"][0, :, 3:6],
+        synergistic["t_ts"],
+        synergistic["x_ts_init"][:, :, 3:6],
+        synergistic["x_ts_best"][:, :, 3:6],
+        synergistic["x_des_ts"][:, 3:6],
+        synergistic_best,
         ylabel="End-effector position [m]",
         panel="D",
         legend=False,
     )
+    print("Section Vd summary:")
+    report_improvement("collocated", collocated)
+    report_improvement("synergistic", synergistic)
+    print(f"  best start: collocated {collocated_best}, synergistic {synergistic_best}")
     return fig
 
 

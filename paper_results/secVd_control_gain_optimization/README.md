@@ -135,18 +135,40 @@ The default is `e_sat = 10 mm` (`gamma = 100 1/m`) and can be changed with
 ## Plotting
 
 The standalone plotter is the only comparison-figure entrypoint. It requires
-schema version 1, plots the single run without synthetic min/max bands, and
-writes both the canonical PDF and PNG:
+schema version 2 and writes both the canonical PDF and PNG:
 
 ```bash
 uv run python paper_results/secVd_control_gain_optimization/code/plot_control_gain_optimization.py \
   --force
 ```
 
+The loss panels show the min-max range across starts with the best loss per
+iteration drawn on top; the tracking panels show the initial spread as a median
+with a band, and the best start as the solid line. Starts frozen by
+`history_finite_mask` are excluded from the bands rather than plotted as gaps.
+A single-start archive is drawn without bands, since there is no spread to shade.
+
+Each panel takes its best start from **its own** archive's `best_batch`. The
+defect in issue #128 was one index derived from the collocated losses and reused
+for the synergistic panel; it went unnoticed only because both methods happened
+to peak at start 3 in the legacy data.
+
+The plotter also prints the loss reduction for each method, computed by the same
+formula the paper reports, so the published percentages are regenerated rather
+than retyped:
+
+```text
+Section Vd summary:
+  collocated   improvement over the initial median: ...
+  synergistic  improvement over the initial median: ...
+  best start: collocated ..., synergistic ...
+```
+
 ## Robot rendering
 
-The renderer reconstructs the optimized robot from `q_ts_best`, validates it
-against the stored full pose, resamples the dense rollout to the requested FPS,
+The renderer reconstructs the optimized robot from `q_ts_best` for that
+archive's own `best_batch`, validates every start's stored pose against forward
+kinematics, resamples the dense rollout to the requested FPS,
 and follows the paper rendering style in Viser. The solid coral body is the
 current robot. Collocated control additionally shows the desired configuration
 as a pale blue-gray wireframe, without task-space markers. Synergistic control
