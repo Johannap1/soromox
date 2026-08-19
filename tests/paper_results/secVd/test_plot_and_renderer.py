@@ -268,8 +268,19 @@ def test_collocated_render_receives_configuration_target(monkeypatch, tmp_path):
     assert captured["render"]["dynamic_spheres_positions"] is None
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "The committed placeholders are schema-v1, single-start archives that the "
+        "v2 validator rejects. They are regenerated as six-start runs at the end "
+        "of the batching work; remove this marker with that regeneration."
+    ),
+)
 @pytest.mark.parametrize("method", ["collocated", "synergistic"])
 def test_committed_pose_matches_forward_kinematics(method):
     data = load_results(SECTION_DIR / "data" / method, expected_method=method)
+    assert data["history_loss"].shape[1] == int(data["batch_size"])
+    assert int(data["completed_iterations"]) == 5
+    assert bool(data["is_placeholder"])
     robot, _routing, total_length = build_sec_vd_robot()
     renderer.validate_pose_consistency(robot, total_length, data)
