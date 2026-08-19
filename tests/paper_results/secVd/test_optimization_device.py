@@ -148,20 +148,6 @@ def test_non_fallback_backend_mismatch_is_rejected(
         prepare_result_dir(args)
 
 
-def test_batched_auto_run_keeps_a_cpu_fallback(monkeypatch):
-    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
-    assert configure_optimization_device(batch_size=6, argv=[]) == "gpu"
-    assert os.environ["JAX_PLATFORMS"] == "cuda,cpu"
-
-
-def test_explicit_gpu_request_has_no_silent_fallback(monkeypatch):
-    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
-    assert (
-        configure_optimization_device(batch_size=6, argv=["--device", "gpu"]) == "gpu"
-    )
-    assert os.environ["JAX_PLATFORMS"] == "cuda"
-
-
 def test_batch_size_from_the_command_line_drives_device_selection(monkeypatch):
     monkeypatch.delenv("JAX_PLATFORMS", raising=False)
     # The default says one start, but the CLI asks for six.

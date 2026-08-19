@@ -97,66 +97,61 @@ def test_batch_axis_appears_only_where_data_varies_per_start(tmp_path):
     assert data["t_ts"].shape == (TIMESTEPS,)
     assert data["x_des_ts"].shape == (TIMESTEPS, 6)
     assert data["history_time"].shape == (ITERATIONS,)
-    assert int(data["batch_size"]) == BATCH
-    assert int(data["completed_iterations"]) == ITERATIONS
-    assert bool(data["is_placeholder"])
-
-
-def test_per_iteration_trajectory_histories_are_not_archived(tmp_path):
-    """They would reach gigabytes at 100 iterations and six starts."""
-    data = load_results(_write_results(tmp_path))
+    # Per-iteration rollouts would reach gigabytes at B=6 over 100 iterations.
     assert "history_qd_ts" not in data
     assert "history_u_ts" not in data
 
 
-def test_initialization_metadata_round_trips(tmp_path):
+def test_metadata_needed_to_reproduce_the_run_round_trips(tmp_path):
+    """The legacy archives were unrecoverable because they lacked exactly this."""
     data = load_results(_write_results(tmp_path))
+    assert int(data["batch_size"]) == BATCH
+    assert int(data["completed_iterations"]) == ITERATIONS
     assert int(data["init_seed"]) == 0
     assert str(data["init_scheme"].item()) == "log_uniform_v1"
     assert float(data["init_spread"]) == 3.0
-
-
-def test_selection_indices_are_recorded_and_consistent(tmp_path):
-    data = load_results(_write_results(tmp_path))
+    assert bool(data["is_placeholder"])
     assert int(data["best_batch"]) == 3
     assert np.array_equal(data["best_iteration"], np.full(BATCH, ITERATIONS - 1))
 
 
-def test_schema_v1_archive_is_rejected_clearly(tmp_path):
+def test_schema_v1_and_legacy_archives_are_rejected_clearly(tmp_path):
     path = tmp_path / "optimization_results.npz"
     np.savez(path, history_loss=np.zeros((5, 1)))
     with pytest.raises(ValueError, match="not supported"):
         load_results(path)
 
 
-def test_batch_size_must_match_the_loss_axis(tmp_path):
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda d: d.__setitem__("batch_size", np.asarray(BATCH + 1)),
+            "batch_size must equal",
+        ),
+        (lambda d: d.__setitem__("best_batch", np.asarray(0)), "best_batch disagrees"),
+        (lambda d: d["best_iteration"].__setitem__(2, 0), "best_iteration disagrees"),
+        (lambda d: d["best_iteration"].__setitem__(0, ITERATIONS), "must lie in"),
+        (
+            lambda d: d["q_ts_best"].__setitem__((0, 0, 0), np.inf),
+            "q_ts_best contains non-finite",
+        ),
+        (
+            lambda d: d["history_loss"].__setitem__((0, 0), np.nan),
+            "non-finite where history_finite_mask",
+        ),
+    ],
+)
+def test_inconsistent_archives_are_rejected(tmp_path, mutate, message):
+    """Selection indices and finiteness are re-derived on load, never trusted."""
     data = load_results(_write_results(tmp_path))
-    data["batch_size"] = np.asarray(BATCH + 1, dtype=np.int64)
-    with pytest.raises(ValueError, match="batch_size must equal"):
+    mutate(data)
+    with pytest.raises(ValueError, match=message):
         validate_results(data)
 
 
-def test_selection_indices_are_checked_against_the_loss_history(tmp_path):
-    data = load_results(_write_results(tmp_path))
-    data["best_batch"] = np.asarray(0, dtype=np.int64)
-    with pytest.raises(ValueError, match="best_batch disagrees"):
-        validate_results(data)
-
-    data = load_results(_write_results(tmp_path))
-    data["best_iteration"][2] = 0
-    with pytest.raises(ValueError, match="best_iteration disagrees"):
-        validate_results(data)
-
-
-def test_out_of_range_best_iteration_is_rejected(tmp_path):
-    data = load_results(_write_results(tmp_path))
-    data["best_iteration"][0] = ITERATIONS
-    with pytest.raises(ValueError, match="must lie in"):
-        validate_results(data)
-
-
-def test_masked_entries_may_be_non_finite_but_results_may_not(tmp_path):
-    """A frozen start keeps the archive valid; a bad trajectory does not."""
+def test_a_frozen_start_keeps_the_archive_valid(tmp_path):
+    """Masked entries may be non-finite; that is the point of the mask."""
     loss = _descending_loss()
     mask = np.ones_like(loss, dtype=bool)
     mask[3:, 4] = False
@@ -165,19 +160,9 @@ def test_masked_entries_may_be_non_finite_but_results_may_not(tmp_path):
     validate_results(data)
     assert not bool(data["history_finite_mask"][-1, 4])
 
-    data["q_ts_best"][0, 0, 0] = np.inf
-    with pytest.raises(ValueError, match="q_ts_best contains non-finite"):
-        validate_results(data)
-
-
-def test_unmasked_non_finite_loss_is_rejected(tmp_path):
-    data = load_results(_write_results(tmp_path))
-    data["history_loss"][0, 0] = np.nan
-    with pytest.raises(ValueError, match="non-finite where history_finite_mask"):
-        validate_results(data)
-
 
 def test_start_that_never_produced_a_finite_iterate_is_rejected(tmp_path):
+    """Such a start has no trajectory worth archiving; resample the seed instead."""
     loss = _descending_loss()
     mask = np.ones_like(loss, dtype=bool)
     mask[:, 2] = False
@@ -195,7 +180,7 @@ def test_collocated_requires_its_configuration_reference(tmp_path):
         validate_results(data)
 
 
-def test_best_batch_is_derived_per_archive(tmp_path):
+def test_best_batch_is_derived_per_archive():
     """Issue #128: each method must select from its own losses."""
     collocated_loss = _descending_loss()
     synergistic_loss = _descending_loss()[:, ::-1].copy()
@@ -204,6 +189,7 @@ def test_best_batch_is_derived_per_archive(tmp_path):
 
 
 def test_improvement_metric_matches_the_recovered_paper_formula():
+    """The formula verified to reproduce the published 62% / 57%."""
     loss = np.array([[1.0, 2.0, 3.0, 4.0], [0.5, 0.5, 0.5, 0.5]])
     # median of [1, 2, 3, 4] is 2.5; best final loss is 0.5.
     assert improvement_over_initial_median(loss) == pytest.approx(1.0 - 0.5 / 2.5)
