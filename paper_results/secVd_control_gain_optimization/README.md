@@ -1,55 +1,109 @@
 # Section Vd: Control-Gain Optimization
 
-This case compares gain optimization for collocated actuation-space control and
-synergistic operational-space control. Each generator writes a MAT result under
-its controller-specific directory in `data/`; the plotter combines both files.
+This case compares single-start gain optimization for collocated
+actuation-space control and synergistic operational-space control.
 
 > [!WARNING]
-> The committed Section Vd MAT files and derived plots are stale. In particular,
-> the collocated results were generated with the former, non-unit-preserving
-> integral-error saturation and the former `gamma=10` setting. Do not treat the
-> current files as canonical results. Regenerate the complete Section Vd results
-> only after the saturation-scale change has been merged and the other open
-> control-gain-optimization issues (#128 and #129) have been fixed.
+> The committed archives and comparison figures are single-start results from
+> the current workflow. They do not reproduce the published six-start Section
+> Vd study and must not be treated as recovered paper results.
 
-## Collocated integral-error saturation
+## Canonical result format
 
-The collocated controller integrates tendon-length errors, all expressed in
-meters. It uses the unit-preserving saturation
+Each optimizer writes only `optimization_results.npz`. The archive uses schema
+version 1 and an explicit batch dimension of one, even though the optimizer is
+currently single-start. Pose vectors use
+
+```text
+[rotation-vector x, y, z, Cartesian position x, y, z].
+```
+
+`q_ts_best` is the authoritative trajectory for reconstructing the complete
+robot geometry. `x_ts_best` provides a directly validated full end-effector
+pose trajectory. The archive also retains iteration-aligned loss, gain,
+velocity, control-input, and timing histories. Legacy archives,
+`animation_data.pkl`, and `intermediate_metrics.json` are not supported.
+
+`completed_iterations` records the actual run length and is validated against
+the stored histories. `is_placeholder` identifies development-only archives;
+omit `--placeholder` when producing full results.
+
+## Optimization
+
+The two optimization programs only run optimization and generate their NPZ:
+
+```bash
+uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_collocated.py \
+  --num-iters 100 --force
+uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_synergistic.py \
+  --num-iters 100 --force
+```
+
+`--num-iters` defaults to 100. Pass another positive value when intentionally
+running a shorter or longer optimization.
+
+Use `--result-dir` to stage results elsewhere. A run is saved only if every
+requested iteration completed with finite data, so an interrupted or non-finite
+run cannot replace an archive.
+
+Device selection defaults to `--device auto`. The current optimizers have one
+optimization start (`B=1`), so auto mode selects the CPU; the `vmap` used by the
+synergistic controller over rollout timesteps does not make it a batched
+optimization. The shared selector chooses the GPU when an optimizer supplies
+multiple independent starts (`B>1`) in a future batched implementation. Use
+`--device cpu` or `--device gpu` to override either automatic choice. The GPU
+label maps to JAX's `cuda` platform name. An automatically selected GPU may fall
+back to CPU with a warning, while an explicit `--device gpu` request fails if
+CUDA is unavailable.
+
+The collocated controller integrates tendon-length errors in metres and uses
+the unit-preserving saturation
 
 ```text
 sat(e) = tanh(gamma * e) / gamma,
 gamma = 1 / e_sat.
 ```
 
-The committed legacy trajectories were inspected to select a physical error
-scale. The undeformed tendon lengths are approximately `-100 mm`, and the
-setpoints are `[-85.49, -96.41, -100.05] mm`. This produces initial errors of
-`[14.51, 3.59, -0.05] mm`. Across the saved initial and optimized trajectories,
-all other initial/transient absolute errors remain below `3.85 mm`.
+The default is `e_sat = 10 mm` (`gamma = 100 1/m`) and can be changed with
+`--integral-error-saturation-scale` in metres.
 
-The default is therefore `e_sat = 10 mm`, or `gamma = 100 1/m`. At the exceptional
-`14.51 mm` reference step, saturation reduces the integral-error derivative by
-about 38%. At `3.85 mm`, the reduction is only about 4.7%, keeping normal
-closed-loop errors nearly linear while limiting integral accumulation during the
-large step. Override the physical scale, if needed, with
-`--integral-error-saturation-scale` in meters.
+## Plotting
 
-Run the two optimizations without GUI rendering:
+The standalone plotter is the only comparison-figure entrypoint. It requires
+schema version 1, plots the single run without synthetic min/max bands, and
+writes both the canonical PDF and PNG:
 
 ```bash
-uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_collocated.py \
-  --result-dir /tmp/soromox-secVd/collocated --no-show --no-render
-uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_synergistic.py \
-  --result-dir /tmp/soromox-secVd/synergistic --no-show --no-render
+uv run python paper_results/secVd_control_gain_optimization/code/plot_control_gain_optimization.py \
+  --force
 ```
 
-To replace the canonical case-local data, omit `--result-dir` and pass
-`--force`. Diagnostic plots are generated only with `--save-figures`; Open3D
-visualization is skipped with `--no-render`.
+## Robot rendering
 
-Recreate the canonical comparison from the committed MAT files:
+The renderer reconstructs the optimized robot from `q_ts_best`, validates it
+against the stored full pose, resamples the dense rollout to the requested FPS,
+and follows the paper rendering style in Viser. The solid coral body is the
+current robot. Collocated control additionally shows the desired configuration
+as a pale blue-gray wireframe, without task-space markers. Synergistic control
+uses a translucent coral body so that the current task position in magenta and
+the larger desired task position in green remain visible. A dotted trail shows
+the desired path only when the reference is time-varying; the animation does
+not reveal the robot's future actual trajectory. It writes MP4 files and, when
+requested, GIF previews:
 
 ```bash
-uv run python paper_results/secVd_control_gain_optimization/code/plot_control_gain_optimization.py
+uv run python paper_results/secVd_control_gain_optimization/code/render_control_gain_optimization_animations.py \
+  --method both --fps 24 --gif --force
 ```
+
+Use `--method collocated` or `--method synergistic` to render one controller.
+The CLI also exposes the Viser port/browser and recording timeout settings.
+
+## Version-control policy
+
+Canonical comparison figures (`plot_control_gain_opt.pdf` and `.png`) are kept
+in normal Git. Canonical optimization archives and robot-rendering MP4/GIF
+files are also versioned, but routed through Git LFS because full optimization
+and rendering runs can make them substantially larger. Directories matching
+`outputs/*_diagnostics/` are local scratch artifacts from the removed embedded
+diagnostic workflow and are intentionally ignored.
