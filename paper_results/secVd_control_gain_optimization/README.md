@@ -10,9 +10,24 @@ actuation-space control and synergistic operational-space control.
 
 ## Canonical result format
 
-Each optimizer writes only `optimization_results.npz`. The archive uses schema
-version 1 and an explicit batch dimension of one, even though the optimizer is
-currently single-start. Pose vectors use
+Each optimizer writes only `optimization_results.npz`, using schema version 2.
+The archive carries a real multi-start batch axis of width `B`, and that axis
+appears **only** on quantities that genuinely vary per start:
+
+| field | shape |
+| --- | --- |
+| `history_loss`, `history_time`, `history_finite_mask` | `(iterations, B)`, `(iterations,)`, `(iterations, B)` |
+| `history_Kp`, `history_Ki`, `history_Kd` | `(iterations, B, m)` |
+| `init_Kp`, `init_Ki`, `init_Kd` | `(B, m)` |
+| `q_ts_init/best`, `qd_ts_init/best` | `(B, timesteps, dofs)` |
+| `u_ts_init/best` | `(B, timesteps, actuators)` |
+| `x_ts_init/best` | `(B, timesteps, 6)` |
+| `best_iteration` | `(B,)` |
+| `best_batch`, `batch_size` | scalars |
+| `t_ts`, `x_des_ts`, `q_des_ts` | `(timesteps,)`, `(timesteps, 6)`, `(timesteps, dofs)` |
+
+The time grid and the reference are shared by every start and so carry no batch
+axis at all. Pose vectors use
 
 ```text
 [rotation-vector x, y, z, Cartesian position x, y, z].
@@ -20,13 +35,35 @@ currently single-start. Pose vectors use
 
 `q_ts_best` is the authoritative trajectory for reconstructing the complete
 robot geometry. `x_ts_best` provides a directly validated full end-effector
-pose trajectory. The archive also retains iteration-aligned loss, gain,
-velocity, control-input, and timing histories. Legacy archives,
-`animation_data.pkl`, and `intermediate_metrics.json` are not supported.
+pose trajectory. Schema-v1 archives, legacy MAT archives, `animation_data.pkl`,
+and `intermediate_metrics.json` are not supported.
 
 `completed_iterations` records the actual run length and is validated against
 the stored histories. `is_placeholder` identifies development-only archives;
 omit `--placeholder` when producing full results.
+**Per-iteration trajectory histories are deliberately absent.** Storing every
+start's rollout at every iteration would reach several gigabytes at 100
+iterations and six starts, so the archive keeps each start's initial and best
+rollouts only. The loss and gain histories remain complete.
+
+`init_Kp` / `init_Ki` / `init_Kd`, together with `init_seed`, `init_scheme`, and
+`init_spread`, record the initialization directly rather than leaving it to be
+inferred from the history. The legacy results were unrecoverable precisely
+because this was never written; see the provenance section below.
+
+A start whose evaluation becomes non-finite is frozen rather than aborting the
+whole run, and `history_finite_mask` marks exactly which entries are real. Every
+start must still reach at least one finite iterate: one that was non-finite from
+its first evaluation has no trajectory worth archiving and indicates an
+initialization that should be resampled with a different `--init-seed`.
+
+Selection is recorded and re-checked on load. `best_iteration` is each start's
+own lowest-loss iteration and `best_batch` is `argmin_b min_i loss[i, b]`,
+derived from **that archive's** losses alone -- the defect behind issue #128 was
+a single index taken from one method and reused for the other.
+
+The placeholder metadata is stored as `is_placeholder=true`. Omit
+`--placeholder` when producing full results.
 
 ## Optimization
 
