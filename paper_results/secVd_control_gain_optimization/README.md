@@ -107,3 +107,142 @@ files are also versioned, but routed through Git LFS because full optimization
 and rendering runs can make them substantially larger. Directories matching
 `outputs/*_diagnostics/` are local scratch artifacts from the removed embedded
 diagnostic workflow and are intentionally ignored.
+
+The current five-iteration placeholder set contains the two NPZ archives, the
+regenerated comparison PDF/PNG, and genuine Viser MP4/GIF robot captures from
+those archives. Chart-animation files from the former renderer are not
+canonical outputs.
+
+## Provenance of the legacy six-batch results
+
+> [!NOTE]
+> **Provisional.** This section records what could be established from the
+> artifacts reachable today. A machine that may hold the original generator is
+> expected to become available in the week of 2026-08-24; recheck the open
+> points below against it before treating this as final. Tracked as issue #154.
+
+The Section Vd results published in the preprint were produced by a **six-start
+batched** optimization that no committed script can reproduce. The generators in
+this directory are single-start, and until the change described below they wrote
+a batch axis pinned to one. This section answers the questions raised in issue
+#154 and separates what is recovered from what is lost.
+
+### Where the evidence comes from
+
+Two artifacts, both preserved in Git history on `origin/main` at
+`data/{collocated,synergistic}/optimization_results.mat`:
+
+| variable | collocated | synergistic |
+| --- | --- | --- |
+| `history_loss` | `(100, 6)` | `(100, 6)` |
+| `t_ts` | `(6, 50001)` | `(6, 50000)` |
+| `q_ts_init`, `q_ts_best` | `(6, 50001, 6)` | — |
+| `x_ts_init`, `x_ts_best` | — | `(6, 50000, 3)` |
+| `q_des_ts` | `(50001, 6)` | — |
+| `x_des_ts` | — | `(1, 3)` |
+
+Axes are `(iterations, batch)` for the loss and `(batch, timesteps, components)`
+for the trajectories. The `50001` / `50000` step counts match a `save_dt =
+solver_dt = 1e-4` grid over `[0, 5] s`.
+
+Both files carry the MAT header `Platform: PCWIN64`, which MATLAB writes and
+SciPy does not (`scipy.io.savemat` writes `nt` or `posix`), and both share a
+single creation timestamp. **The archives were serialized by MATLAB**, so even
+the Python program that produced the underlying run wrote some intermediate
+format that was not kept.
+
+### Recovered
+
+**Execution methodology — vectorized, not independent runs.** The batch is a
+`vmap` over both the optimization variables and the optimizer state, giving `B`
+independent optimizers stepping in lockstep. Gradients are never averaged across
+the batch. This is *multi-start*, not *multiple shooting*: the rollout is a
+single forward integration with one initial condition, no segment boundaries and
+no continuity constraints.
+
+**Selection.** The best batch is the one attaining the lowest loss over all
+iterations,
+
+```text
+best_batch = argmin_b  min_i  history_loss[i, b]
+```
+
+which evaluates to `3` for **both** methods in the committed data. That
+coincidence is what allowed the plotting bug in issue #128 to go unnoticed.
+
+**Aggregation, and the published numbers.** `docs/research.md` reports 62% and
+57% loss reductions "relative to their initial median values". The median is
+taken across the batch at iteration zero:
+
+```text
+improvement = 1 - min(history_loss[-1]) / median(history_loss[0])
+```
+
+This reproduces the published figures exactly, which pins the metric:
+
+The legacy archives were replaced by the NPZ workflow and are no longer checked
+out, so retrieve them from history first:
+
+```bash
+case=paper_results/secVd_control_gain_optimization
+for m in collocated synergistic; do
+  git show "origin/main:$case/data/$m/optimization_results.mat" > "/tmp/secVd-$m.mat"
+done
+```
+
+```python
+import numpy as np, scipy.io as sio
+
+for method in ("collocated", "synergistic"):
+    loss = sio.loadmat(f"/tmp/secVd-{method}.mat")["history_loss"]
+    improvement = 1.0 - np.min(loss[-1]) / np.median(loss[0])
+    print(f"{method:12s} {100 * improvement:5.2f} %")
+# collocated   62.62 %
+# synergistic  57.82 %
+```
+
+`q_ts_init` / `x_ts_init` hold every batch's iteration-zero rollout and
+`q_ts_best` / `x_ts_best` every batch's own best rollout. That is what the
+median line and the min/max bands in the comparison figure are computed from.
+
+### Not recovered
+
+**The six initial gain sets, and the seed that produced them.** The archives
+contain no gain history whatsoever — only losses, the time grid, and the
+initial/best trajectories. Nothing in them constrains `Kp`, `Ki` or `Kd`.
+
+The nearest surviving script,
+`OPTso_closedloop_pcs3at_ws_trajectory_multishoot.py` in the author's
+pre-packaging tree, is **not** the generator. It has `batch_size = 1`,
+`num_iters = 3` and a `0.5 s` horizon rather than the archives' `5 s`, and its
+`jax.random.PRNGKey(35)` is split but never consumed, so its multi-start branch
+never executes. It does contain the dormant sampling box
+
+```text
+Kp in [10, 60],  Ki in [5, 40],  Kd in [2, 5]     # i.i.d. uniform, PRNGKey(35)
+```
+
+and its setpoint `x_des = [-0.055, -0.094, 0.118]` matches the synergistic
+archive's `x_des_ts` verbatim. So the archives came from an **uncommitted
+variant** of that script family. The box above is preserved as the
+`legacy_uniform` initialization scheme for comparison, but it belongs to a
+different controller parametrization and must not be presented as the recovered
+value.
+
+**A structural reason the initialization could never have been read back.** In
+that script the loss at history index `j` is evaluated *before* the optimizer
+update whose parameters are appended at index `j`. Losses and gains are
+therefore off by one, and index `0` already holds one Yogi step away from the
+nominal — the true initialization is never written at all. This is the
+misalignment reported in issue #129, and it is why the schema described above
+now stores `init_Kp` / `init_Ki` / `init_Kd` and the sampling metadata
+explicitly, rather than expecting them to be inferable from the history.
+
+### Consequences for regenerated results
+
+Because the initialization is lost, regenerated Section Vd results **will not
+reproduce 62% / 57%**. Two further changes since the original run also move the
+numbers: both methods now share the `u_constant = [0.5, 0.2, 0.1]` setpoint, and
+the collocated integral-error saturation moved from `gamma = 10` to the
+unit-preserving `gamma = 100 1/m`. The figures in `docs/research.md` are left
+untouched until the recovery check above resolves.
