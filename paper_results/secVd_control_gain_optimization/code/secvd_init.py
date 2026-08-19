@@ -15,9 +15,14 @@ the form issue #154 asks for.
 
 from __future__ import annotations
 
-import jax
-import jax.numpy as jnp
-from jax import Array
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jax import Array
+
+# JAX is imported inside the functions, not here. The Section Vd entrypoints read
+# this module's constants to pick a device *before* JAX is imported, and JAX
+# silently ignores JAX_PLATFORMS once it has been imported.
 
 __all__ = [
     "GAIN_ORDER",
@@ -73,6 +78,8 @@ def _validate(
     Raises:
         ValueError: If any argument is outside its supported range.
     """
+    import jax.numpy as jnp
+
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
     if scheme not in INIT_SCHEMES:
@@ -125,6 +132,9 @@ def sample_initial_gains(
     Raises:
         ValueError: If the request cannot produce finite gains.
     """
+    import jax
+    import jax.numpy as jnp
+
     _validate(nominal, batch_size, scheme, spread)
 
     key = jax.random.PRNGKey(seed)
@@ -168,6 +178,8 @@ def describe_initial_gains(gains: dict[str, Array]) -> str:
     Returns:
         A table with one row per start, showing each gain's first component.
     """
+    import jax.numpy as jnp
+
     batch_size = int(jnp.asarray(gains[GAIN_ORDER[0]]).shape[0])
     header = "  start  " + "".join(f"{name:>14s}" for name in GAIN_ORDER)
     rows = [header, "  " + "-" * (len(header) - 2)]

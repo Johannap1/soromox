@@ -18,6 +18,7 @@ if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
 from secvd_optimization import (  # noqa: E402
+    batch_size_from_argv,
     configure_optimization_device,
     jax_platforms_for,
     prepare_result_dir,
@@ -73,6 +74,7 @@ def test_optimization_batch_size_must_be_positive(batch_size):
     ],
 )
 def test_jax_platform_names_are_the_ones_jax_accepts(device, allow_fallback, expected):
+    """JAX rejects 'gpu' in JAX_PLATFORMS; only 'cuda' names the CUDA backend."""
     assert jax_platforms_for(device, allow_fallback=allow_fallback) == expected
 
 
@@ -146,10 +148,39 @@ def test_non_fallback_backend_mismatch_is_rejected(
         prepare_result_dir(args)
 
 
-def test_cli_module_does_not_import_jax():
-    """JAX ignores JAX_PLATFORMS after import, so the CLI layer must stay JAX-free."""
+def test_batched_auto_run_keeps_a_cpu_fallback(monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    assert configure_optimization_device(batch_size=6, argv=[]) == "gpu"
+    assert os.environ["JAX_PLATFORMS"] == "cuda,cpu"
+
+
+def test_explicit_gpu_request_has_no_silent_fallback(monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    assert (
+        configure_optimization_device(batch_size=6, argv=["--device", "gpu"]) == "gpu"
+    )
+    assert os.environ["JAX_PLATFORMS"] == "cuda"
+
+
+def test_batch_size_from_the_command_line_drives_device_selection(monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    # The default says one start, but the CLI asks for six.
+    assert (
+        configure_optimization_device(batch_size=1, argv=["--batch-size", "6"]) == "gpu"
+    )
+    assert batch_size_from_argv(1, ["--batch-size", "6"]) == 6
+    assert batch_size_from_argv(6, []) == 6
+
+
+def test_cli_and_init_modules_do_not_import_jax():
+    """Device selection must happen before JAX is imported.
+
+    JAX silently ignores ``JAX_PLATFORMS`` once it has been imported, so an
+    entrypoint that pulls JAX in through the CLI layer would keep whatever
+    backend it happened to pick first.
+    """
     probe = (
-        "import sys; import secvd_optimization; "
+        "import sys; import secvd_optimization, secvd_init; "
         "sys.exit(1 if 'jax' in sys.modules else 0)"
     )
     result = subprocess.run(

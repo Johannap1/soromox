@@ -1,6 +1,6 @@
 # Section Vd: Control-Gain Optimization
 
-This case compares single-start gain optimization for collocated
+This case compares six-start gain optimization for collocated
 actuation-space control and synergistic operational-space control.
 
 > [!WARNING]
@@ -67,7 +67,9 @@ The placeholder metadata is stored as `is_placeholder=true`. Omit
 
 ## Optimization
 
-The two optimization programs only run optimization and generate their NPZ:
+The two optimization programs only run optimization and generate their NPZ.
+Both optimize six independent gain initializations at once, matching the width
+of the original Section Vd results:
 
 ```bash
 uv run python paper_results/secVd_control_gain_optimization/code/control_gain_optimization_with_collocated.py \
@@ -80,18 +82,44 @@ uv run python paper_results/secVd_control_gain_optimization/code/control_gain_op
 running a shorter or longer optimization.
 
 Use `--result-dir` to stage results elsewhere. A run is saved only if every
-requested iteration completed with finite data, so an interrupted or non-finite
-run cannot replace an archive.
+requested iteration completed and every start produced at least one finite
+iterate, so an interrupted run cannot replace an archive.
 
-Device selection defaults to `--device auto`. The current optimizers have one
-optimization start (`B=1`), so auto mode selects the CPU; the `vmap` used by the
-synergistic controller over rollout timesteps does not make it a batched
-optimization. The shared selector chooses the GPU when an optimizer supplies
-multiple independent starts (`B>1`) in a future batched implementation. Use
-`--device cpu` or `--device gpu` to override either automatic choice. The GPU
-label maps to JAX's `cuda` platform name. An automatically selected GPU may fall
-back to CPU with a warning, while an explicit `--device gpu` request fails if
-CUDA is unavailable.
+### Initialization
+
+Start 0 is always the nominal gain set, so a single-start run stays a strict
+subset of a batched one. Starts 1 to `B-1` scale the nominal by one factor per
+gain, drawn log-uniformly from `[1 / spread, spread]` -- gains are scale
+parameters, so the neighbourhood is multiplicative rather than additive, and
+each start remains describable by three numbers. Every run prints its table and
+records `init_Kp`, `init_Ki`, `init_Kd`, `init_seed`, `init_scheme`, and
+`init_spread` in the archive.
+
+| flag | default | meaning |
+| --- | --- | --- |
+| `--batch-size` | `6` | independent starts `B` |
+| `--init-seed` | `0` | PRNG seed behind the sampled starts |
+| `--init-scheme` | `log_uniform_v1` | sampling scheme, recorded in the archive |
+| `--init-spread` | `3.0` | multiplicative half-width for `log_uniform_v1` |
+
+The alternative `legacy_uniform` scheme draws absolute values from the dormant
+box found in the pre-packaging generator (`Kp` in `[10, 60]`, `Ki` in `[5, 40]`,
+`Kd` in `[2, 5]`, seed 35). It exists only to test a recovered original
+generator against, and is not the recovered initialization; see the provenance
+section below.
+
+### Device
+
+Device selection defaults to `--device auto`, which uses the CPU for a single
+start and prefers the GPU for `B > 1`. Note that JAX names the CUDA backend
+`cuda`, not `gpu`; `JAX_PLATFORMS=gpu` is rejected outright. An automatic GPU
+preference therefore requests `cuda,cpu` and warns if it lands on the CPU, while
+an explicit `--device gpu` requests `cuda` alone and fails loudly rather than
+running somewhere the user did not ask for. Device selection must happen before
+JAX is imported, since JAX ignores `JAX_PLATFORMS` afterwards, which is why the
+CLI and initialization modules import JAX lazily.
+
+### Collocated saturation
 
 The collocated controller integrates tendon-length errors in metres and uses
 the unit-preserving saturation

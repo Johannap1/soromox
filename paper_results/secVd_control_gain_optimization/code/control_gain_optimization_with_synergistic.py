@@ -9,23 +9,31 @@ CODE_DIR = Path(__file__).resolve().parent
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
+from secvd_init import SECVD_BATCH_SIZE  # noqa: E402
 from secvd_optimization import configure_optimization_device  # noqa: E402
 
 # Number of independently optimized gain initializations; timestep vmaps do not count.
-OPTIMIZATION_BATCH_SIZE = 1
+OPTIMIZATION_BATCH_SIZE = SECVD_BATCH_SIZE
 configure_optimization_device(batch_size=OPTIMIZATION_BATCH_SIZE)
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import optax  # noqa: E402
 from gain_optimization_loop import run_gain_optimization  # noqa: E402
-from jax import jit, value_and_grad, vmap  # noqa: E402
+from jax import value_and_grad, vmap  # noqa: E402
 from secvd_case import build_sec_vd_case, end_effector_pose_trajectory  # noqa: E402
+from secvd_init import (  # noqa: E402
+    describe_initial_gains,
+    sample_initial_gains,
+)
 from secvd_optimization import (  # noqa: E402
     parse_optimization_args,
     prepare_result_dir,
 )
-from secvd_results import save_optimization_outputs  # noqa: E402
+from secvd_results import (  # noqa: E402
+    improvement_over_initial_median,
+    save_optimization_outputs,
+)
 
 from soromox.control import (
     OperationalSpaceSynergisticController,
@@ -63,15 +71,24 @@ def main() -> None:
         is_planar=osd.is_planar,
     )
     x_des_ts = reference.x_des_ts
-    gains = {
+    nominal_gains = {
         "Kp": 10.0 * jnp.ones(osd.n_operational_space),
         "Ki": 2.0 * jnp.ones(osd.n_operational_space),
         "Kd": 0.25 * jnp.ones(osd.n_operational_space),
     }
+    init_gains = sample_initial_gains(
+        nominal_gains,
+        batch_size=args.batch_size,
+        seed=args.init_seed,
+        scheme=args.init_scheme,
+        spread=args.init_spread,
+    )
+    print(f"Gain initializations ({args.init_scheme}, seed {args.init_seed}):")
+    print(describe_initial_gains(init_gains))
     controller = OperationalSpaceSynergisticController(
         operational_space_dynamics=osd,
         reference_trajectory=reference,
-        pid_control=PIDControl(**gains),
+        pid_control=PIDControl(**nominal_gains),
     )
     initial_state = SystemState(
         t=jnp.array(0.0),
@@ -105,7 +122,7 @@ def main() -> None:
             "u_ts": trajectory.u,
         }
 
-    opt_vars = {"opt_ctr_params": gains, "opt_atr_params": {}}
+    opt_vars = {"opt_ctr_params": init_gains, "opt_atr_params": {}}
     labels = {
         "opt_ctr_params": {"Kp": "P", "Ki": "I", "Kd": "D"},
         "opt_atr_params": {},
@@ -118,12 +135,12 @@ def main() -> None:
         },
         labels,
     )
-    gradient_fn = jit(value_and_grad(evaluate, has_aux=True))
     history = run_gain_optimization(
-        gradient_fn=gradient_fn,
+        gradient_fn=value_and_grad(evaluate, has_aux=True),
         optimizer=optimizer,
         opt_vars=opt_vars,
         num_iters=args.num_iters,
+        batch_size=args.batch_size,
         progress_label="Synergistic",
     )
     if len(history) != args.num_iters:
@@ -131,34 +148,50 @@ def main() -> None:
             f"Refusing to save partial run: completed {len(history)}/{args.num_iters}; "
             f"{history.stop_reason}"
         )
+    dead = history.dead_starts()
+    if dead:
+        raise RuntimeError(
+            f"Starts {dead} never produced a finite iterate; rerun with a "
+            "different --init-seed or a narrower --init-spread"
+        )
 
-    q_history = history.stacked_aux("q_ts")
-    qd_history = history.stacked_aux("qd_ts")
-    u_history = history.stacked_aux("u_ts")
-    best = history.best_index()
-    t_ts = history.stacked_aux("t_ts")[0]
-    x_init = end_effector_pose_trajectory(robot, q_history[0], case.total_length)
-    x_best = end_effector_pose_trajectory(robot, q_history[best], case.total_length)
+    init_aux, best_aux = history.init_aux, history.best_aux
+    loss_history = history.loss_history()
+    mask_history = history.mask_history()
+    # The time grid is shared by every start, so archive one copy.
+    t_ts = init_aux["t_ts"][0]
+    pose_of = vmap(lambda q: end_effector_pose_trajectory(robot, q, case.total_length))
     save_optimization_outputs(
         result_dir,
         method="synergistic",
-        history_loss=history.loss,
+        batch_size=args.batch_size,
+        history_loss=loss_history,
         history_time=history.time_iter,
+        history_finite_mask=mask_history,
         opt_vars_history=history.opt_vars,
-        history_qd_ts=qd_history,
-        history_u_ts=u_history,
+        init_gains=init_gains,
+        init_seed=args.init_seed,
+        init_scheme=args.init_scheme,
+        init_spread=args.init_spread,
         t_ts=t_ts,
-        q_ts_init=q_history[0],
-        q_ts_best=q_history[best],
-        qd_ts_init=qd_history[0],
-        qd_ts_best=qd_history[best],
-        u_ts_init=u_history[0],
-        u_ts_best=u_history[best],
-        x_ts_init=x_init,
-        x_ts_best=x_best,
+        q_ts_init=init_aux["q_ts"],
+        q_ts_best=best_aux["q_ts"],
+        qd_ts_init=init_aux["qd_ts"],
+        qd_ts_best=best_aux["qd_ts"],
+        u_ts_init=init_aux["u_ts"],
+        u_ts_best=best_aux["u_ts"],
+        x_ts_init=pose_of(init_aux["q_ts"]),
+        x_ts_best=pose_of(best_aux["q_ts"]),
         x_des_ts=x_des_ts,
-        best_iteration=best,
+        # Supplied by the loop and re-derived by the validator, so the two
+        # cannot silently disagree.
+        best_iteration=history.best_iteration,
+        best_batch=history.best_batch(),
         is_placeholder=args.placeholder,
+    )
+    print(
+        "Improvement over the initial median: "
+        f"{100 * improvement_over_initial_median(loss_history, mask_history):.2f} %"
     )
 
 

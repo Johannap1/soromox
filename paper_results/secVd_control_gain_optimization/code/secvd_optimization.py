@@ -7,6 +7,13 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
+from secvd_init import (
+    INIT_SCHEMES,
+    SECVD_BATCH_SIZE,
+    SECVD_INIT_SCHEME,
+    SECVD_INIT_SEED,
+    SECVD_INIT_SPREAD,
+)
 from secvd_results import RESULTS_FILENAME
 
 DEVICE_CHOICES = ("auto", "cpu", "gpu")
@@ -29,12 +36,29 @@ def _add_device_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_batch_size_argument(parser: argparse.ArgumentParser, default: int) -> None:
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=default,
+        help="Number of independently optimized gain initializations.",
+    )
+
+
 def requested_device_from_argv(argv: Sequence[str] | None = None) -> str:
     """Read only the early device option, leaving all other arguments untouched."""
     parser = argparse.ArgumentParser(add_help=False)
     _add_device_argument(parser)
     args, _unknown = parser.parse_known_args(argv)
     return str(args.device)
+
+
+def batch_size_from_argv(default: int, argv: Sequence[str] | None = None) -> int:
+    """Read only the early batch-size option, leaving all other arguments untouched."""
+    parser = argparse.ArgumentParser(add_help=False)
+    _add_batch_size_argument(parser, default)
+    args, _unknown = parser.parse_known_args(argv)
+    return int(args.batch_size)
 
 
 def resolve_optimization_device(*, requested: str, batch_size: int) -> str:
@@ -51,7 +75,19 @@ def resolve_optimization_device(*, requested: str, batch_size: int) -> str:
 
 
 def jax_platforms_for(device: str, *, allow_fallback: bool) -> str:
-    """Translate a user-facing device into a valid ``JAX_PLATFORMS`` value."""
+    """Translate a resolved device into a valid ``JAX_PLATFORMS`` value.
+
+    Args:
+        device: ``"cpu"`` or ``"gpu"`` as returned by
+            :func:`resolve_optimization_device`.
+        allow_fallback: Append a CPU fallback, for an automatic GPU choice.
+
+    Returns:
+        Comma-separated platform preference list.
+
+    Raises:
+        ValueError: If ``device`` is not a known device name.
+    """
     if device not in _PLATFORM_FOR_DEVICE:
         raise ValueError(f"Unknown optimization device {device!r}")
     platform = _PLATFORM_FOR_DEVICE[device]
@@ -63,11 +99,19 @@ def jax_platforms_for(device: str, *, allow_fallback: bool) -> str:
 def configure_optimization_device(
     *, batch_size: int, argv: Sequence[str] | None = None
 ) -> str:
-    """Select the JAX platform before JAX is imported by an optimizer entrypoint."""
+    """Select the JAX platform before JAX is imported by an optimizer entrypoint.
+
+    Args:
+        batch_size: Default number of starts, overridable with ``--batch-size``.
+        argv: Argument vector to inspect; defaults to ``sys.argv``.
+
+    Returns:
+        The resolved device name.
+    """
     requested = requested_device_from_argv(argv)
     resolved = resolve_optimization_device(
         requested=requested,
-        batch_size=batch_size,
+        batch_size=batch_size_from_argv(batch_size, argv),
     )
     os.environ["JAX_PLATFORMS"] = jax_platforms_for(
         resolved, allow_fallback=requested == "auto"
@@ -80,11 +124,30 @@ def parse_optimization_args(
     description: str,
     default_result_dir: Path,
     include_integral_error_saturation_scale: bool = False,
-    optimization_batch_size: int = 1,
+    optimization_batch_size: int = SECVD_BATCH_SIZE,
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--result-dir", type=Path, default=default_result_dir)
     parser.add_argument("--num-iters", type=int, default=100)
+    _add_batch_size_argument(parser, optimization_batch_size)
+    parser.add_argument(
+        "--init-seed",
+        type=int,
+        default=SECVD_INIT_SEED,
+        help="PRNG seed behind the sampled gain initializations.",
+    )
+    parser.add_argument(
+        "--init-scheme",
+        choices=INIT_SCHEMES,
+        default=SECVD_INIT_SCHEME,
+        help="Initialization sampling scheme; recorded in the archive.",
+    )
+    parser.add_argument(
+        "--init-spread",
+        type=float,
+        default=SECVD_INIT_SPREAD,
+        help="Multiplicative half-width for the log-uniform scheme.",
+    )
     if include_integral_error_saturation_scale:
         parser.add_argument(
             "--integral-error-saturation-scale", type=float, default=1e-2
@@ -98,10 +161,12 @@ def parse_optimization_args(
     parser.add_argument("--force", action="store_true")
     _add_device_argument(parser)
     args = parser.parse_args()
-    args.optimization_batch_size = optimization_batch_size
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be at least 1")
+    args.optimization_batch_size = args.batch_size
     args.resolved_device = resolve_optimization_device(
         requested=args.device,
-        batch_size=optimization_batch_size,
+        batch_size=args.batch_size,
     )
     return args
 
