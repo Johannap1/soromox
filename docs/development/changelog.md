@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Shared continuum-component APIs under `soromox.systems.components` for link,
+  joint, cross-section, and isotropic-material parameters and specifications.
+- Common `from_links`, `params_from_links`, `update_link_params`,
+  `link_matrices_from_material`, and `with_isotropic_material` workflows for
+  PCS and PlanarPCS, with the same material/update APIs on GVS.
+- GVS joint stiffness and damping parameters that participate in global matrix
+  assembly, plus `update_joint_params` for immutable joint-local updates.
+- Differentiable unit-response mappings from Young's modulus with either shear
+  modulus or Poisson's ratio, plus optional material damping, to canonical
+  generalized link matrices.
+- Continuum-component, parameter-update, material-optimization, and
+  [parameter-API migration](../user-guide/parameter-api-migration.md)
+  documentation with complete PCS and GVS examples.
+
 ### Changed
 
 ### Fixed
@@ -39,6 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Harmonized PCS, PlanarPCS, and GVS around nested `params.link` ownership,
+  descriptive public construction names, shared link/joint specifications, and
+  canonical per-link generalized stiffness and damping matrices.
+- Moved shared `LinkSpec` and `JointSpec` functionality out of the GVS package;
+  GVS now retains only segment, strain-basis, quadrature, and runtime concepts
+  specific to variable-strain mechanics.
+- Simplified cross-section parameters to coefficient arrays populated by link
+  factories; constant values and `LinearProfile` cover constant and linearly
+  varying geometry without a profile-parameter class hierarchy.
+- Made isotropic material parameters caller-owned construction/optimization
+  PyTrees instead of duplicating material and generalized-matrix
+  representations inside system parameters.
+- Made geometry updates refresh material unit-response operators without
+  silently replacing explicitly supplied canonical matrices.
 - Reworked ``SO(3)``, ``SE(2)``, and ``SE(3)`` exponential/logarithmic maps,
   constant-strain adjoint and tangent operators, and PlanarPCS pose integration
   around stable closed forms and high-order near-zero series. Constant-strain
@@ -59,8 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recurrences while preserving full Jacobian derivatives in public kinematics.
 - Replaced generated symbolic PlanarHSA expressions with a JAX-native
   PlanarPCS implementation, reusing shared planar kinematics, Jacobians,
-  quadrature, and dynamics; migrated parameter files to the ``xi_ref`` schema
-  and removed the obsolete symbolic and legacy-parameter modules.
+  quadrature, and dynamics; migrated parameter files to the descriptive
+  ``reference_strain`` schema and removed the obsolete symbolic and
+  legacy-parameter modules.
 - Compared with ``main`` on CPU/JAX 0.11.0 across five fresh processes, the
   40-case Lie benchmark reduced geometric-mean steady-state and compile time by
   24.3% and 5.3%. A fresh raw before/after table is reported in this PR for
@@ -83,9 +112,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimization data is persisted before plotting or interactive rendering
   begins; saved trajectory diagnostics can be rendered without rerunning
   optimization.
+- Normalized explicit continuous-rollout `save_ts` sequences to JAX arrays and
+  preserved traced initial times for JIT-compiled and vectorized open- and
+  closed-loop rollouts.
 
 ### Fixed
 
+- Included stored GVS joint stiffness and damping in global stiffness and
+  damping assembly.
+- Resolved omitted GVS padding values in the advanced `GVS(params, structure)`
+  constructor and aligned rectangular geometry output with the shared
+  `[height, width]` cross-section convention.
+- Normalized caller-provided isotropic material sequences to JAX arrays and
+  rejected non-finite or nonphysical link geometry, density, and material
+  values during concrete construction and replacement.
+- Migrated examples, benchmarks, and paper case studies to the harmonized PCS
+  and GVS parameter APIs.
 - Kept values and reverse-mode gradients finite at degenerate normalization,
   division, square-root, inverse-kinematics, and thread-routing sites across
   PCS, GVS, Planar HSA, articulated, McKibben, rotation, and reference-trajectory
@@ -99,6 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arbitrary-axis SE(3) inputs, without adding autodiff to production paths.
 - Made simulation benchmark timing treat Python solver/save parameters as static
   JAX arguments so the existing rollout benchmark can compile and run.
+- Prevented automatically generated continuous-rollout save grids from
+  overshooting the requested final time, while always including that endpoint
+  exactly for both divisible and non-divisible save intervals.
 - Set the Section Vd collocated and synergistic optimization defaults to the
   100 iterations used by the paper-result histories, and document that setting
   in the reproduction commands.
@@ -110,6 +155,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the generated steady state is unsuitable for reverse-mode optimization.
 - Reported Open3D window-creation failures explicitly, with a clear error for
   environments that lack a usable display or OpenGL context.
+
+### Breaking changes
+
+- Removed flat PCS and PlanarPCS link/material fields. Access link data through
+  `params.link`, and construct systems with `from_links` or
+  `params_from_links`.
+- Removed the global PCS damping matrix and cross-link damping coupling. Supply
+  one generalized damping block per link.
+- Removed `GVSLinkParams` and GVS-local exports of shared link, joint, and
+  cross-section specifications. Import shared types from `soromox.systems` or
+  `soromox.systems.components`.
+- Replaced abbreviated GVS construction fields such as `E`, `nu`, `rho`,
+  `eta`, `L`, `r_i`, and `r_f` with descriptive material, geometry, and profile
+  arguments.
+- Moved `reference_strain` from `StrainBasisSpec` to `LinkSpec`; basis specs now
+  describe only the selected strains and basis order.
+- No compatibility aliases are provided. See the compact
+  [PCS/GVS parameter migration guide](../user-guide/parameter-api-migration.md)
+  for direct replacements.
 
 ## [0.2.2] - 2026-08-11
 

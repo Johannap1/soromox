@@ -7,10 +7,11 @@ import equinox as eqx
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 
+from soromox.systems.components import CrossSectionGeometry
 from soromox.systems.pcs.params import PlanarHSAParams
 from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.pcs.structures import PlanarHSAStructure
-from soromox.systems.soft_robot import CrossSectionGeometry, SoftRobot
+from soromox.systems.soft_robot import SoftRobot
 from soromox.utils.array_math import blk_diag
 from soromox.utils.dof import build_active_dof_basis
 from soromox.utils.geometry import poses
@@ -61,7 +62,9 @@ class PlanarHSA(PlanarPCS):
         proximal_cap_length: Rigid proximal cap lengths.
         distal_cap_length: Rigid distal cap lengths.
         end_effector_offset: End-effector pose offset ``[theta, x, y]``.
-        xi_ref: Reference virtual-backbone strain.
+        xi_ref: Runtime reference virtual-backbone strain inherited from
+            :class:`PlanarPCS`. The canonical physical-rod input is
+            ``params.reference_strain``.
         phi_max: Motor limits for underactuated operation.
         hysteresis_basis: Basis mapping hysteresis states to full strains.
         hysteresis_alpha: Post-yield to pre-yield stiffness ratios.
@@ -188,8 +191,6 @@ class PlanarHSA(PlanarPCS):
         self.L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros((1,)), self.L]))
         self.r = None
         self.rho = None
-        self.E = None
-        self.G = None
         self.scale_rotational_basis_by_length = False
 
         num_gauss_points = structure.num_gauss_points
@@ -535,7 +536,7 @@ class PlanarHSA(PlanarPCS):
 
     def _reference_physical_strains(self) -> Array:
         """Return the physical rod reference strains from the parameter set."""
-        return jnp.asarray(self.params.xi_ref, dtype=self.L.dtype)
+        return jnp.asarray(self.params.reference_strain, dtype=self.L.dtype)
 
     def virtual_to_physical_strains(self, vxi: Array) -> Array:
         """Map virtual-backbone strains to physical rod strains.

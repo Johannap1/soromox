@@ -15,10 +15,12 @@ from soromox.rendering import (
 )
 from soromox.systems import (
     GVS,
-    CrossSectionGeometry,
+    GVSSegment,
+    JointSpec,
+    LinkSpec,
+    StrainBasisSpec,
     SystemState,
 )
-from soromox.systems.gvs import GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 
 jax.config.update("jax_enable_x64", True)
 # jax.config.update("jax_platform_name", "gpu")
@@ -41,88 +43,46 @@ if __name__ == "__main__":
     bases: list[StrainBasisSpec] = []
     num_gauss_points: list[int] = []
 
-    link1 = LinkSpec(
-        cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-        E=1e6,
-        nu=0.5,
-        rho=1000,
-        eta=1e4,
-        L=0.3,
-        r_i=0.03,
-        r_f=0.03,
+    link1 = LinkSpec.circular(
+        length=0.3,
+        radius=0.03,
+        density=1000,
+        young_modulus=1e6,
+        shear_modulus=1e6 / (2.0 * (1.0 + 0.5)),
+        material_damping_coefficient=1e4,
+        reference_strain=[0, 0, 0, 1, 0, 0],
     )
     links.append(link1)
-    joint1 = JointSpec(type="Fixed")
+    joint1 = JointSpec.fixed()
     joints.append(joint1)
     basis1 = StrainBasisSpec(
-        type="Legendre",
-        active=[0, 1, 1, 1, 0, 0],
-        orders=[0, 1, 1, 1, 0, 0],
-        xi_ref=[0, 0, 0, 1, 0, 0],
+        type="legendre",
+        strain_selector=[0, 1, 1, 1, 0, 0],
+        basis_order=[0, 1, 1, 1, 0, 0],
     )
     bases.append(basis1)
     num_gauss_points.append(5)  # Number of Gauss points for the first link
 
-    link2 = LinkSpec(
-        cross_section_geometry=CrossSectionGeometry.CIRCULAR,
-        E=1e6,
-        nu=0.5,
-        rho=1000,
-        eta=1e4,
-        L=0.3,
-        r_i=0.03,
-        r_f=0.03,
+    link2 = LinkSpec.circular(
+        length=0.3,
+        radius=0.03,
+        density=1000,
+        young_modulus=1e6,
+        shear_modulus=1e6 / (2.0 * (1.0 + 0.5)),
+        material_damping_coefficient=1e4,
+        reference_strain=[0, 0, 0, 1, 0, 0],
     )
     links.append(link2)
-    joint2 = JointSpec(type="Fixed")
+    joint2 = JointSpec.fixed()
     # joint2 = JointAttributes(jointtype='Revolute', axis='z')
     joints.append(joint2)
     basis2 = StrainBasisSpec(
-        type="Legendre",
-        active=[0, 1, 1, 1, 0, 0],
-        orders=[0, 1, 1, 1, 0, 0],
-        xi_ref=[0, 0, 0, 1, 0, 0],
+        type="legendre",
+        strain_selector=[0, 1, 1, 1, 0, 0],
+        basis_order=[0, 1, 1, 1, 0, 0],
     )
     bases.append(basis2)
     num_gauss_points.append(5)  # Number of Gauss points for the second link
-
-    # link3 = LinkAttributes(
-    #     cross_section_geometry=CrossSectionGeometry.ELLIPTICAL,  # Section type
-    #     E=1e7,                # Young's modulus in Pascals
-    #     nu=0.4,               # Poisson's ratio [-1, 0.5]
-    #     rho=1050,             # Density [kg/m^3]
-    #     eta=1e4,              # Damping coefficient
-    #     L=0.3,                # Length in meters
-    #     a_i=0.04,             # Initial semi-major axis in meters
-    #     a_f=0.04,             # Final semi-major axis in meters
-    #     b_i=0.02,             # Initial semi-minor axis in meters
-    #     b_f=0.02              # Final semi-minor axis in meters
-    # )
-    # List_links.append(link3)
-    # joint3 = JointAttributes(
-    #     jointtype='Revolute',  # Prismatic joint
-    #     axis='z',               # Axis of translation
-    # )
-    # List_joints.append(joint3)
-    # basis3 = BasisAttributes(
-    #     basistype='Chebychev',       # Type of basis
-    #     Bdof=[0, 1, 0, 1, 0, 0],    # Degrees of freedom for each deformation type
-    #     Bodr=[0, 0, 0, 0, 0, 0],    # Order of basis functions for each deformation type
-    #     xi_ref=[0, 0, 0, 1, 0, 0], # Reference strain values as vector
-    # )
-    # List_basis.append(basis3)
-    # List_nGauss.append(5)  # Number of Gauss points for the third link
-
-    # ======================================================
-    # Robot initialization
-    # ======================================================
-    # robot = GVS(
-    #     links_list=List_links,
-    #     joints_list=List_joints,
-    #     basis_list=List_basis,
-    #     n_gauss_list=List_nGauss,
-    #     gravity_vector=[-9.81*1, -9.81*1, 0],
-    # )
 
     segments = [
         GVSSegment(link=link, joint=joint, basis=basis, num_gauss_points=n)
