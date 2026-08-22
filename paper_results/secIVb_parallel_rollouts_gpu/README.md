@@ -9,6 +9,9 @@ The data generator reuses the model registry and timing helpers from
 `tools/benchmarks/_benchmark_common.py`; the publication plotter remains
 case-local so it can apply the common paper style.
 
+Every generator run writes `data/benchmark_results.csv` by default. Pass
+`--csv PATH` to override the destination.
+
 Install dependencies and confirm that JAX sees the intended GPU:
 
 ```bash
@@ -57,5 +60,5 @@ uv run python paper_results/secIVb_parallel_rollouts_gpu/code/plot_benchmark_gpu
   --segment-counts 1 2 4 8 16 32
 ```
 
-Use explicit temporary `--csv` paths for validation runs to avoid replacing the
-committed hardware measurements.
+Use an explicit temporary `--csv` path for validation runs to avoid replacing
+the committed hardware measurements.

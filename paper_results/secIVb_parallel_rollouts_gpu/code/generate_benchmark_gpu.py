@@ -20,7 +20,6 @@ if __package__ in (None, ""):
 
 import jax
 import jax.numpy as jnp
-import numpy as onp
 import seaborn as sns
 
 jax.config.update("jax_enable_x64", True)
@@ -41,6 +40,10 @@ from tools.benchmarks._benchmark_common import (  # noqa: E402
 )
 
 Array = jax.Array
+
+CASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = CASE_DIR / "data"
+DEFAULT_CSV_PATH = DATA_DIR / "benchmark_results.csv"
 
 DEFAULT_SYSTEMS = ["articulated_soft_robot", "planar_pcs", "pcs", "gvs"]
 DEFAULT_SEGMENT_COUNTS = [1, 2, 4, 8, 16, 32]
@@ -163,19 +166,6 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         for row in results:
             fp.write(",".join(str(row.get(col, "")) for col in headers) + "\n")
     print(f"[+] Wrote CSV results to {path}")
-
-
-def _write_npz(results: Sequence[Mapping[str, Any]], path: Path) -> None:
-    if not results:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    columns: dict[str, list[Any]] = {}
-    for row in results:
-        for key, value in row.items():
-            columns.setdefault(key, []).append(value)
-    payload = {key: onp.array(vals) for key, vals in columns.items()}
-    onp.savez(path, **payload)
-    print(f"[+] Wrote NPZ results to {path}")
 
 
 def _size_value(row: Mapping[str, Any]) -> int:
@@ -344,12 +334,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--csv",
         type=Path,
-        help="Optional path to write the result table as CSV",
-    )
-    parser.add_argument(
-        "--npz",
-        type=Path,
-        help="Optional path to store the result table as a NumPy NPZ archive",
+        default=DEFAULT_CSV_PATH,
+        help=f"Path to write the result table as CSV (default: {DEFAULT_CSV_PATH})",
     )
     parser.add_argument(
         "--plot",
@@ -517,15 +503,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         }
                     )
 
-    if args.csv:
-        _write_csv(results, args.csv)
-    if args.npz:
-        _write_npz(results, args.npz)
+    _write_csv(results, args.csv)
     if args.plot or args.show_plot:
         _plot_results(results, args.plot, args.show_plot, args.log_x, args.log_y)
-
-    if not any((args.csv, args.npz, args.plot, args.show_plot)):
-        print("\n[!] No output artifacts were requested (use --csv / --npz / --plot).")
 
     return 0
 
