@@ -20,7 +20,6 @@ if __package__ in (None, ""):
 
 import jax
 import jax.numpy as jnp
-import seaborn as sns
 
 jax.config.update("jax_enable_x64", True)
 
@@ -180,14 +179,14 @@ def _plot_results(
     log_y: bool,
 ) -> None:
     import matplotlib.pyplot as plt
+    import seaborn as sns
 
     if not results:
         print("[!] No results available for plotting.")
         return
 
     systems = sorted({row["system"] for row in results})
-    if sns is not None:
-        sns.set_theme(style="whitegrid")
+    sns.set_theme(style="whitegrid")
 
     fig, axes = plt.subplots(
         2,
