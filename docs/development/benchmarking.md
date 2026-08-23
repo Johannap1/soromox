@@ -4,6 +4,8 @@ Soromox ships development benchmarking CLIs under `tools/benchmarks`:
 
 - `benchmark_system_methods.py` profiles individual model routines (forward kinematics,
   dynamics, etc.) to track JIT compile and steady-state execution costs.
+- `benchmark_model_based_control.py` profiles the default model-based controller
+  and controller-facing transformed-dynamics paths for PCS and GVS.
 - `benchmark_derivative_paths.py` compares direct analytical derivative hooks,
   protected autograd fallbacks, and public APIs with custom JVPs enabled or disabled
   for PlanarPCS, PCS, and GVS systems.
@@ -65,6 +67,27 @@ For `articulated_soft_robot`, the method benchmark includes both the default
 articulated-body forward dynamics path and a dense Jacobian-energy forward
 dynamics solve (`forward_dynamics_dense`). Comparing these two cases is useful
 for tracking ABA performance against the controller-facing dense dynamics API.
+
+## Benchmarking model-based control
+
+`benchmark_model_based_control.py` measures the checked-out implementation of
+the computed-torque and configuration-/actuation-space feedforward terms, plus
+the operational-space dynamics terms used by operational controllers. The
+benchmark intentionally contains no legacy strategy switch: compare revisions
+by running the same command in separate clean worktrees.
+
+```bash
+python tools/benchmarks/benchmark_model_based_control.py \
+  --systems pcs gvs \
+  --segment-counts 1 4 \
+  --gauss-points 5 \
+  --execution-repeats 50 \
+  --json /tmp/model-based-control.json
+```
+
+Use `--methods` to select individual controller paths and `--csv` for a
+tabular export. Each row reports derived compile time and synchronized warm
+execution time for the default implementation on that revision.
 
 ## Benchmarking derivative paths
 

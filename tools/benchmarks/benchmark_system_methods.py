@@ -385,6 +385,14 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             ),
         ),
         BenchmarkCase(
+            name="dynamics_terms",
+            description="Fused M, C @ qd, and G path",
+            builder=lambda sys, ctx, _: (
+                sys.dynamics_terms,
+                (ctx["q"], ctx["qd"]),
+            ),
+        ),
+        BenchmarkCase(
             name="forward_dynamics",
             builder=lambda sys, ctx, _: (
                 lambda t, y, args: sys.forward_dynamics(t, y, args),
@@ -467,6 +475,14 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
         BenchmarkCase(
             name="gravitational_force",
             builder=lambda sys, ctx, _: (sys.gravitational_force, (ctx["q"],)),
+        ),
+        BenchmarkCase(
+            name="dynamics_terms",
+            description="Fused M, C @ qd, and G path",
+            builder=lambda sys, ctx, _: (
+                sys.dynamics_terms,
+                (ctx["q"], ctx["qd"]),
+            ),
         ),
         BenchmarkCase(
             name="forward_dynamics",
