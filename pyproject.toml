@@ -128,6 +128,10 @@ dependencies = [
 cuda13 = [
     "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
     "torch>=2.13.0; sys_platform == 'linux'",
+    "warp-lang>=1.16.0; sys_platform == 'linux'",
+]
+warp = [
+    "warp-lang>=1.16.0",
 ]
 dev = [
     "bump2version",
@@ -245,6 +249,7 @@ all = [
     "tox",
     "trimesh",
     "viser",
+    "warp-lang>=1.16.0",
 ]
 
 # List URLs that are relevant to your project

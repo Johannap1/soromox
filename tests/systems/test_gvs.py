@@ -1828,6 +1828,70 @@ def test_dynamics_terms_match_public_matrices(
         assert_allclose(G, robot.gravitational_force(q), rtol=RTOL, atol=ATOL)
 
 
+def test_dynamics_terms_batched_jax_matches_single_environment_api() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+    key_q, key_qd = jax.random.split(jax.random.PRNGKey(6125))
+    q = jax.random.normal(
+        key_q, (3, robot.num_dofs), dtype=jnp.float64
+    ) * 0.02
+    qd = jax.random.normal(
+        key_qd, (3, robot.num_dofs), dtype=jnp.float64
+    ) * 0.04
+
+    expected = jax.vmap(robot.dynamics_terms)(q, qd)
+    actual = robot.dynamics_terms_batched(q, qd, backend="jax")
+
+    for actual_term, expected_term in zip(actual, expected, strict=True):
+        assert_allclose(actual_term, expected_term, rtol=RTOL, atol=ATOL)
+
+
+def test_warp_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+    expected_prefixes = jnp.cumsum(jnp.sum(robot.dofs_per_segment, axis=1))
+
+    assert_allclose(robot.active_dofs_per_segment, expected_prefixes)
+    for segment in range(robot.num_segments):
+        for block, (local_to_global, global_to_local) in enumerate(
+            (
+                (robot.joint_local_to_global, robot.joint_global_to_local),
+                (robot.link_local_to_global, robot.link_global_to_local),
+            )
+        ):
+            dofs = int(robot.dofs_per_segment[segment, block])
+            for local_column in range(robot.max_dof):
+                global_column = int(local_to_global[segment, local_column])
+                if local_column < dofs:
+                    assert global_column >= 0
+                    assert (
+                        int(global_to_local[segment, global_column]) == local_column
+                    )
+                else:
+                    assert global_column == -1
+
+
+def test_dynamics_terms_batched_warp_matches_heterogeneous_jax(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "warp-cache"))
+    pytest.importorskip("warp")
+    robot = build_varied_basis_gvs(num_segments=3)
+    q = jnp.stack(
+        (
+            jnp.linspace(-0.02, 0.03, robot.num_dofs, dtype=jnp.float64),
+            jnp.linspace(0.01, -0.015, robot.num_dofs, dtype=jnp.float64),
+        )
+    )
+    qd = 0.5 * q
+
+    expected = robot.dynamics_terms_batched(q, qd, backend="jax")
+    actual = robot.dynamics_terms_batched(q, qd, backend="warp")
+    automatic = robot.dynamics_terms_batched(q, qd, backend="auto")
+
+    for result in (actual, automatic):
+        for actual_term, expected_term in zip(result, expected, strict=True):
+            assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
+
+
 def test_cached_constant_matrices_refresh_after_update_params() -> None:
     selector_per_segment = (False, False, True, True, False, False)
     robot = build_constant_strain_gvs(
