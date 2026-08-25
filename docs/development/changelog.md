@@ -79,7 +79,7 @@ and include benchmark baseline and measurement context for performance claims.
 - Thanks to [@ivrolan](https://github.com/ivrolan) for his contributions to
   [PR #162](https://github.com/tud-phi/soromox/pull/162).
 - Thanks to [@mohammedtarnini](https://github.com/mohammedtarnini) for his
-  suggestion, which we implemented in
+  suggesting the improvement implemented in
   [PR #166](https://github.com/tud-phi/soromox/pull/166).
 
 ## [0.2.3] - 2026-08-19
