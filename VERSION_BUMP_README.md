@@ -13,6 +13,10 @@ unmerged release branch.
    worktree is clean.
 2. Add release notes below `[Unreleased]` in
    `docs/development/changelog.md`.
+   Before continuing, review the `Contributors` subsection and credit every
+   external contribution included in the release, including useful suggestions
+   from reviewers or issue discussions. Use the contributor's GitHub handle
+   and link the relevant pull request.
 3. Preview the metadata update:
 
    ```bash
@@ -69,7 +73,13 @@ user-facing notes:
 - `Documentation`: material improvements to user or developer documentation and
   examples.
 - `Contributors`: meaningful acknowledgements with GitHub handles and pull
-  request links.
+  request links. Review both PR authors and people whose suggestions or
+  reviews materially shaped the release; do not assume the commit author list
+  captures everyone who should be credited.
+
+The version bump script moves the `Unreleased` notes into the dated release
+section but cannot infer contextual contributions from Git history alone. Treat
+the contributor review above as a required release checklist item.
 
 Do not add separate `Removed` or `Security` sections. Record removals under
 `Breaking changes` when they affect users, and record security fixes under
