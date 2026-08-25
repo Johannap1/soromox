@@ -13,6 +13,12 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added a common static `consider_coriolis` model setting to every `SoftRobot`
+  family. It defaults to the existing exact dynamics and can be disabled at
+  construction, including through `from_links` and `from_segments`, to omit
+  Coriolis forces from direct dynamics and all rollout variants while retaining
+  exact explicit Coriolis diagnostics and energy derivatives.
+
 ### Changed
 
 - Made the system-method benchmark device-selectable and reproducible on
@@ -21,6 +27,17 @@ and include benchmark baseline and measurement context for performance claims.
   execution samples.
 
 ### Performance
+
+- Added derivative-free dynamics assembly paths for ArticulatedSoftRobot,
+  McKibben UMArm, PlanarPCS and inheritors, PCS and inheritors, GVS, PlanarHSA,
+  and Pendulum when Coriolis forces are disabled. In a single-performance-core
+  CPU reference sweep (1/4/8/16 links or segments, five Gauss points, a
+  one-second warmup, and 20 measured repetitions), the overall warm-runtime
+  geometric-mean ratios were 1.61x for ArticulatedSoftRobot, 1.38x for
+  PlanarPCS, 1.60x for PCS, and 1.38x for GVS; rollout-only geometric means were
+  1.75x, 1.59x, 1.82x, and 1.33x respectively.
+  See the [benchmarking guide](benchmarking.md#optional-coriolis-reference-measurement)
+  for the exact commands and per-method results.
 
 ### Deprecated
 

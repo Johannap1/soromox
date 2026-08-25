@@ -262,7 +262,8 @@ class PCS(SoftRobot):
             base_pose: Optional base translation and unit quaternion with shape
                 ``(7,)``.
             **kwargs: Additional keyword arguments forwarded to the PCS
-                constructor, such as actuators or passive elements.
+                constructor, such as ``consider_coriolis``, actuators, or
+                passive elements.
 
         Returns:
             A fully initialized spatial PCS model.
@@ -3126,6 +3127,79 @@ class PCS(SoftRobot):
         return Ws_inner, g_ps, J_ps, Jd_or_Jd_qd_ps
 
     @eqx.filter_jit
+    def _dynamics_integration_pose_jacobians(
+        self, q: Array
+    ) -> tuple[Array, Array, Array]:
+        """Return derivative-free local gravity and Jacobian quadrature data."""
+        xi = self.strain(q).reshape(self.num_segments, 6)
+        B_xi_segments = self.B_xi.reshape(self.num_segments, 6, self.num_dofs)
+        prepared_powers = vmap(constant_strain_se3._prepare_jacobian_powers)(xi)
+
+        Xs_inner, Ws_inner = vmap(
+            scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
+        s_local = Xs_inner - self.L_cum[:-1, None]
+
+        tip_operators = vmap(
+            lambda prepared_i, L_i: (
+                constant_strain_se3._jacobian_operators_from_prepared(
+                    prepared_i,
+                    L_i,
+                    self.global_eps,
+                    self.tangent_eps,
+                )
+            )
+        )(prepared_powers, self.L)
+        Ad_inv_tips, Ad_inv_T_tips = tip_operators
+        zeros = jnp.zeros((6, self.num_dofs), dtype=xi.dtype)
+        gravity_base_initial = se3.adjoint_inverse(self.g0) @ self.g
+        local_jacobian_tips = vmap(lambda T_i, B_xi_i: T_i @ B_xi_i)(
+            Ad_inv_T_tips, B_xi_segments
+        )
+        J_bases, gravity_bases = self._propagate_body_jacobian_and_gravity(
+            zeros,
+            gravity_base_initial,
+            Ad_inv_tips,
+            local_jacobian_tips,
+        )
+
+        def segment_kinematics(
+            prepared_i: constant_strain_se3._PreparedJacobianPowers,
+            B_xi_i: Array,
+            gravity_base_i: Array,
+            J_base_i: Array,
+            s_local_i: Array,
+        ) -> tuple[Array, Array]:
+            def kinematics_at_s(s_local_ij: Array) -> tuple[Array, Array]:
+                Ad_inv, Ad_inv_T = (
+                    constant_strain_se3._jacobian_operators_from_prepared(
+                        prepared_i,
+                        s_local_ij,
+                        self.global_eps,
+                        self.tangent_eps,
+                    )
+                )
+                J_next = Ad_inv @ J_base_i + Ad_inv_T @ B_xi_i
+                gravity_local = Ad_inv @ gravity_base_i
+                return gravity_local, J_next
+
+            return vmap(kinematics_at_s)(s_local_i)
+
+        gravity_ps, J_ps = vmap(segment_kinematics)(
+            prepared_powers,
+            B_xi_segments,
+            gravity_bases,
+            J_bases,
+            s_local,
+        )
+        return Ws_inner, gravity_ps, J_ps
+
+    @eqx.filter_jit
     def _dynamics_integration_kinematics(
         self, q: Array, qd: Array
     ) -> tuple[Array, Array, Array, Array]:
@@ -3253,9 +3327,13 @@ class PCS(SoftRobot):
             ``(self.num_dofs,)``. ``G`` is the active generalized gravity
             vector with shape ``(self.num_dofs,)``.
         """
-        weights, gravity, jacobians, jacobian_dot_qd = (
-            self._dynamics_integration_kinematics(q, qd)
-        )
+        if self.consider_coriolis:
+            weights, gravity, jacobians, jacobian_dot_qd = (
+                self._dynamics_integration_kinematics(q, qd)
+            )
+        else:
+            weights, gravity, jacobians = self._dynamics_integration_pose_jacobians(q)
+            jacobian_dot_qd = None
         inertia = jnp.zeros((self.num_dofs, self.num_dofs), dtype=jacobians.dtype)
         coriolis_qd = jnp.zeros((self.num_dofs,), dtype=jacobians.dtype)
         gravity_force = jnp.zeros((self.num_dofs,), dtype=jacobians.dtype)
@@ -3278,11 +3356,19 @@ class PCS(SoftRobot):
             ).reshape(flattened_rows, dof_end)
             inertia_segment = jacobian_flat.T @ weighted_mass_jacobian
 
-            eta = jacobian @ qd[:dof_end]
-            momentum = mass_action(eta)
-            coadjoint_momentum = vmap(se3.coadjoint_action)(eta, momentum)
-            wrench = mass_action(jacobian_dot_qd[segment_index]) + coadjoint_momentum
-            coriolis_segment = jacobian_flat.T @ (weight[:, None] * wrench).reshape(-1)
+            if self.consider_coriolis:
+                assert jacobian_dot_qd is not None
+                eta = jacobian @ qd[:dof_end]
+                momentum = mass_action(eta)
+                coadjoint_momentum = vmap(se3.coadjoint_action)(eta, momentum)
+                wrench = (
+                    mass_action(jacobian_dot_qd[segment_index]) + coadjoint_momentum
+                )
+                coriolis_segment = jacobian_flat.T @ (weight[:, None] * wrench).reshape(
+                    -1
+                )
+            else:
+                coriolis_segment = jnp.zeros((dof_end,), dtype=jacobians.dtype)
             gravity_segment = -jacobian_flat.T @ (
                 weight[:, None] * mass_action(gravity[segment_index])
             ).reshape(-1)

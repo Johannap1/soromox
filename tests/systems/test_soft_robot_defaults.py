@@ -1,4 +1,6 @@
+import equinox as eqx
 import jax
+import pytest
 from jax import Array
 from jax import numpy as jnp
 from numpy.testing import assert_allclose
@@ -19,8 +21,8 @@ jax.config.update("jax_enable_x64", True)
 class _PlanarDefaultRobot(SoftRobot):
     L: Array
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, consider_coriolis: bool = True):
+        super().__init__(consider_coriolis=consider_coriolis)
         self.num_dofs = 2
         self.num_actuators = 2
         self.L = jnp.array([1.0, 2.0], dtype=jnp.float64)
@@ -143,6 +145,12 @@ class _ToggleSentinelDefaultRobot(_PlanarDefaultRobot):
 
     def _gravitational_force(self, q: Array) -> Array:
         return jnp.array([4.0, -2.0], dtype=q.dtype)
+
+
+class _CoriolisGuardDefaultRobot(_PlanarDefaultRobot):
+    def coriolis_matrix(self, q: Array, qd: Array) -> Array:
+        del q, qd
+        raise AssertionError("disabled dynamics evaluated coriolis_matrix")
 
 
 def test_custom_jvp_global_toggle_context_manager_restores_state() -> None:
@@ -418,6 +426,111 @@ def test_default_gravity_force_and_forward_dynamics() -> None:
     qdd = jnp.linalg.solve(robot.inertia_matrix(q), rhs)
 
     assert_allclose(robot.forward_dynamics(0.0, y, (u, tau_ext)), jnp.r_[qd, qdd])
+
+
+def test_default_dynamics_can_omit_coriolis_without_changing_diagnostics() -> None:
+    enabled = _PlanarDefaultRobot(consider_coriolis=True)
+    disabled = _PlanarDefaultRobot(consider_coriolis=False)
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    qd = jnp.array([0.7, -0.4], dtype=jnp.float64)
+    u = jnp.array([1.5, -2.0], dtype=jnp.float64)
+    tau_ext = jnp.array([0.25, -0.75], dtype=jnp.float64)
+
+    M_enabled, _, G_enabled = enabled.dynamics_terms(q, qd)
+    M_disabled, Cqd_disabled, G_disabled = disabled.dynamics_terms(q, qd)
+    assert_allclose(M_disabled, M_enabled, rtol=1e-12, atol=1e-12)
+    assert_allclose(G_disabled, G_enabled, rtol=1e-12, atol=1e-12)
+    assert_allclose(Cqd_disabled, jnp.zeros_like(qd), rtol=0.0, atol=0.0)
+    assert_allclose(
+        disabled.coriolis_matrix(q, qd),
+        enabled.coriolis_matrix(q, qd),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+    rhs = (
+        disabled.actuation_force(q, u, qd=qd)
+        + tau_ext
+        - G_disabled
+        - disabled.elastic_force(q)
+        - disabled.damping_matrix(q) @ qd
+    )
+    expected_qdd = jnp.linalg.solve(M_disabled, rhs)
+    actual = disabled.forward_dynamics(0.0, jnp.concatenate([q, qd]), (u, tau_ext))
+    assert_allclose(
+        actual,
+        jnp.concatenate([qd, expected_qdd]),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_disabling_coriolis_preserves_exact_energy_derivatives() -> None:
+    enabled = _PlanarDefaultRobot(consider_coriolis=True)
+    disabled = _PlanarDefaultRobot(consider_coriolis=False)
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    qd = jnp.array([0.7, -0.4], dtype=jnp.float64)
+    q_tangent = jnp.array([-0.6, 0.25], dtype=jnp.float64)
+    qdd = jnp.array([0.15, -0.35], dtype=jnp.float64)
+
+    def energy_jvp(robot: SoftRobot) -> Array:
+        return jax.jvp(
+            lambda q_, qd_: robot.total_energy(q_, qd_),
+            (q, qd),
+            (q_tangent, qdd),
+        )[1]
+
+    assert_allclose(
+        disabled.total_energy(q, qd),
+        enabled.total_energy(q, qd),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    assert_allclose(
+        jax.grad(disabled.total_energy, argnums=(0, 1))(q, qd),
+        jax.grad(enabled.total_energy, argnums=(0, 1))(q, qd),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    assert_allclose(energy_jvp(disabled), energy_jvp(enabled), rtol=1e-12, atol=1e-12)
+
+
+def test_static_coriolis_modes_compile_separate_executables() -> None:
+    enabled = _PlanarDefaultRobot(consider_coriolis=True)
+    disabled = _PlanarDefaultRobot(consider_coriolis=False)
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    qd = jnp.array([0.7, -0.4], dtype=jnp.float64)
+    trace_count = {"value": 0}
+
+    @eqx.filter_jit
+    def compiled_terms(robot: SoftRobot, q: Array, qd: Array):
+        trace_count["value"] += 1
+        return robot.dynamics_terms(q, qd)
+
+    compiled_terms(enabled, q, qd)
+    compiled_terms(enabled, q, qd)
+    compiled_terms(disabled, q, qd)
+    compiled_terms(disabled, q, qd)
+
+    assert trace_count["value"] == 2
+
+
+def test_consider_coriolis_requires_a_boolean() -> None:
+    with pytest.raises(TypeError, match="consider_coriolis must be a bool"):
+        _PlanarDefaultRobot(consider_coriolis=1)  # type: ignore[arg-type]
+
+
+def test_disabled_default_dynamics_never_evaluate_coriolis_matrix() -> None:
+    robot = _CoriolisGuardDefaultRobot(consider_coriolis=False)
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    qd = jnp.array([0.7, -0.4], dtype=jnp.float64)
+    y = jnp.concatenate([q, qd])
+
+    _, Cqd, _ = robot.dynamics_terms(q, qd)
+    yd = robot.forward_dynamics(jnp.array(0.0), y)
+
+    assert_allclose(Cqd, jnp.zeros_like(qd), rtol=0.0, atol=0.0)
+    assert jnp.all(jnp.isfinite(yd))
 
 
 def test_default_potential_force_sums_conservative_forces() -> None:

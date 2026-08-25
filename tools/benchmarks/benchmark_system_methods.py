@@ -153,14 +153,12 @@ def _dense_forward_dynamics(
     if tau_ext is None:
         tau_ext = jnp.zeros((system.num_dofs,), dtype=y.dtype)
 
-    M = system.inertia_matrix(q)
-    C = system.coriolis_matrix(q, qd)
-    G = system.gravitational_force(q)
+    M, Cqd, G = system.dynamics_terms(q, qd)
     D = system.damping_matrix(q)
     rhs = (
         system.actuation_force(q, u)
         + tau_ext
-        - C @ qd
+        - Cqd
         - G
         - system.elastic_force(q)
         - D @ qd
@@ -301,6 +299,14 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             ),
         ),
         BenchmarkCase(
+            name="dynamics_terms",
+            description="Dense M, C @ qd, and G path",
+            builder=lambda sys, ctx, _: (
+                sys.dynamics_terms,
+                (ctx["q"], ctx["qd"]),
+            ),
+        ),
+        BenchmarkCase(
             name="forward_dynamics",
             description="ABA-backed forward dynamics",
             builder=lambda sys, ctx, _: (
@@ -367,6 +373,14 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (
                 sys.jacobian_and_time_derivative,
                 (ctx["q"], ctx["qd"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="dynamics_terms",
+            description="Fused M, C @ qd, and G path",
+            builder=lambda sys, ctx, _: (
+                sys.dynamics_terms,
+                (ctx["q"], ctx["qd"]),
             ),
         ),
         BenchmarkCase(
@@ -631,6 +645,10 @@ def _plot_results(
         subset = [res for res in results if res["system"] == system]
         size_label = subset[0]["size_label"]
         functions = sorted({res["function"] for res in subset})
+        coriolis_modes = sorted(
+            {bool(res.get("consider_coriolis", True)) for res in subset},
+            reverse=True,
+        )
         ax_compile = axes[row, 0]
         ax_exec = axes[row, 1]
         gauss_values = {
@@ -643,39 +661,64 @@ def _plot_results(
         if plot_gauss_axis:
             sizes = sorted({res["size_value"] for res in subset})
             for fn_name in functions:
-                for size in sizes:
+                for consider_coriolis in coriolis_modes:
+                    for size in sizes:
+                        fn_results = sorted(
+                            (
+                                res
+                                for res in subset
+                                if res["function"] == fn_name
+                                and res["size_value"] == size
+                                and bool(res.get("consider_coriolis", True))
+                                is consider_coriolis
+                                and res.get("gauss_points") not in (None, "")
+                            ),
+                            key=lambda item: item["gauss_points"],
+                        )
+                        if not fn_results:
+                            continue
+                        x_values = [item["gauss_points"] for item in fn_results]
+                        compile_times = [
+                            item["jit_compile_time_s"] for item in fn_results
+                        ]
+                        exec_times = [
+                            item["jit_execution_time_s"] for item in fn_results
+                        ]
+                        label_parts = [fn_name]
+                        if len(sizes) > 1:
+                            label_parts.append(f"{size_label}={size}")
+                        if len(coriolis_modes) > 1:
+                            label_parts.append(
+                                "Coriolis on" if consider_coriolis else "Coriolis off"
+                            )
+                        label = ", ".join(label_parts)
+                        ax_compile.plot(
+                            x_values, compile_times, marker="o", label=label
+                        )
+                        ax_exec.plot(x_values, exec_times, marker="o", label=label)
+        else:
+            for fn_name in functions:
+                for consider_coriolis in coriolis_modes:
                     fn_results = sorted(
                         (
                             res
                             for res in subset
                             if res["function"] == fn_name
-                            and res["size_value"] == size
-                            and res.get("gauss_points") not in (None, "")
+                            and bool(res.get("consider_coriolis", True))
+                            is consider_coriolis
                         ),
-                        key=lambda item: item["gauss_points"],
+                        key=lambda item: item["size_value"],
                     )
-                    if not fn_results:
-                        continue
-                    x_values = [item["gauss_points"] for item in fn_results]
+                    sizes = [item["size_value"] for item in fn_results]
                     compile_times = [item["jit_compile_time_s"] for item in fn_results]
                     exec_times = [item["jit_execution_time_s"] for item in fn_results]
-                    label = (
-                        f"{fn_name}, {size_label}={size}" if len(sizes) > 1 else fn_name
-                    )
-                    ax_compile.plot(x_values, compile_times, marker="o", label=label)
-                    ax_exec.plot(x_values, exec_times, marker="o", label=label)
-        else:
-            for fn_name in functions:
-                fn_results = sorted(
-                    (res for res in subset if res["function"] == fn_name),
-                    key=lambda item: item["size_value"],
-                )
-                sizes = [item["size_value"] for item in fn_results]
-                compile_times = [item["jit_compile_time_s"] for item in fn_results]
-                exec_times = [item["jit_execution_time_s"] for item in fn_results]
+                    label = fn_name
+                    if len(coriolis_modes) > 1:
+                        state = "on" if consider_coriolis else "off"
+                        label = f"{fn_name}, Coriolis {state}"
 
-                ax_compile.plot(sizes, compile_times, marker="o", label=fn_name)
-                ax_exec.plot(sizes, exec_times, marker="o", label=fn_name)
+                    ax_compile.plot(sizes, compile_times, marker="o", label=label)
+                    ax_exec.plot(sizes, exec_times, marker="o", label=label)
 
         ax_compile.set_title(f"{system} – compile")
         ax_exec.set_title(f"{system} – execution")
@@ -714,6 +757,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "size_value",
         "gauss_points",
         "integration_points",
+        "consider_coriolis",
         "backend",
         "cpu_affinity",
         "jit_compile_time_s",
@@ -749,6 +793,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         metavar="METHOD",
         help=(
             f"Methods to benchmark (default: all). Available: {', '.join(all_methods)}"
+        ),
+    )
+    parser.add_argument(
+        "--coriolis-modes",
+        nargs="+",
+        choices=("enabled", "disabled"),
+        default=("enabled",),
+        help=(
+            "Coriolis configurations to benchmark. Pass both 'enabled' and "
+            "'disabled' to measure the approximation speedup."
         ),
     )
     parser.add_argument(
@@ -858,74 +912,82 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for size in args.segment_counts:
             for requested_gauss_points in gauss_values:
-                system = build_system_with_gauss_points(
-                    system_cfg, size, requested_gauss_points
-                )
-                gauss_points, integration_points = system_gauss_point_metadata(system)
-                gauss_note = ""
-                if requested_gauss_points is not None:
-                    gauss_note = (
-                        f", gauss_points={gauss_points}, "
-                        f"integration_points={integration_points}"
+                for coriolis_mode in args.coriolis_modes:
+                    consider_coriolis = coriolis_mode == "enabled"
+                    system = build_system_with_gauss_points(
+                        system_cfg,
+                        size,
+                        requested_gauss_points,
+                        consider_coriolis=consider_coriolis,
                     )
-
-                print(
-                    f"\n=== Benchmarking {system_name} with "
-                    f"{system_cfg.size_label}={size}{gauss_note} ==="
-                )
-                ctx = system_cfg.build_context(system)
-                for case in cases_to_run:
-                    fn, call_args = case.builder(system, ctx, runtime)
-                    print(f"  -> {case.name} ...", end=" ", flush=True)
-                    compile_time, exec_time = _measure_jitted_call(
-                        fn,
-                        call_args,
-                        runtime.execution_repeats,
-                        runtime.warmup_duration,
+                    gauss_points, integration_points = system_gauss_point_metadata(
+                        system
                     )
-
-                    per_point_note = ""
-                    if (
-                        case.name == "forward_kinematics_batched"
-                        and len(call_args) >= 2
-                    ):
-                        s_arg = call_args[1]
-                        num_points = None
-                        if hasattr(s_arg, "shape") and s_arg.shape:
-                            num_points = int(s_arg.shape[0])
-                        else:
-                            try:
-                                num_points = int(len(s_arg))
-                            except TypeError:
-                                num_points = None
-                        if num_points and num_points > 0:
-                            compile_time /= num_points
-                            exec_time /= num_points
-                            per_point_note = f" (per point over {num_points})"
-
+                    gauss_note = ""
+                    if requested_gauss_points is not None:
+                        gauss_note = (
+                            f", gauss_points={gauss_points}, "
+                            f"integration_points={integration_points}"
+                        )
                     print(
-                        f"compile {compile_time:.4f}s | exec {exec_time:.4f}s"
-                        f"{per_point_note}"
+                        f"\n=== Benchmarking {system_name} with "
+                        f"{system_cfg.size_label}={size}{gauss_note}, "
+                        f"Coriolis {coriolis_mode} ==="
                     )
-                    results.append(
-                        {
-                            "system": system_name,
-                            "function": case.name,
-                            "size_label": system_cfg.size_label,
-                            "size_value": size,
-                            "gauss_points": gauss_points,
-                            "integration_points": integration_points,
-                            "backend": active_backend,
-                            "cpu_affinity": active_cpu_affinity,
-                            "jit_compile_time_s": compile_time,
-                            "jit_execution_time_s": exec_time,
-                            "duration": runtime.duration,
-                            "solver_dt": runtime.solver_dt,
-                            "save_dt": runtime.save_dt,
-                            "execution_repeats": runtime.execution_repeats,
-                            "warmup_duration": runtime.warmup_duration,
-                        }
-                    )
+                    ctx = system_cfg.build_context(system)
+                    for case in cases_to_run:
+                        fn, call_args = case.builder(system, ctx, runtime)
+                        print(f"  -> {case.name} ...", end=" ", flush=True)
+                        compile_time, exec_time = _measure_jitted_call(
+                            fn,
+                            call_args,
+                            runtime.execution_repeats,
+                            runtime.warmup_duration,
+                        )
+
+                        per_point_note = ""
+                        if (
+                            case.name == "forward_kinematics_batched"
+                            and len(call_args) >= 2
+                        ):
+                            s_arg = call_args[1]
+                            num_points = None
+                            if hasattr(s_arg, "shape") and s_arg.shape:
+                                num_points = int(s_arg.shape[0])
+                            else:
+                                try:
+                                    num_points = int(len(s_arg))
+                                except TypeError:
+                                    num_points = None
+                            if num_points and num_points > 0:
+                                compile_time /= num_points
+                                exec_time /= num_points
+                                per_point_note = f" (per point over {num_points})"
+
+                        print(
+                            f"compile {compile_time:.4f}s | exec {exec_time:.4f}s"
+                            f"{per_point_note}"
+                        )
+                        results.append(
+                            {
+                                "system": system_name,
+                                "function": case.name,
+                                "size_label": system_cfg.size_label,
+                                "size_value": size,
+                                "gauss_points": gauss_points,
+                                "integration_points": integration_points,
+                                "consider_coriolis": consider_coriolis,
+                                "backend": active_backend,
+                                "cpu_affinity": active_cpu_affinity,
+                                "jit_compile_time_s": compile_time,
+                                "jit_execution_time_s": exec_time,
+                                "duration": runtime.duration,
+                                "solver_dt": runtime.solver_dt,
+                                "save_dt": runtime.save_dt,
+                                "execution_repeats": runtime.execution_repeats,
+                                "warmup_duration": runtime.warmup_duration,
+                            }
+                        )
 
     artifacts: list[str] = []
 

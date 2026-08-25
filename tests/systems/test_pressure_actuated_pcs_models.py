@@ -141,6 +141,7 @@ def test_isupport_parameter_updates_are_immutable_and_refresh_eager_caches():
     robot = ISupport(
         params=params,
         structure=make_pneumatic_isupport_structure(num_gauss_points=1),
+        consider_coriolis=False,
     )
     updated_params = updated_isupport_params(params)
     before = isupport_runtime_summary(robot)
@@ -149,6 +150,7 @@ def test_isupport_parameter_updates_are_immutable_and_refresh_eager_caches():
 
     assert jnp.allclose(isupport_runtime_summary(robot), before)
     assert not jnp.allclose(isupport_runtime_summary(updated), before)
+    assert updated.consider_coriolis is False
 
 
 def test_isupport_same_structure_parameter_updates_compile_once():

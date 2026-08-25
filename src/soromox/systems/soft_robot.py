@@ -74,10 +74,15 @@ class SoftRobot(DynamicalSystem):
             integration, typically on the normalized interval [0, 1].
         integration_weights (Array | None): Quadrature weights corresponding
             to `integration_points`.
+        consider_coriolis (bool): Whether forward-dynamics assembly includes
+            Coriolis and centrifugal forces. This is a static model setting so
+            JAX compiles separate optimized programs for the enabled and
+            disabled cases. Defaults to ``True``.
     """
 
     # global epsilon for numerical computations
     global_eps: float  # Global epsilon for numerical computations
+    consider_coriolis: bool = eqx.field(static=True)
     base_pose: Array
     num_gauss_points: int | Array | None
     num_integration_points: int | Array | None
@@ -99,6 +104,7 @@ class SoftRobot(DynamicalSystem):
         self,
         eps: float | None = None,
         base_pose: Array | None = None,
+        consider_coriolis: bool = True,
         **kwargs: Any,
     ):
         """Initialize the SoftRobot.
@@ -113,11 +119,18 @@ class SoftRobot(DynamicalSystem):
                 normalized before use, and must have nonzero finite norm. If
                 omitted, the upright pose is used: the backbone points along
                 world +y for planar robots and world +z for spatial robots.
+            consider_coriolis: Whether :meth:`dynamics_terms` and
+                :meth:`forward_dynamics` include Coriolis and centrifugal
+                forces. Defaults to ``True``. The explicit
+                :meth:`coriolis_matrix` diagnostic is unaffected.
             **kwargs: Additional keyword arguments (unused, kept for API compatibility).
         """
         # Note: We don't call super().__init__() here because Equinox modules
         # work like dataclasses - fields are set directly rather than through
         # parent __init__ calls. Child classes must set num_dofs and num_actuators.
+        if not isinstance(consider_coriolis, bool):
+            raise TypeError("consider_coriolis must be a bool.")
+        self.consider_coriolis = consider_coriolis
         if base_pose is None:
             if self.is_planar:
                 base_pose = jnp.array([jnp.pi / 2, 0.0, 0.0], dtype=jnp.float64)
@@ -1201,11 +1214,22 @@ class SoftRobot(DynamicalSystem):
         ``d(C(v) @ v)[qd, qd_tangent] / 2 = C(q, qd_tangent) @ qd``
         for the standard Christoffel/energy-consistent Coriolis convention.
         """
-        _, coriolis_cross = jvp(
-            lambda velocity: self.dynamics_terms(q, velocity)[1],
-            (qd,),
-            (qd_tangent,),
-        )
+        if self.consider_coriolis:
+            _, coriolis_cross = jvp(
+                lambda velocity: self.dynamics_terms(q, velocity)[1],
+                (qd,),
+                (qd_tangent,),
+            )
+        else:
+            # ``consider_coriolis`` changes only the equations assembled for
+            # simulation. Energy derivatives remain derivatives of the exact
+            # kinetic energy and therefore use the explicit physical
+            # Coriolis diagnostic when the approximate dynamics path is active.
+            _, coriolis_cross = jvp(
+                lambda velocity: self.coriolis_matrix(q, velocity) @ velocity,
+                (qd,),
+                (qd_tangent,),
+            )
         return 0.5 * coriolis_cross
 
     def gravitational_energy(self, q: Array) -> Array:
@@ -1414,6 +1438,67 @@ class SoftRobot(DynamicalSystem):
     # Dynamics
     # -----------------------------------------
 
+    def _propagate_body_jacobian_and_gravity(
+        self,
+        jacobian_initial: Array,
+        gravity_initial: Array,
+        adjoint_inverse_steps: Array,
+        local_jacobian_steps: Array,
+    ) -> tuple[Array, Array]:
+        """Propagate segment-base Jacobians and gravity through body frames.
+
+        This shared q-only recurrence is useful for serial models whose
+        derivative-free dynamics path has already constructed each step's
+        inverse adjoint and local Jacobian increment. Lie-group-specific
+        operator construction remains with the concrete system.
+
+        Args:
+            jacobian_initial: Body Jacobian at the chain base, with shape
+                ``(twist_dim, num_dofs)``.
+            gravity_initial: Gravity spatial vector in the chain-base frame,
+                with shape ``(twist_dim,)``.
+            adjoint_inverse_steps: Inverse adjoints mapping each segment base
+                to its tip, with shape
+                ``(num_steps, twist_dim, twist_dim)``.
+            local_jacobian_steps: Local Jacobian increments already mapped to
+                the corresponding tip frames, with shape
+                ``(num_steps, twist_dim, num_dofs)``.
+
+        Returns:
+            Tuple ``(jacobian_bases, gravity_bases)``. The first array contains
+            the body Jacobian at every segment base and has shape
+            ``(num_steps, twist_dim, num_dofs)``. The second contains gravity
+            expressed in each segment-base frame and has shape
+            ``(num_steps, twist_dim)``.
+        """
+
+        def scan_jacobian(
+            jacobian_base: Array, inputs: tuple[Array, Array]
+        ) -> tuple[Array, Array]:
+            adjoint_inverse, local_jacobian = inputs
+            jacobian_tip = adjoint_inverse @ jacobian_base + local_jacobian
+            return jacobian_tip, jacobian_tip
+
+        _, jacobian_tips = lax.scan(
+            scan_jacobian,
+            jacobian_initial,
+            (adjoint_inverse_steps, local_jacobian_steps),
+        )
+        jacobian_bases = jnp.concatenate(
+            [jnp.zeros_like(jacobian_tips[:1]), jacobian_tips[:-1]], axis=0
+        )
+
+        def scan_gravity(
+            gravity_base: Array, adjoint_inverse: Array
+        ) -> tuple[Array, Array]:
+            gravity_tip = adjoint_inverse @ gravity_base
+            return gravity_tip, gravity_base
+
+        _, gravity_bases = lax.scan(
+            scan_gravity, gravity_initial, adjoint_inverse_steps
+        )
+        return jacobian_bases, gravity_bases
+
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
         """
         Return forward-dynamics terms ``(M, Cqd, G)``.
@@ -1421,10 +1506,15 @@ class SoftRobot(DynamicalSystem):
         ``Cqd`` is the convective force vector ``C(q, qd) @ qd``. The default
         implementation is intentionally unfused and calls the public matrix and
         force APIs separately. Overrides must keep ``M`` and ``Cqd``
-        energy-consistent with ``inertia_matrix`` and ``coriolis_matrix``.
+        energy-consistent with ``inertia_matrix`` and ``coriolis_matrix`` when
+        :attr:`consider_coriolis` is true. When it is false, implementations
+        must return an exact zero vector without evaluating Coriolis-only work.
         """
         M = self.inertia_matrix(q)
-        Cqd = self.coriolis_matrix(q, qd) @ qd
+        if self.consider_coriolis:
+            Cqd = self.coriolis_matrix(q, qd) @ qd
+        else:
+            Cqd = jnp.zeros_like(qd)
         G = self.gravitational_force(q)
         return M, Cqd, G
 

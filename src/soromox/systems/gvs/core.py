@@ -352,7 +352,8 @@ class GVS(SoftRobot):
             scale_rotational_basis_by_length: Whether to normalize rotational
                 strain-basis rows by link length.
             **kwargs: Additional keyword arguments forwarded to the GVS
-                constructor, such as actuators or passive elements.
+                constructor, such as ``consider_coriolis``, actuators, or
+                passive elements.
 
         Returns:
             A fully initialized GVS model.
@@ -4358,10 +4359,171 @@ class GVS(SoftRobot):
 
         return weights, g_quads, J_quads, Jd_or_Jd_qd_quads
 
+    def _dynamics_terms_without_coriolis(self, q: Array) -> tuple[Array, Array, Array]:
+        """Assemble inertia and gravity without velocity-dependent work."""
+        dtype = q.dtype
+        q_blocks = self._min_size_gathered(q)
+        segment_indices = jnp.arange(self.num_segments)
+        cell_indices = jnp.arange(self.max_num_integration_points - 1)
+
+        def evaluate_joint(segment_index: Array) -> tuple[Array, Array]:
+            _, adjoint_inverse, tangent_basis = self._joint_jacobian_step_terms(
+                self.B_joint[segment_index],
+                self.xi_ref_joint[segment_index],
+                q_blocks[segment_index, 0],
+            )
+            return adjoint_inverse, tangent_basis
+
+        joint_terms = jax.vmap(evaluate_joint)(segment_indices)
+
+        def evaluate_segment_cells(
+            segment_index: Array,
+        ) -> tuple[Array, Array, Array]:
+            def evaluate_cell(cell_index: Array) -> tuple[Array, Array, Array]:
+                cell_width = (
+                    self.integration_points[segment_index, cell_index + 1]
+                    - self.integration_points[segment_index, cell_index]
+                )
+                _, tangent, adjoint_inverse, magnus_basis = (
+                    self._magnus_jacobian_step_terms(
+                        self.segment_lengths[segment_index],
+                        cell_width,
+                        q_blocks[segment_index, 1],
+                        self.B_Z1[segment_index, cell_index],
+                        self.B_Z2[segment_index, cell_index],
+                        self.xi_ref_Z1[segment_index, cell_index],
+                        self.xi_ref_Z2[segment_index, cell_index],
+                    )
+                )
+                return tangent, adjoint_inverse, magnus_basis
+
+            return jax.vmap(evaluate_cell)(cell_indices)
+
+        cell_terms = jax.vmap(evaluate_segment_cells)(segment_indices)
+        interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
+        tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
+        mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
+
+        jacobian_initial = jnp.zeros((6, self.num_dofs), dtype=dtype)
+        gravity_initial = se3.adjoint_inverse(self.g0) @ self.g
+        inertia_initial = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
+        generalized_vector_initial = jnp.zeros((self.num_dofs,), dtype=dtype)
+
+        def insert_local_basis(
+            local_basis: Array, segment_index: Array, block_index: int
+        ) -> Array:
+            indices = jnp.minimum(
+                self.gather_indices[segment_index, block_index], self.num_dofs - 1
+            )
+            masked_basis = (
+                local_basis * self.gather_mask[segment_index, block_index][None, :]
+            )
+            return jnp.zeros_like(jacobian_initial).at[:, indices].add(masked_basis)
+
+        def body_segment(
+            carry: tuple[Array, Array, Array, Array],
+            segment_input: tuple[
+                Array,
+                tuple[Array, Array],
+                tuple[Array, Array, Array],
+                tuple[Array, Array, Array],
+            ],
+        ) -> tuple[tuple[Array, Array, Array, Array], None]:
+            jacobian_tip, gravity_tip, inertia, gravity_force = carry
+            (
+                segment_index,
+                joint_terms_i,
+                interior_cell_terms_i,
+                tip_cell_terms_i,
+            ) = segment_input
+            joint_adjoint_inverse, joint_tangent_basis = joint_terms_i
+
+            joint_tangent = insert_local_basis(joint_tangent_basis, segment_index, 0)
+            jacobian_joint = joint_adjoint_inverse @ (jacobian_tip + joint_tangent)
+            gravity_joint = joint_adjoint_inverse @ gravity_tip
+
+            def advance_cell(
+                kinematics: tuple[Array, Array],
+                local_terms: tuple[Array, Array, Array],
+            ) -> tuple[Array, Array]:
+                jacobian_previous, gravity_previous = kinematics
+                tangent, adjoint_inverse, magnus_basis = local_terms
+                tangent_basis = insert_local_basis(
+                    tangent @ magnus_basis, segment_index, 1
+                )
+                jacobian_next = adjoint_inverse @ (jacobian_previous + tangent_basis)
+                gravity_next = adjoint_inverse @ gravity_previous
+                return jacobian_next, gravity_next
+
+            def body_cell(
+                kinematics: tuple[Array, Array],
+                local_terms: tuple[Array, Array, Array],
+            ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
+                kinematics_next = advance_cell(kinematics, local_terms)
+                return kinematics_next, kinematics_next
+
+            kinematics_last_quad, quadrature_kinematics = lax.scan(
+                body_cell,
+                (jacobian_joint, gravity_joint),
+                interior_cell_terms_i,
+            )
+            jacobians, gravities = quadrature_kinematics
+
+            weights = self.inner_integration_weights[segment_index]
+            mass_diagonals_i = mass_diagonals[segment_index]
+            flattened_row_count = (self.max_num_integration_points - 2) * 6
+            jacobians_flat = jacobians.reshape(flattened_row_count, self.num_dofs)
+            inertia_segment = jacobians_flat.T @ (
+                weights[:, None, None] * mass_diagonals_i[:, :, None] * jacobians
+            ).reshape(flattened_row_count, self.num_dofs)
+            gravity_segment = -jacobians_flat.T @ (
+                weights[:, None] * mass_diagonals_i * gravities
+            ).reshape(flattened_row_count)
+
+            jacobian_tip_next, gravity_tip_next = advance_cell(
+                kinematics_last_quad, tip_cell_terms_i
+            )
+            return (
+                jacobian_tip_next,
+                gravity_tip_next,
+                inertia + inertia_segment,
+                gravity_force + gravity_segment,
+            ), None
+
+        (_, _, inertia, gravity_force), _ = lax.scan(
+            body_segment,
+            (
+                jacobian_initial,
+                gravity_initial,
+                inertia_initial,
+                generalized_vector_initial,
+            ),
+            (segment_indices, joint_terms, interior_cell_terms, tip_cell_terms),
+        )
+        return inertia, generalized_vector_initial, gravity_force
+
     @eqx.filter_jit
     def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+        """Assemble inertia, optional convective force, and gravity.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)``.
+            qd: Active generalized velocities with shape ``(num_dofs,)``.
+
+        Returns:
+            Tuple ``(M, Cqd, G)`` containing the active inertia matrix and the
+            generalized convective and gravity forces. ``Cqd`` is exactly zero
+            when :attr:`consider_coriolis` is false.
         """
-        Assemble forward-dynamics terms with fixed-shape segment recurrences.
+        if self.consider_coriolis:
+            return self._dynamics_terms_with_coriolis(q, qd)
+        return self._dynamics_terms_without_coriolis(q)
+
+    def _dynamics_terms_with_coriolis(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
+        """
+        Assemble exact forward-dynamics terms with fixed-shape recurrences.
 
         Joint and cell-local Magnus terms are evaluated in parallel before an
         outer ``lax.scan`` propagates the causal kinematic state between

@@ -33,10 +33,10 @@ Array = jax.Array
 class SystemConfig:
     """Factory plus context builder for a Soromox system."""
 
-    factory: Callable[[int], Any]
+    factory: Callable[..., Any]
     size_label: str
     build_context: Callable[[Any], MutableMapping[str, Array]]
-    gauss_factory: Callable[[int, int], Any] | None = None
+    gauss_factory: Callable[..., Any] | None = None
     default_gauss_points: int | None = None
     min_gauss_points: int = 1
 
@@ -45,7 +45,7 @@ class SystemConfig:
         return self.gauss_factory is not None
 
 
-def _pendulum_factory(num_links: int) -> Pendulum:
+def _pendulum_factory(num_links: int, *, consider_coriolis: bool = True) -> Pendulum:
     lengths = jnp.linspace(0.15, 0.25, num_links)
     masses = jnp.linspace(0.8, 1.2, num_links)
     inertias = (1.0 / 12.0) * masses * lengths**2
@@ -61,7 +61,7 @@ def _pendulum_factory(num_links: int) -> Pendulum:
         joint_rest_configuration=jnp.zeros((num_links,)),
         radius=0.05 * lengths,
     )
-    return Pendulum(params=params)
+    return Pendulum(params=params, consider_coriolis=consider_coriolis)
 
 
 def _pendulum_context(system: Pendulum) -> MutableMapping[str, Array]:
@@ -80,7 +80,10 @@ def _pendulum_context(system: Pendulum) -> MutableMapping[str, Array]:
 
 
 def _articulated_soft_robot_factory(
-    num_links: int, gauss_points: int = 5
+    num_links: int,
+    gauss_points: int = 5,
+    *,
+    consider_coriolis: bool = True,
 ) -> ArticulatedSoftRobot:
     axes = jnp.array(
         [
@@ -123,7 +126,7 @@ def _articulated_soft_robot_factory(
         joint_rest_configuration=jnp.zeros((num_links,)),
         radius=0.05 * lengths,
     )
-    return ArticulatedSoftRobot(params=params)
+    return ArticulatedSoftRobot(params=params, consider_coriolis=consider_coriolis)
 
 
 def _articulated_soft_robot_context(
@@ -145,7 +148,12 @@ def _articulated_soft_robot_context(
     return ctx
 
 
-def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
+def _planar_pcs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    consider_coriolis: bool = True,
+) -> PlanarPCS:
     return PlanarPCS.from_links(
         [
             LinkSpec.circular(
@@ -162,6 +170,7 @@ def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
         base_pose=jnp.array([jnp.pi / 2, 0.0, 0.0]),
         gravity=jnp.array([0.0, 9.81]),
         structure=PlanarPCSStructure(num_gauss_points=gauss_points),
+        consider_coriolis=consider_coriolis,
     )
 
 
@@ -188,7 +197,12 @@ def _planar_pcs_context(system: PlanarPCS) -> MutableMapping[str, Array]:
     return ctx
 
 
-def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
+def _pcs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    consider_coriolis: bool = True,
+) -> PCS:
     return PCS.from_links(
         [
             LinkSpec.circular(
@@ -205,6 +219,7 @@ def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
         base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         gravity=jnp.array([0.0, 0.0, -9.81]),
         structure=PCSStructure(num_gauss_points=gauss_points),
+        consider_coriolis=consider_coriolis,
     )
 
 
@@ -256,7 +271,12 @@ def _gvs_segment(strain_basis_order: int, gauss_points: int) -> GVSSegment:
     )
 
 
-def _gvs_factory(num_segments: int, gauss_points: int = 5) -> GVS:
+def _gvs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    consider_coriolis: bool = True,
+) -> GVS:
     segments: list[GVSSegment] = []
     for _ in range(num_segments):
         segments.append(_gvs_segment(strain_basis_order=0, gauss_points=gauss_points))
@@ -264,10 +284,16 @@ def _gvs_factory(num_segments: int, gauss_points: int = 5) -> GVS:
     return GVS.from_segments(
         segments=segments,
         gravity=jnp.array([0.0, 0.0, 9.81]),
+        consider_coriolis=consider_coriolis,
     )
 
 
-def _gvs_basis_order_factory(strain_basis_order: int, gauss_points: int = 5) -> GVS:
+def _gvs_basis_order_factory(
+    strain_basis_order: int,
+    gauss_points: int = 5,
+    *,
+    consider_coriolis: bool = True,
+) -> GVS:
     return GVS.from_segments(
         segments=[
             _gvs_segment(
@@ -276,6 +302,7 @@ def _gvs_basis_order_factory(strain_basis_order: int, gauss_points: int = 5) -> 
             )
         ],
         gravity=jnp.array([0.0, 0.0, 9.81]),
+        consider_coriolis=consider_coriolis,
     )
 
 
@@ -455,17 +482,18 @@ def build_system_with_gauss_points(
     config: Any,
     size: int,
     gauss_points: int | None,
+    **model_kwargs: Any,
 ) -> Any:
     """Build a configured benchmark system, optionally overriding quadrature."""
 
     if gauss_points is None:
-        return config.factory(size)
+        return config.factory(size, **model_kwargs)
     if not getattr(config, "supports_gauss_points", False):
         raise ValueError(
             f"{getattr(config, 'size_label', 'system')} does not support "
             "Gaussian quadrature point sweeps."
         )
-    return config.gauss_factory(size, gauss_points)
+    return config.gauss_factory(size, gauss_points, **model_kwargs)
 
 
 def system_gauss_point_metadata(system: Any) -> tuple[int | None, int | None]:

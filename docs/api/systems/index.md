@@ -32,6 +32,22 @@ The `DynamicalSystem` class is the fundamental base class for all dynamical syst
 
 The `SoftRobot` class extends `DynamicalSystem` with interfaces specific to soft robots, including methods for forward kinematics and Jacobians parameterized by arc-length or position along the robot backbone.
 
+All concrete soft-robot systems accept the static model setting
+`consider_coriolis`, which defaults to `True`. Construct a model with
+`consider_coriolis=False` to omit Coriolis and centrifugal forces from
+`dynamics_terms`, `forward_dynamics`, and rollouts while leaving the explicit
+`coriolis_matrix` diagnostic and all energy methods physically exact. Because
+the setting is static, enabled and disabled models compile to separate optimized
+JAX executables.
+
+```python
+robot = PCS.from_links(links, consider_coriolis=False)
+```
+
+The configured setting is inherited by `rollout_to`, `rollout_closed_loop_to`,
+and `rollout_discrete_closed_loop_to`; the generic rollout signatures do not
+change.
+
 ::: soromox.systems.SoftRobot
     options:
       show_root_heading: true

@@ -40,7 +40,7 @@ def _poisson_material(*, damping: bool = True) -> IsotropicMaterialParams:
     )
 
 
-def _pcs() -> PCS:
+def _pcs(*, consider_coriolis: bool = True) -> PCS:
     return PCS.from_links(
         [
             LinkSpec.circular(
@@ -52,11 +52,12 @@ def _pcs() -> PCS:
                 material_damping_coefficient=1.0e4,
                 reference_strain=REFERENCE,
             )
-        ]
+        ],
+        consider_coriolis=consider_coriolis,
     )
 
 
-def _planar_pcs() -> PlanarPCS:
+def _planar_pcs(*, consider_coriolis: bool = True) -> PlanarPCS:
     return PlanarPCS.from_links(
         [
             LinkSpec.circular(
@@ -68,11 +69,12 @@ def _planar_pcs() -> PlanarPCS:
                 material_damping_coefficient=1.0e4,
                 reference_strain=[0.0, 0.0, 1.0],
             )
-        ]
+        ],
+        consider_coriolis=consider_coriolis,
     )
 
 
-def _gvs() -> GVS:
+def _gvs(*, consider_coriolis: bool = True) -> GVS:
     return GVS.from_segments(
         [
             GVSSegment(
@@ -98,8 +100,16 @@ def _gvs() -> GVS:
                 ),
                 num_gauss_points=7,
             )
-        ]
+        ],
+        consider_coriolis=consider_coriolis,
     )
+
+
+@pytest.mark.parametrize("factory", [_pcs, _planar_pcs, _gvs])
+def test_construction_helpers_forward_optional_coriolis_setting(factory) -> None:
+    robot = factory(consider_coriolis=False)
+
+    assert robot.consider_coriolis is False
 
 
 def test_shared_params_replace_and_explicit_matrix_bypass() -> None:

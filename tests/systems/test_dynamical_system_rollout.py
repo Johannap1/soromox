@@ -174,6 +174,56 @@ def test_rollout_to_keeps_equilibrium():
     assert jnp.allclose(trajectory.y, 0.0, atol=1e-6)
 
 
+def test_all_rollout_variants_inherit_optional_coriolis_setting():
+    default = Pendulum(_pendulum_params())
+    enabled = Pendulum(_pendulum_params(), consider_coriolis=True)
+    disabled = Pendulum(_pendulum_params(), consider_coriolis=False)
+    q0 = jnp.array([0.8, -0.6])
+    qd0 = jnp.array([3.0, -2.0])
+    initial_state = SystemState(
+        t=0.0,
+        y=jnp.concatenate([q0, qd0]),
+        u=jnp.zeros_like(q0),
+    )
+
+    def run(robot: Pendulum):
+        controller = ZeroController(num_actuators=robot.num_actuators)
+        open_loop = robot.rollout_to(
+            initial_state=initial_state,
+            t1=0.02,
+            solver_dt=1e-3,
+            save_dt=0.01,
+        )
+        closed_loop = robot.rollout_closed_loop_to(
+            initial_state=initial_state,
+            controller=controller,
+            t1=0.02,
+            solver_dt=1e-3,
+            save_dt=0.01,
+        )
+        discrete = robot.rollout_discrete_closed_loop_to(
+            initial_state=initial_state,
+            controller=controller,
+            duration=0.02,
+            solver_dt=1e-3,
+            control_dt=0.01,
+            save_dt=0.01,
+        )
+        return open_loop, closed_loop, discrete
+
+    default_rollouts = run(default)
+    enabled_rollouts = run(enabled)
+    disabled_rollouts = run(disabled)
+    for default_trajectory, enabled_trajectory, disabled_trajectory in zip(
+        default_rollouts, enabled_rollouts, disabled_rollouts, strict=True
+    ):
+        assert jnp.allclose(default_trajectory.y, enabled_trajectory.y)
+        assert jnp.all(jnp.isfinite(disabled_trajectory.y))
+        assert not jnp.allclose(
+            disabled_trajectory.y[-1], enabled_trajectory.y[-1], atol=1e-9
+        )
+
+
 def test_rollout_to_environment_model_matches_tau_ext():
     robot = Pendulum(_pendulum_params())
 

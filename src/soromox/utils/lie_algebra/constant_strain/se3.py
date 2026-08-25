@@ -67,6 +67,25 @@ class _PreparedAdjointPowers(NamedTuple):
     dot_powers: Array
 
 
+class _PreparedJacobianPowers(NamedTuple):
+    """Unscaled adjoint powers for derivative-free Jacobian propagation."""
+
+    angle_sq: Array
+    powers: Array
+
+
+def _prepare_jacobian_powers(xi: Array) -> _PreparedJacobianPowers:
+    """Precompute only the powers needed by position/Jacobian recurrences."""
+    xi = jnp.asarray(xi).reshape(-1)
+    powers = _matrix_polynomials.powers(
+        lie_se3.small_adjoint(xi), _REDUCED_POLYNOMIAL_DEGREE
+    )
+    return _PreparedJacobianPowers(
+        angle_sq=jnp.dot(xi[:3], xi[:3]),
+        powers=jnp.stack(powers),
+    )
+
+
 def _prepare_adjoint_powers(xi: Array, xid: Array) -> _PreparedAdjointPowers:
     r"""Precompute SE(3) powers that do not depend on arclength.
 
@@ -117,6 +136,33 @@ def _scaled_powers_from_prepared(
         dot_powers.append(scale * prepared.dot_powers[order])
         scale = scale * s
     return powers, dot_powers
+
+
+def _jacobian_operators_from_prepared(
+    prepared: _PreparedJacobianPowers,
+    s: Array,
+    adjoint_eps: float | Array,
+    tangent_eps: float | Array,
+) -> tuple[Array, Array]:
+    """Return ``(Ad_inv, Ad_inv @ T)`` without derivative-only work."""
+    s = jnp.asarray(s, dtype=prepared.powers.dtype)
+    scale = jnp.ones((), dtype=prepared.powers.dtype)
+    powers: list[Array] = []
+    for order in range(_REDUCED_POLYNOMIAL_DEGREE + 1):
+        powers.append(scale * prepared.powers[order])
+        scale = scale * s
+
+    adjoint = lie_se3._adjoint_from_powers(
+        powers, _adjoint_coefficients(prepared.angle_sq, s, adjoint_eps)
+    )
+    adjoint_inverse = lie_se3._adjoint_inverse_from_adjoint(adjoint)
+    coefficients, _ = _tangent_coefficients_and_x_derivatives(
+        prepared.angle_sq, s, tangent_eps
+    )
+    transported_tangent = s * lie_se3._transported_left_jacobian_from_powers(
+        powers, coefficients
+    )
+    return adjoint_inverse, transported_tangent
 
 
 def _operators_from_powers(

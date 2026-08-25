@@ -46,6 +46,7 @@ def make_zero_actuator_robot() -> McKibbenActuatedUMArm:
     return McKibbenActuatedUMArm(
         params,
         actuator=ArticulatedMcKibbenActuator.empty(),
+        consider_coriolis=False,
     )
 
 
@@ -135,6 +136,7 @@ def test_zero_actuator_umarm_exposes_empty_actuator_interface() -> None:
     y = jnp.concatenate([q, qd])
 
     assert robot.num_actuators == 0
+    assert robot.consider_coriolis is False
     assert robot.num_mckibben_groups == 0
     actuator = robot.actuators[0]
     assert actuator.segments(robot, q).shape == (0, 2, 3)

@@ -334,7 +334,18 @@ Christoffel convention, `C` itself is not generally skew-symmetric; instead
 the mechanical energy balance, passivity arguments, and model-based control. It
 also keeps derivative-based APIs consistent. If you override an optimized
 `dynamics_terms(q, qd)` method, its returned `Cqd` vector must equal the
-convective force `C(q, qd) @ qd` for this same convention.
+convective force `C(q, qd) @ qd` for this same convention when
+`self.consider_coriolis` is true. When it is false, return an exactly zero
+vector and avoid derivative or convective work such as Jacobian time
+derivatives. Explicit `coriolis_matrix` calls and kinetic-energy derivatives
+must remain exact; the setting changes only the forward equations used for
+simulation.
+
+`consider_coriolis` is an Equinox static field. This lets JAX eliminate the
+unused branch instead of executing a runtime conditional, but changing the
+setting therefore produces a separate compiled executable. Keep the setting
+outside physical parameter PyTrees and preserve it in immutable parameter
+updates.
 
 #### 6. Implement Energy Methods (Optional but Recommended)
 

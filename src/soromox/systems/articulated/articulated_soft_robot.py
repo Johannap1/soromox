@@ -783,11 +783,15 @@ class ArticulatedSoftRobot(SoftRobot):
             pA_i = self._force_cross(v_i) @ inertia_i @ v_i
             return v_i, (v_i, c_i, pA_i)
 
-        _, (_, c, pA_base) = lax.scan(
-            _velocity_step,
-            jnp.zeros((6,), dtype=q.dtype),
-            (Xup, S, spatial_inertias, qd),
-        )
+        if self.consider_coriolis:
+            _, (_, c, pA_base) = lax.scan(
+                _velocity_step,
+                jnp.zeros((6,), dtype=q.dtype),
+                (Xup, S, spatial_inertias, qd),
+            )
+        else:
+            c = jnp.zeros((self.num_links, 6), dtype=q.dtype)
+            pA_base = jnp.zeros_like(c)
 
         def _backward_step(
             carry: tuple[Array, Array],
@@ -834,9 +838,11 @@ class ArticulatedSoftRobot(SoftRobot):
             qdd_i = (u_i - U_i @ a_i) / d_i
             return a_i + S_i * qdd_i, qdd_i
 
+        R_world_base = jnp.asarray(self.base_transform, dtype=q.dtype)[:3, :3]
+        gravity_base = R_world_base.T @ self.g
         _, qdd = lax.scan(
             _acceleration_step,
-            jnp.concatenate([jnp.zeros(3, dtype=q.dtype), -self.g]),
+            jnp.concatenate([jnp.zeros(3, dtype=q.dtype), -gravity_base]),
             (Xup, S, c, U, d, u),
         )
 

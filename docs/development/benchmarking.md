@@ -34,6 +34,7 @@ python tools/benchmarks/benchmark_system_methods.py \
   --device cpu \
   --systems articulated_soft_robot pendulum planar_pcs pcs \
   --segment-counts 1 3 5 7 \
+  --coriolis-modes enabled disabled \
   --duration 2.0 \
   --solver-dt 5e-4 \
   --warmup-duration 1 \
@@ -54,6 +55,9 @@ python tools/benchmarks/benchmark_system_methods.py \
   CPU frequency scaling and runtime worker threads before collecting samples.
 - `--execution-repeats`: number of synchronized calls whose median is reported
   after the cold run and optional warmup.
+- `--coriolis-modes`: benchmark enabled and/or disabled static model settings.
+  Each result row records `consider_coriolis`, and plots use distinct lines for
+  both modes.
 - `--json` / `--csv`: export raw results for regression tracking.
 - `--plot` / `--show-plot`: render Matplotlib summaries (compile vs. exec time).
 
@@ -98,6 +102,81 @@ Affinity applies to the Python process and its JAX worker threads. JSON and CSV
 rows record the resolved `backend`, compact `cpu_affinity`, warmup duration, and
 sample count so the execution context remains auditable. When comparing
 revisions, use the same affinity and warmup settings for every run.
+
+When comparing optional Coriolis paths, pass both modes. The exported rows make
+enabled/disabled compile and warm-runtime ratios available for each size, and
+the plots distinguish the two settings.
+
+### Optional Coriolis reference measurement
+
+The reference run used the CPU device, 1, 4, 8, and 16 links or segments, five
+Gauss points for continuum systems, and 20 synchronized measured repetitions
+after a one-second warmup per compiled case. On the benchmark host, CPUs 0-7
+are the performance cores (5.5-5.7 GHz maximum), while CPUs 8-23 are the
+efficiency cores (4.7 GHz maximum). The reference uses CPU 1 exclusively to
+prevent migration both between core classes and among performance cores.
+Determine the appropriate performance-core affinity from the topology of the
+host being measured rather than copying this affinity to other machines. These
+are the commands used to produce the reference:
+
+```bash
+JAX_ENABLE_X64=true taskset -c 1 \
+python tools/benchmarks/benchmark_system_methods.py \
+  --device cpu \
+  --systems articulated_soft_robot \
+  --segment-counts 1 4 8 16 \
+  --methods dynamics_terms forward_dynamics rollout_to \
+  --coriolis-modes enabled disabled \
+  --execution-repeats 20 \
+  --warmup-duration 1 \
+  --duration 0.002 --solver-dt 0.0001 --save-dt 0.002 \
+  --json /tmp/soromox-optional-coriolis-articulated-pcore.json \
+  --csv /tmp/soromox-optional-coriolis-articulated-pcore.csv \
+  --plot /tmp/soromox-optional-coriolis-articulated-pcore.png
+
+JAX_ENABLE_X64=true taskset -c 1 \
+python tools/benchmarks/benchmark_system_methods.py \
+  --device cpu \
+  --systems planar_pcs pcs gvs \
+  --segment-counts 1 4 8 16 --gauss-points 5 \
+  --methods dynamics_terms forward_dynamics rollout_to \
+  --coriolis-modes enabled disabled \
+  --execution-repeats 20 \
+  --warmup-duration 1 \
+  --duration 0.002 --solver-dt 0.0001 --save-dt 0.002 \
+  --json /tmp/soromox-optional-coriolis-continuum-pcore.json \
+  --csv /tmp/soromox-optional-coriolis-continuum-pcore.csv \
+  --plot /tmp/soromox-optional-coriolis-continuum-pcore.png
+```
+
+Each size cell below is the enabled/disabled compile-time ratio followed by the
+enabled/disabled median warm-runtime ratio. Values greater than one favor the
+Coriolis-disabled path.
+
+| System / method | 1 | 4 | 8 | 16 | Warm geometric mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ArticulatedSoftRobot / `dynamics_terms` | 1.53x / 1.12x | 1.86x / 1.57x | 1.76x / 1.84x | 1.76x / 2.62x | 1.71x |
+| ArticulatedSoftRobot / `forward_dynamics` | 1.48x / 1.87x | 1.30x / 1.16x | 1.30x / 1.40x | 1.29x / 1.27x | 1.40x |
+| ArticulatedSoftRobot / `rollout_to` | 1.30x / 1.71x | 1.02x / 1.63x | 1.16x / 1.68x | 1.31x / 1.98x | 1.75x |
+| PlanarPCS / `dynamics_terms` | 2.00x / 1.11x | 1.89x / 1.27x | 1.77x / 1.29x | 1.65x / 1.46x | 1.28x |
+| PlanarPCS / `forward_dynamics` | 2.10x / 1.07x | 1.77x / 1.28x | 1.67x / 1.33x | 1.73x / 1.51x | 1.29x |
+| PlanarPCS / `rollout_to` | 1.27x / 1.37x | 1.55x / 1.77x | 1.54x / 1.67x | 1.58x / 1.57x | 1.59x |
+| PCS / `dynamics_terms` | 1.95x / 1.67x | 1.86x / 1.33x | 1.96x / 1.52x | 1.84x / 1.48x | 1.49x |
+| PCS / `forward_dynamics` | 1.78x / 1.85x | 1.76x / 1.35x | 1.77x / 1.51x | 1.79x / 1.39x | 1.51x |
+| PCS / `rollout_to` | 1.56x / 2.74x | 1.50x / 1.80x | 1.53x / 1.59x | 1.47x / 1.40x | 1.82x |
+| GVS / `dynamics_terms` | 1.77x / 1.28x | 1.79x / 1.53x | 1.75x / 1.50x | 1.73x / 1.37x | 1.42x |
+| GVS / `forward_dynamics` | 1.70x / 1.19x | 1.75x / 1.53x | 1.69x / 1.51x | 1.52x / 1.36x | 1.39x |
+| GVS / `rollout_to` | 1.51x / 1.73x | 1.51x / 1.17x | 1.50x / 1.18x | 1.30x / 1.33x | 1.33x |
+
+Across all requested methods and sizes, the per-system warm-runtime geometric
+means are 1.61x for ArticulatedSoftRobot, 1.38x for PlanarPCS, 1.60x for PCS,
+and 1.38x for GVS.
+
+The per-size compile and warm timings are retained in the JSON and CSV artifacts.
+The exported rows also record `backend`, `cpu_affinity`, the warmup duration,
+and the sample count. Sub-millisecond calls are particularly sensitive to CPU
+frequency scaling and scheduler placement, so performance comparisons should
+retain both the warmup and explicit affinity.
 
 For `articulated_soft_robot`, the method benchmark includes both the default
 articulated-body forward dynamics path and a dense Jacobian-energy forward

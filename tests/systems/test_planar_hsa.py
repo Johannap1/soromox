@@ -72,6 +72,54 @@ def test_planar_hsa_parameter_updates_are_immutable_and_refresh_eager_caches():
     assert not jnp.allclose(_parameter_runtime_summary(updated), before)
 
 
+def test_planar_hsa_optional_coriolis_dynamics() -> None:
+    enabled = _create_robot()
+    disabled = PlanarHSA(
+        params=typed_params,
+        structure=PlanarHSAStructure(),
+        consider_coriolis=False,
+    )
+    q = jnp.linspace(-0.1, 0.1, enabled.num_dofs)
+    qd = jnp.linspace(0.2, -0.2, enabled.num_dofs)
+
+    M_enabled, _, G_enabled = enabled.dynamics_terms(q, qd)
+    M_disabled, Cqd_disabled, G_disabled = disabled.dynamics_terms(q, qd)
+
+    assert_allclose(M_disabled, M_enabled, rtol=1e-9, atol=1e-11)
+    assert_allclose(G_disabled, G_enabled, rtol=1e-9, atol=1e-11)
+    assert_allclose(Cqd_disabled, jnp.zeros_like(qd), rtol=0.0, atol=0.0)
+    assert_allclose(
+        disabled.coriolis_matrix(q, qd),
+        enabled.coriolis_matrix(q, qd),
+        rtol=1e-8,
+        atol=1e-10,
+    )
+    assert disabled.with_params(disabled.params).consider_coriolis is False
+
+
+def test_planar_hsa_disabled_path_skips_convective_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    robot = PlanarHSA(
+        params=typed_params,
+        structure=PlanarHSAStructure(),
+        consider_coriolis=False,
+    )
+    q = jnp.linspace(-0.1, 0.1, robot.num_dofs)
+    qd = jnp.linspace(0.2, -0.2, robot.num_dofs)
+
+    def fail_if_called(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("disabled dynamics evaluated convective assembly")
+
+    monkeypatch.setattr(PlanarHSA, "_assemble_dynamics_terms", fail_if_called)
+
+    with jax.disable_jit():
+        _, Cqd, _ = robot.dynamics_terms(q, qd)
+
+    assert_allclose(Cqd, jnp.zeros_like(qd), rtol=0.0, atol=0.0)
+
+
 def test_planar_hsa_same_structure_parameter_updates_compile_once():
     robot = _create_robot()
     updated_params = _updated_typed_params()

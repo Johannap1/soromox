@@ -943,12 +943,15 @@ class Pendulum(SoftRobot):
             tau_ext = jnp.zeros((self.num_links,))
 
         B = self.inertia_matrix(q)
-        C = self.coriolis_matrix(q, qd)
+        if self.consider_coriolis:
+            Cqd = self.coriolis_matrix(q, qd) @ qd
+        else:
+            Cqd = jnp.zeros_like(qd)
         G = self._gravitational_force(q)
         D = self.damping_matrix(q)
         tau_el = self.elastic_force(q)
         tau_u = self.actuation_force(q, u, qd=qd)
-        rhs = tau_u + tau_ext - C @ qd - G - tau_el - D @ qd
+        rhs = tau_u + tau_ext - Cqd - G - tau_el - D @ qd
         qdd = jnp.linalg.solve(B, rhs)
         return jnp.concatenate([qd, qdd])
 

@@ -1486,6 +1486,60 @@ class PlanarHSA(PlanarPCS):
             payload_mass_matrix,
         )
 
+    def _assemble_dynamics_terms_without_coriolis(
+        self, q: Array
+    ) -> tuple[Array, Array, Array]:
+        """Assemble inertia and gravity from derivative-free mass geometry."""
+        geometry = self._integration_geometry_full(q)
+        (
+            Ws,
+            g_rods,
+            J_rods,
+            rod_mass_matrices,
+            g_cogs,
+            J_cogs,
+            masses,
+            inertias,
+            J_payload,
+            g_payload,
+            payload_mass_matrix,
+        ) = self._mass_geometry_from_integration(geometry, full=False)
+
+        rod_g_inv = vmap(vmap(vmap(se2.adjoint_inverse)))(g_rods)
+        rod_local_gravity = jnp.einsum("sqrab,b->sqra", rod_g_inv, self.g)
+        rod_gravity_wrench = jnp.einsum(
+            "srab,sqrb->sqra", rod_mass_matrices, rod_local_gravity
+        )
+        B_rods = jnp.einsum(
+            "sq,sqrad,srab,sqrbe->de",
+            Ws,
+            J_rods,
+            rod_mass_matrices,
+            J_rods,
+        )
+        G_rods = -jnp.einsum("sq,sqrad,sqra->d", Ws, J_rods, rod_gravity_wrench)
+
+        cog_matrices = jnp.zeros((*masses.shape, 3, 3), dtype=Ws.dtype)
+        cog_matrices = cog_matrices.at[:, 0, 0].set(inertias)
+        cog_matrices = cog_matrices.at[:, 1, 1].set(masses)
+        cog_matrices = cog_matrices.at[:, 2, 2].set(masses)
+        cog_local_gravity = jnp.einsum(
+            "sab,b->sa", vmap(se2.adjoint_inverse)(g_cogs), self.g
+        )
+        cog_gravity_wrench = jnp.einsum("sab,sb->sa", cog_matrices, cog_local_gravity)
+        B_cogs = jnp.einsum("sad,sab,sbe->de", J_cogs, cog_matrices, J_cogs)
+        G_cogs = -jnp.einsum("sad,sa->d", J_cogs, cog_gravity_wrench)
+
+        payload_gravity_wrench = payload_mass_matrix @ (
+            se2.adjoint_inverse(g_payload) @ self.g
+        )
+        B_payload = J_payload.T @ payload_mass_matrix @ J_payload
+        G_payload = -J_payload.T @ payload_gravity_wrench
+
+        inertia = B_rods + B_cogs + B_payload
+        gravity_force = G_rods + G_cogs + G_payload
+        return inertia, jnp.zeros((self.num_dofs,), dtype=q.dtype), gravity_force
+
     def _assemble_dynamics_terms(
         self,
         q: Array,
@@ -1962,6 +2016,8 @@ class PlanarHSA(PlanarPCS):
             A tuple ``(B, Cqd, G)`` with shapes ``(num_dofs, num_dofs)``,
             ``(num_dofs,)``, and ``(num_dofs,)`` respectively.
         """
+        if not self.consider_coriolis:
+            return self._assemble_dynamics_terms_without_coriolis(q)
         return self._assemble_dynamics_terms(q, qd, convective_only_jd=True)
 
     @eqx.filter_jit
