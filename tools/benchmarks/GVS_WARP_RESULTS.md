@@ -422,11 +422,18 @@ Four basis-order-one revolute-jointed segments (52 DoFs):
 | 256 | 2.266 ms | 1.481 ms | **0.968 ms** | **2.34x** |
 | 1024 | 6.211 ms | 4.336 ms | **2.771 ms** | **2.24x** |
 
+Single-environment CPU medians from 100 synchronized, interleaved repetitions:
+
+| Basis order | DoFs | JAX CPU | Option 17 CPU | Option 23 CPU | Best Warp regression |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 52 | **0.339 ms** | 1.131 ms | 0.424 ms | Option 23 is 25.1% slower |
+| 5 | 148 | **0.703 ms** | 1.636 ms | 1.523 ms | Option 23 is 116.6% slower (2.17x runtime) |
+
 Four basis-order-five revolute-jointed segments (148 DoFs):
 
-| Environments | JAX | Option 17 | Option 23 | Winner |
-|---:|---:|---:|---:|---|
-| 64 | **2.011 ms** | 2.162 ms | 2.326 ms | JAX |
+| Environments | JAX | Option 17 | Option 23 | Best Warp regression |
+|---:|---:|---:|---:|---:|
+| 64 | **2.011 ms** | 2.162 ms | 2.326 ms | Option 17 is 7.5% slower |
 | 256 | 3.612 ms | 4.189 ms | **3.021 ms** | Option 23, 1.20x |
 
 Eight basis-order-one segments cycling through revolute, prismatic, helical,
