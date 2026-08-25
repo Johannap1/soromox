@@ -29,8 +29,8 @@ def _channel_array(value: Any, count: int, name: str) -> Array:
     return array
 
 
-def _validate_tendon_routing(matrix: Array, num_dofs: int, name: str) -> None:
-    """Validate articulated tendon rank and contiguous proximal routing."""
+def _validate_tendon_routing_structure(matrix: Array, num_dofs: int, name: str) -> None:
+    """Validate articulated tendon shape against a robot."""
     matrix = jnp.asarray(matrix)
     if matrix.ndim != 2:
         raise ValueError(f"{name} must be two-dimensional.")
@@ -39,6 +39,11 @@ def _validate_tendon_routing(matrix: Array, num_dofs: int, name: str) -> None:
             f"{name} must have one column per degree of freedom; expected "
             f"{num_dofs}, got {matrix.shape[1]}."
         )
+
+
+def _validate_tendon_routing_values(matrix: Array, num_dofs: int, name: str) -> None:
+    """Validate concrete articulated tendon routing values."""
+    matrix = jnp.asarray(matrix)
     count = matrix.shape[0]
     if count > 0 and int(jnp.linalg.matrix_rank(matrix)) != count:
         raise ValueError(f"{name} must be full row rank.")
@@ -86,7 +91,7 @@ class AffineJointTransmissionParams(BaseSystemParams):
     coordinate_offset: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
     @property
     def num_channels(self) -> int:
@@ -96,7 +101,7 @@ class AffineJointTransmissionParams(BaseSystemParams):
     def num_dofs(self) -> int:
         return int(jnp.asarray(self.routing_matrix).shape[1])
 
-    def validate(self) -> None:
+    def validate_structure(self) -> None:
         matrix = jnp.asarray(self.routing_matrix)
         if matrix.ndim != 2:
             raise ValueError("routing_matrix must be two-dimensional.")
@@ -124,7 +129,7 @@ class AffineJointTransmission(Transmission):
     def __init__(self, params: AffineJointTransmissionParams) -> None:
         if not isinstance(params, AffineJointTransmissionParams):
             raise TypeError("params must be AffineJointTransmissionParams.")
-        params.validate()
+        params.validate_for_update()
         self.params = params
 
     @property
@@ -146,7 +151,7 @@ class AffineJointTransmission(Transmission):
         self, params: AffineJointTransmissionParams
     ) -> AffineJointTransmission:
         self.params.assert_same_topology(params)
-        params.validate()
+        params.validate_for_update()
         return AffineJointTransmission(params)
 
     def update_params(self, **updates: Any) -> AffineJointTransmission:
@@ -161,15 +166,18 @@ class ArticulatedTendonActuatorParams(BaseSystemParams):
     upper_bounds: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.transmission.validate()
+    def validate_structure(self) -> None:
+        self.transmission.validate_structure()
         count = self.transmission.num_channels
         for name in ("lower_bounds", "upper_bounds"):
             value = jnp.asarray(getattr(self, name))
             if value.shape != (count,):
                 raise ValueError(f"{name} must have shape ({count},).")
+
+    def validate_values(self) -> None:
+        self.transmission.validate_values()
 
 
 class ArticulatedTendonActuator(Actuator):
@@ -190,7 +198,7 @@ class ArticulatedTendonActuator(Actuator):
     ) -> None:
         if not isinstance(params, ArticulatedTendonActuatorParams):
             raise TypeError("params must be ArticulatedTendonActuatorParams.")
-        params.validate()
+        params.validate_for_update()
         count = params.transmission.num_channels
         if labels is None:
             labels = tuple(f"tendon_tension_{index}" for index in range(count))
@@ -281,19 +289,29 @@ class ArticulatedTendonActuator(Actuator):
     def metadata(self) -> ActuatorMetadata:
         return self._metadata
 
-    def validate_for_robot(self, robot) -> None:
+    def validate_structure_for_robot(self, robot) -> None:
         _validate_articulated_tendon_host(robot)
-        _validate_tendon_routing(
+        _validate_tendon_routing_structure(
             self.params.transmission.routing_matrix,
             robot.num_dofs,
             "routing_matrix",
         )
 
+    def validate_values_for_robot(self, robot) -> None:
+        _validate_tendon_routing_values(
+            self.params.transmission.routing_matrix,
+            robot.num_dofs,
+            "routing_matrix",
+        )
+
+    def _robot_value_validation_tree(self):
+        return self.params.transmission.routing_matrix
+
     def with_params(self, params: BaseSystemParams) -> ArticulatedTendonActuator:
         if not isinstance(params, ArticulatedTendonActuatorParams):
             raise TypeError("params must be ArticulatedTendonActuatorParams.")
         self.params.transmission.assert_same_topology(params.transmission)
-        params.validate()
+        params.validate_for_update()
         return ArticulatedTendonActuator(
             params=params,
             labels=self.metadata.labels,
@@ -309,14 +327,17 @@ class ArticulatedTendonImpedanceParams(BaseSystemParams):
     damping: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.transmission.validate()
+    def validate_structure(self) -> None:
+        self.transmission.validate_structure()
         count = self.transmission.num_channels
         for name in ("stiffness", "damping"):
             if jnp.asarray(getattr(self, name)).shape != (count,):
                 raise ValueError(f"{name} must have shape ({count},).")
+
+    def validate_values(self) -> None:
+        self.transmission.validate_values()
 
 
 class ArticulatedTendonImpedance(PassiveElement):
@@ -334,7 +355,7 @@ class ArticulatedTendonImpedance(PassiveElement):
     ) -> None:
         if not isinstance(params, ArticulatedTendonImpedanceParams):
             raise TypeError("params must be ArticulatedTendonImpedanceParams.")
-        params.validate()
+        params.validate_for_update()
         self._params = params
         self.transmission = AffineJointTransmission(params.transmission)
         self.name = name
@@ -393,19 +414,29 @@ class ArticulatedTendonImpedance(PassiveElement):
     def params(self) -> ArticulatedTendonImpedanceParams:
         return self._params
 
-    def validate_for_robot(self, robot) -> None:
+    def validate_structure_for_robot(self, robot) -> None:
         _validate_articulated_tendon_host(robot)
-        _validate_tendon_routing(
+        _validate_tendon_routing_structure(
             self.params.transmission.routing_matrix,
             robot.num_dofs,
             "routing_matrix",
         )
 
+    def validate_values_for_robot(self, robot) -> None:
+        _validate_tendon_routing_values(
+            self.params.transmission.routing_matrix,
+            robot.num_dofs,
+            "routing_matrix",
+        )
+
+    def _robot_value_validation_tree(self):
+        return self.params.transmission.routing_matrix
+
     def with_params(self, params: BaseSystemParams) -> ArticulatedTendonImpedance:
         if not isinstance(params, ArticulatedTendonImpedanceParams):
             raise TypeError("params must be ArticulatedTendonImpedanceParams.")
         self.params.transmission.assert_same_topology(params.transmission)
-        params.validate()
+        params.validate_for_update()
         return ArticulatedTendonImpedance(params=params, name=self.name)
 
     def coordinates(self, robot, q: Array) -> Array:

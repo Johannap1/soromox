@@ -52,12 +52,26 @@ robot = robot.with_params(new_params)
 Same-shape, same-dtype parameter updates preserve the JAX compilation layout.
 Changing the number of segments, tendons, active strains, GVS basis layout, or
 quadrature layout is a structural change and requires reconstruction.
+Pass the complete PyTree to `with_params(...)` as a dynamic argument inside
+`eqx.filter_jit`; use
+`with_actuator_params(...)` and
+`with_passive_element_params(...)` for installed components. See
+[Compiled update contract](../../user-guide/parameters-and-optimization.md#compiled-update-contract)
+for a compiled example and the eager-versus-traced validation boundary.
 
 For GVS specifically, `GVS.from_segments(...)` is the recommended constructor.
 It accepts user-facing segment specs, stores canonical link and joint matrices
 in `GVSParams`, and stores stripped static choices in `GVSStructure`.
 `IsotropicMaterialParams` remains a separate caller-owned optimization PyTree,
 so runtime and material representations are not duplicated.
+
+## Validation
+
+`BaseSystemParams` always runs tracer-safe structural validation. Parameter
+trees containing dynamic tracers skip concrete numeric checks, while eager and
+closed-over concrete trees run `validate_values()` eagerly or at JAX trace time.
+Subclasses implement these two phases in `validate_structure()` and
+`validate_values()`.
 
 ## Naming
 

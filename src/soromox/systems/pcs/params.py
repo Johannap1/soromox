@@ -27,13 +27,13 @@ def _require_shape(name: str, value: Array, expected_shape: tuple[int, ...]) -> 
         raise ValueError(f"{name} must have shape {expected_shape}, got {value.shape}.")
 
 
-def _validate_continuum_base(
+def _validate_continuum_structure(
     params: BaseContinuumSoftRobotParams,
     *,
     strain_dim: int,
     gravity_dim: int,
 ) -> int:
-    params.link.validate()
+    params.link.validate_structure()
     n_segments = params.link.length.shape[0]
     _require_shape("gravity", params.gravity, (gravity_dim,))
     expected_reference_shape = (n_segments, strain_dim)
@@ -72,18 +72,23 @@ class PCSParams(BaseContinuumSoftRobotParams):
 
     link: ContinuumLinkParams
 
-    def validate(self) -> None:
-        """Validate spatial PCS parameter shapes and values.
+    def validate_structure(self) -> None:
+        """Validate spatial PCS parameter structure.
 
         Returns:
             ``None`` after successful validation.
 
         Raises:
-            ValueError: If link fields are invalid; reference strain, canonical
-                matrices, cross-section coefficients, or gravity have the wrong
-                shape; or the spatial base pose is invalid.
+            ValueError: If link fields, reference strain, canonical matrices,
+                cross-section coefficients, gravity, or base pose have invalid
+                shapes.
         """
-        _validate_continuum_base(self, strain_dim=6, gravity_dim=3)
+        _validate_continuum_structure(self, strain_dim=6, gravity_dim=3)
+        _require_shape("base_pose", self.base_pose, (7,))
+
+    def validate_values(self) -> None:
+        """Validate eager spatial PCS parameter values."""
+        self.link.validate_values()
         validate_quaternion_base_pose("base_pose", self.base_pose, (7,))
 
 
@@ -106,18 +111,23 @@ class PlanarPCSParams(BaseContinuumSoftRobotParams):
 
     link: ContinuumLinkParams
 
-    def validate(self) -> None:
-        """Validate planar PCS parameter shapes and values.
+    def validate_structure(self) -> None:
+        """Validate planar PCS parameter structure.
 
         Returns:
             ``None`` after successful validation.
 
         Raises:
-            ValueError: If link fields are invalid; reference strain, canonical
-                matrices, cross-section coefficients, gravity, or the planar
-                base pose has the wrong shape or contains invalid values.
+            ValueError: If link fields, reference strain, canonical matrices,
+                cross-section coefficients, gravity, or base pose have invalid
+                shapes.
         """
-        _validate_continuum_base(self, strain_dim=3, gravity_dim=2)
+        _validate_continuum_structure(self, strain_dim=3, gravity_dim=2)
+        _require_shape("base_pose", self.base_pose, (3,))
+
+    def validate_values(self) -> None:
+        """Validate eager planar PCS parameter values."""
+        self.link.validate_values()
         validate_planar_base_pose("base_pose", self.base_pose)
 
 
@@ -154,19 +164,9 @@ class ISupportParams(PCSParams):
     pcs_segment_lengths: Array | None = None
     chamber_effective_pressure_area: Array | None = None
 
-    def validate(self) -> None:
-        """Validate PCS and pneumatic chamber parameters.
-
-        Returns:
-            ``None`` after successful validation.
-
-        Raises:
-            ValueError: If inherited PCS fields are invalid; chamber arrays
-                disagree in shape; radii, effective areas, or segment lengths
-                are invalid; or chamber azimuths are non-finite or not uniformly
-                distributed.
-        """
-        super().validate()
+    def validate_structure(self) -> None:
+        """Validate array shapes independently of runtime chamber values."""
+        super().validate_structure()
         chamber_inner_radius = jnp.asarray(self.chamber_inner_radius)
         if chamber_inner_radius.ndim != 1:
             raise ValueError(
@@ -185,6 +185,47 @@ class ISupportParams(PCSParams):
         ):
             _require_shape(name, getattr(self, name), (n_pneumatic_segments,))
 
+        if self.chamber_effective_pressure_area is not None:
+            effective_area = jnp.asarray(self.chamber_effective_pressure_area)
+            _require_shape(
+                "chamber_effective_pressure_area",
+                effective_area,
+                (n_pneumatic_segments,),
+            )
+
+        if self.chamber_azimuth_angles is not None:
+            angles = jnp.asarray(self.chamber_azimuth_angles)
+            if (
+                angles.ndim != 2
+                or angles.shape[0] != n_pneumatic_segments
+                or angles.shape[1] < 1
+            ):
+                raise ValueError(
+                    "chamber_azimuth_angles must have shape "
+                    "(num_pneumatic_segments, num_chambers_per_segment) with at "
+                    "least one chamber per segment"
+                )
+
+        if self.pcs_segment_lengths is not None:
+            pcs_segment_lengths = jnp.asarray(self.pcs_segment_lengths)
+            if pcs_segment_lengths.ndim != 1:
+                raise ValueError(
+                    "pcs_segment_lengths must be one-dimensional with shape "
+                    "(num_pcs_segments,)."
+                )
+
+    def validate_values(self) -> None:
+        """Validate eager PCS and pneumatic chamber values.
+
+        Returns:
+            ``None`` after successful validation.
+
+        Raises:
+            ValueError: If inherited PCS values, chamber radii, effective
+                areas, segment lengths, or chamber azimuths are invalid.
+        """
+        super().validate_values()
+        chamber_inner_radius = jnp.asarray(self.chamber_inner_radius)
         chamber_outer_radius = jnp.asarray(self.chamber_outer_radius)
         if not bool(
             jnp.all(
@@ -205,11 +246,6 @@ class ISupportParams(PCSParams):
 
         if self.chamber_effective_pressure_area is not None:
             effective_area = jnp.asarray(self.chamber_effective_pressure_area)
-            _require_shape(
-                "chamber_effective_pressure_area",
-                effective_area,
-                (n_pneumatic_segments,),
-            )
             if not bool(jnp.all(jnp.isfinite(effective_area) & (effective_area > 0.0))):
                 raise ValueError(
                     "chamber_effective_pressure_area entries must be finite and positive"
@@ -217,16 +253,6 @@ class ISupportParams(PCSParams):
 
         if self.chamber_azimuth_angles is not None:
             angles = jnp.asarray(self.chamber_azimuth_angles)
-            if (
-                angles.ndim != 2
-                or angles.shape[0] != n_pneumatic_segments
-                or angles.shape[1] < 1
-            ):
-                raise ValueError(
-                    "chamber_azimuth_angles must have shape "
-                    "(num_pneumatic_segments, num_chambers_per_segment) with at "
-                    "least one chamber per segment"
-                )
             if not bool(jnp.all(jnp.isfinite(angles))):
                 raise ValueError("chamber_azimuth_angles entries must be finite")
             wrapped = jnp.mod(angles, 2.0 * jnp.pi)
@@ -240,14 +266,6 @@ class ISupportParams(PCSParams):
                 raise ValueError(
                     "chamber_azimuth_angles must be uniformly distributed around "
                     "the full circle for every pneumatic segment"
-                )
-
-        if self.pcs_segment_lengths is not None:
-            pcs_segment_lengths = jnp.asarray(self.pcs_segment_lengths)
-            if pcs_segment_lengths.ndim != 1:
-                raise ValueError(
-                    "pcs_segment_lengths must be one-dimensional with shape "
-                    "(num_pcs_segments,)."
                 )
 
 
@@ -326,7 +344,7 @@ class PlanarHSAParams(BaseSoftRobotParams):
                 }
             )
 
-    def validate(self) -> None:
+    def validate_structure(self) -> None:
         length = jnp.asarray(self.length)
         if len(length.shape) != 1:
             raise ValueError(
@@ -399,7 +417,7 @@ class PlanarHSAParams(BaseSoftRobotParams):
                 raise ValueError(
                     f"{name} must have shape {expected_shape}, got {value.shape}."
                 )
-        validate_planar_base_pose("base_pose", self.base_pose)
+        _require_shape("base_pose", self.base_pose, (3,))
 
         hysteresis_basis = jnp.asarray(self.hysteresis_basis)
         if hysteresis_basis.size == 0:
@@ -427,3 +445,7 @@ class PlanarHSAParams(BaseSoftRobotParams):
                 "hysteresis_alpha must have shape "
                 f"({3 * n_segments},), got {hysteresis_alpha.shape}."
             )
+
+    def validate_values(self) -> None:
+        """Validate eager planar HSA parameter values."""
+        validate_planar_base_pose("base_pose", self.base_pose)

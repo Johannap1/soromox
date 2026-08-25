@@ -26,10 +26,43 @@ from soromox.systems import (
     PendulumParams,
     PlanarPCSParams,
 )
+from soromox.systems.params import BaseSystemParams
 from soromox.utils.array_math import blk_diag
 from soromox.utils.geometry import poses
 
 jax.config.update("jax_enable_x64", True)
+
+
+class SplitValidationParams(BaseSystemParams):
+    """Test parameter whose value validation cannot run on tracers."""
+
+    value: Array
+
+    def validate_structure(self) -> None:
+        if self.value.shape != (1,):
+            raise ValueError("value must have shape (1,).")
+
+    def validate_values(self) -> None:
+        if not bool(jnp.all(self.value > 0.0)):
+            raise ValueError("value must be positive.")
+
+
+class SplitCompatibilityValidationParams(SplitValidationParams):
+    """Test parameter with structure-dependent concrete value checks."""
+
+    def validate_structure_compatibility(
+        self, structure: tuple[tuple[int, ...], float]
+    ) -> None:
+        expected_shape, _ = structure
+        if self.value.shape != expected_shape:
+            raise ValueError("value has an incompatible shape.")
+
+    def validate_value_compatibility(
+        self, structure: tuple[tuple[int, ...], float]
+    ) -> None:
+        _, minimum = structure
+        if not bool(jnp.all(self.value >= minimum)):
+            raise ValueError("value is below the compatible minimum.")
 
 
 def _pendulum_params():
@@ -42,6 +75,60 @@ def _pendulum_params():
         joint_stiffness=jnp.eye(2, dtype=jnp.float64),
         joint_damping=0.1 * jnp.eye(2, dtype=jnp.float64),
     )
+
+
+def test_validation_hooks_separate_traced_structure_from_eager_values():
+    params = SplitValidationParams(value=jnp.ones((1,), dtype=jnp.float64))
+
+    with pytest.raises(ValueError, match="positive"):
+        params.replace(value=-jnp.ones((1,), dtype=jnp.float64))
+
+    @jax.jit
+    def traced_replace(value):
+        return params.replace(value=value).value
+
+    assert_allclose(traced_replace(-jnp.ones((1,), dtype=jnp.float64)), [-1.0])
+    with pytest.raises(ValueError, match="shape"):
+        traced_replace(jnp.ones((2,), dtype=jnp.float64))
+
+
+def test_closed_over_concrete_parameter_validation_is_safe_inside_jit():
+    params = SplitValidationParams(value=jnp.ones((1,), dtype=jnp.float64))
+
+    @jax.jit
+    def validated_sum(offset):
+        params.validate_for_update()
+        return jnp.sum(params.value) + offset
+
+    assert_allclose(validated_sum(jnp.array(2.0)), 3.0)
+
+
+def test_closed_over_concrete_compatibility_validation_is_safe_inside_jit():
+    params = SplitCompatibilityValidationParams(value=jnp.ones((1,), dtype=jnp.float64))
+
+    @jax.jit
+    def validated_sum(offset):
+        params.validate_for_update_against_structure(((1,), 0.0))
+        return jnp.sum(params.value) + offset
+
+    assert_allclose(validated_sum(jnp.array(2.0)), 3.0)
+
+
+def test_closed_over_parameter_structure_validation_remains_active_inside_jit():
+    params = SplitValidationParams(value=jnp.ones((1,), dtype=jnp.float64))
+    invalid = eqx.tree_at(
+        lambda current: current.value,
+        params,
+        jnp.ones((2,), dtype=jnp.float64),
+    )
+
+    @jax.jit
+    def validated_sum(offset):
+        invalid.validate_for_update()
+        return jnp.sum(invalid.value) + offset
+
+    with pytest.raises(ValueError, match="shape"):
+        validated_sum(jnp.array(2.0))
 
 
 def _pcs_params(num_segments: int = 2):
@@ -338,37 +425,6 @@ def test_planar_params_validate_base_pose_finite_values():
     )
     with pytest.raises(ValueError, match="finite"):
         planar.validate()
-
-
-def test_same_shape_param_updates_do_not_retrace_under_filter_jit():
-    params = _pendulum_params()
-    robot = Pendulum(params=params)
-    q = jnp.array([0.2, -0.1], dtype=jnp.float64)
-    trace_count = {"value": 0}
-
-    @eqx.filter_jit
-    def potential_energy(current_params, current_q):
-        trace_count["value"] += 1
-        return robot.with_params(current_params).potential_energy(current_q)
-
-    potential_energy(params, q)
-    potential_energy(params.replace(mass=params.mass + 0.1), q)
-    potential_energy(params.replace(gravity=params.gravity.at[1].set(-9.7)), q)
-
-    assert trace_count["value"] == 1
-
-
-def test_grad_differentiates_through_typed_params():
-    params = _pendulum_params()
-    robot = Pendulum(params=params)
-    q = jnp.array([0.25, -0.15], dtype=jnp.float64)
-
-    def energy_for_first_mass(mass_0):
-        current = params.replace(mass=params.mass.at[0].set(mass_0))
-        return robot.with_params(current).potential_energy(q)
-
-    grad_value = jax.grad(energy_for_first_mass)(params.mass[0])
-    assert jnp.isfinite(grad_value)
 
 
 def test_articulated_tendon_impedance_stores_per_tendon_mechanics():

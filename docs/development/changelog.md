@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [parameter-API migration](../user-guide/parameter-api-migration.md)
   documentation with complete PCS and GVS examples.
 
+- Compiled parameter-update examples and regression coverage for every public
+  system family, routed actuators, passive elements, gradients, eager cache
+  refreshes, static-structure rejection, and no-retrace same-layout updates.
+
 ### Changed
 
 - Accelerated PlanarPCS, PCS, and GVS forward dynamics through fused dynamics
@@ -137,6 +141,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made same-PyTree, same-shape, same-dtype system, environment, actuator,
+  passive-element, and isotropic-material replacements usable inside
+  JIT-compiled code. Concrete eager calls retain value validation, while traced
+  calls enforce the statically observable type and shape contract.
+- Split parameter validation into explicit `validate_structure()` and
+  `validate_values()` subclass hooks, with framework-owned eager and traced
+  dispatch for intrinsic and model-structure-dependent validation. Closed-over
+  concrete values are checked at JAX trace time, while dynamic leaves retain
+  structure-only validation. Component-to-robot checks use the same structural
+  and concrete-value phases.
+- Reused I-SUPPORT routing spans and McKibben joint-pair topology during
+  compiled numeric updates, and kept GVS cross-section index dtypes stable when
+  refreshing parameter-dependent caches.
 - Included stored GVS joint stiffness and damping in global stiffness and
   damping assembly.
 - Resolved omitted GVS padding values in the advanced `GVS(params, structure)`

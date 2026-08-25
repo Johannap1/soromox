@@ -3,6 +3,7 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 
+import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
@@ -57,6 +58,129 @@ def _passive():
         reference_configuration=jnp.array([0.1, -0.05, 0.02]),
         coordinate_offset=jnp.array([0.03, 0.04]),
     )
+
+
+def _updated_component_params():
+    actuator = _actuator().params
+    actuator_transmission = actuator.transmission.replace(
+        routing_matrix=1.01 * actuator.transmission.routing_matrix,
+        reference_configuration=actuator.transmission.reference_configuration + 0.01,
+        coordinate_offset=actuator.transmission.coordinate_offset + 0.01,
+    )
+    updated_actuator = actuator.replace(
+        transmission=actuator_transmission,
+        lower_bounds=actuator.lower_bounds + 0.1,
+        upper_bounds=actuator.upper_bounds,
+    )
+
+    passive = _passive().params
+    passive_transmission = passive.transmission.replace(
+        routing_matrix=1.01 * passive.transmission.routing_matrix,
+        reference_configuration=passive.transmission.reference_configuration + 0.01,
+        coordinate_offset=passive.transmission.coordinate_offset + 0.01,
+    )
+    updated_passive = passive.replace(
+        transmission=passive_transmission,
+        stiffness=1.02 * passive.stiffness,
+        damping=1.03 * passive.damping,
+    )
+    return updated_actuator, updated_passive
+
+
+def _component_summary(robot, q):
+    return jnp.concatenate(
+        [
+            robot.actuator_coordinates(q),
+            robot.actuation_matrix(q).reshape(-1),
+            robot.passive_elastic_force(q),
+            robot.passive_damping_matrix(q).reshape(-1),
+        ]
+    )
+
+
+def test_articulated_actuator_and_passive_parameter_updates_compile_once():
+    robot = Pendulum(
+        _body_params(), actuators=_actuator(), passive_elements=(_passive(),)
+    )
+    q = jnp.array([0.2, -0.15, 0.1])
+    actuator_params, passive_params = _updated_component_params()
+    trace_count = {"value": 0}
+
+    @eqx.filter_jit
+    def compiled_summary(current_actuator, current_passive):
+        trace_count["value"] += 1
+        updated = robot.with_actuator_params(0, current_actuator)
+        updated = updated.with_passive_element_params(0, current_passive)
+        return _component_summary(updated, q)
+
+    baseline = compiled_summary(
+        robot.actuators[0].params, robot.passive_elements[0].params
+    )
+    actual = compiled_summary(actuator_params, passive_params)
+
+    assert trace_count["value"] == 1
+    assert not jnp.allclose(actual, baseline)
+    eager = robot.with_actuator_params(0, actuator_params)
+    eager = eager.with_passive_element_params(0, passive_params)
+    assert_allclose(actual, _component_summary(eager, q))
+
+
+def test_articulated_compiled_partial_component_updates_match_eager_behavior():
+    actuator = _actuator()
+    passive = _passive()
+    robot = Pendulum(_body_params(), actuators=actuator, passive_elements=(passive,))
+    q = jnp.array([0.2, -0.15, 0.1])
+    upper_bounds = actuator.params.upper_bounds + 1.0
+    stiffness = 1.1 * passive.params.stiffness
+    trace_count = {"value": 0}
+
+    @eqx.filter_jit
+    def compiled_summary(current_upper_bounds, current_stiffness):
+        trace_count["value"] += 1
+        updated = robot.update_actuator_params(0, upper_bounds=current_upper_bounds)
+        updated = updated.update_passive_element_params(0, stiffness=current_stiffness)
+        return jnp.concatenate(
+            [
+                updated.actuators[0].metadata.upper_bounds,
+                _component_summary(updated, q),
+            ]
+        )
+
+    baseline = compiled_summary(
+        actuator.params.upper_bounds,
+        passive.params.stiffness,
+    )
+    actual = compiled_summary(upper_bounds, stiffness)
+    eager = robot.update_actuator_params(0, upper_bounds=upper_bounds)
+    eager = eager.update_passive_element_params(0, stiffness=stiffness)
+    expected = jnp.concatenate(
+        [eager.actuators[0].metadata.upper_bounds, _component_summary(eager, q)]
+    )
+
+    assert trace_count["value"] == 1
+    assert not jnp.allclose(actual, baseline)
+    assert_allclose(actual, expected)
+
+
+def test_articulated_compiled_partial_update_retains_closed_routing_validation():
+    actuator = _actuator()
+    robot = Pendulum(_body_params(), actuators=actuator)
+    invalid_routing = actuator.params.transmission.routing_matrix.at[1].set(
+        2.0 * actuator.params.transmission.routing_matrix[0]
+    )
+    invalid_transmission = actuator.params.transmission.replace(
+        routing_matrix=invalid_routing
+    )
+    invalid_params = actuator.params.replace(transmission=invalid_transmission)
+
+    @eqx.filter_jit
+    def compiled_upper_bounds(current_upper_bounds):
+        current = invalid_params.replace(upper_bounds=current_upper_bounds)
+        updated = robot.with_actuator_params(0, current)
+        return updated.actuators[0].metadata.upper_bounds
+
+    with pytest.raises(ValueError, match="full row rank"):
+        compiled_upper_bounds(actuator.params.upper_bounds)
 
 
 def _spatial_articulated_robot(*, actuators=None):

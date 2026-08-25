@@ -22,8 +22,8 @@ from .core import (
 ThreadlikeKind = Literal["tendon", "push_rod", "muscle", "pneumatic", "generic"]
 
 
-def _validate_routing_for_robot(routing: ThreadlikeRouting, robot) -> None:
-    """Validate routing topology and host-specific geometric constraints."""
+def _validate_routing_structure_for_robot(routing: ThreadlikeRouting, robot) -> None:
+    """Validate routing topology and tracer-safe host compatibility."""
     required_hooks = (
         "_threadlike_path_lengths",
         "_threadlike_moment_matrix",
@@ -39,7 +39,7 @@ def _validate_routing_for_robot(routing: ThreadlikeRouting, robot) -> None:
             "Threadlike components require continuum segment topology through "
             "num_segments."
         )
-    routing.params.validate_for_robot(robot.num_segments)
+    routing.params.validate_structure_for_robot(robot.num_segments)
     if not robot.is_planar:
         return
     if not hasattr(robot, "L_cum"):
@@ -56,7 +56,21 @@ def _validate_routing_for_robot(routing: ThreadlikeRouting, robot) -> None:
             "ThreadlikeRouting.offset_fn must return material-frame [x, y, z] "
             "offsets with final shape (3,)."
         )
-    if bool(jnp.any(offsets[..., 0] != 0.0) | jnp.any(offsets[..., 2] != 0.0)):
+
+
+def _validate_routing_values_for_robot(routing: ThreadlikeRouting, robot) -> None:
+    """Validate concrete routing values and host-specific geometry."""
+    routing.params.validate_values()
+    if not robot.is_planar:
+        return
+    samples = jnp.linspace(0.0, robot.L_cum[-1], 17)
+    offsets = vmap(
+        lambda path_params: vmap(lambda s: routing.offset(path_params, s))(samples)
+    )(routing.params)
+    leaves_planar_frame = jnp.any(offsets[..., 0] != 0.0) | jnp.any(
+        offsets[..., 2] != 0.0
+    )
+    if bool(leaves_planar_frame):
         raise ValueError(
             "PlanarPCS threadlike routing must remain in the local-y direction; "
             "its sampled local x and z offsets must be zero."
@@ -119,8 +133,8 @@ class BaseThreadlikeRoutingParams(BaseSystemParams):
     def end_segment_index_array(self) -> Array:
         return jnp.asarray(self.end_segment_index, dtype=jnp.int32)
 
-    def validate_for_robot(self, num_segments: int) -> None:
-        self.validate()
+    def validate_structure_for_robot(self, num_segments: int) -> None:
+        self.validate_structure()
         for start, end in zip(self.start_segment_index, self.end_segment_index):
             if start < 0 or start > end or end >= num_segments:
                 raise ValueError(
@@ -171,7 +185,7 @@ class LinearThreadlikeRoutingParams(BaseThreadlikeRoutingParams):
     end_segment_index: tuple[int, ...] = eqx.field(static=True, converter=_index_tuple)
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
     @property
     def num_paths(self) -> int:
@@ -195,7 +209,7 @@ class LinearThreadlikeRoutingParams(BaseThreadlikeRoutingParams):
             end_segment_index=(),
         )
 
-    def validate(self) -> None:
+    def validate_structure(self) -> None:
         intercept = jnp.asarray(self.intercept)
         slope = jnp.asarray(self.slope)
         if intercept.ndim != 2 or intercept.shape[1:] != (3,):
@@ -203,16 +217,6 @@ class LinearThreadlikeRoutingParams(BaseThreadlikeRoutingParams):
         if slope.shape != intercept.shape:
             raise ValueError(
                 f"slope must have shape {intercept.shape}, got {slope.shape}."
-            )
-        if bool(jnp.any(intercept[:, 0] != 0.0)):
-            raise ValueError(
-                "intercept local-x components must be zero because the backbone "
-                "is aligned with the local x-axis."
-            )
-        if bool(jnp.any(slope[:, 0] != 0.0)):
-            raise ValueError(
-                "slope local-x components must be zero because the backbone is "
-                "aligned with the local x-axis."
             )
         if len(self.start_segment_index) != self.num_paths:
             raise ValueError("start_segment_index must contain one entry per path.")
@@ -226,6 +230,21 @@ class LinearThreadlikeRoutingParams(BaseThreadlikeRoutingParams):
                     "each threadlike routing must have start_segment_index <= "
                     "end_segment_index."
                 )
+
+    def validate_values(self) -> None:
+        """Validate eager linear-routing values."""
+        intercept = jnp.asarray(self.intercept)
+        slope = jnp.asarray(self.slope)
+        if bool(jnp.any(intercept[:, 0] != 0.0)):
+            raise ValueError(
+                "intercept local-x components must be zero because the backbone "
+                "is aligned with the local x-axis."
+            )
+        if bool(jnp.any(slope[:, 0] != 0.0)):
+            raise ValueError(
+                "slope local-x components must be zero because the backbone is "
+                "aligned with the local x-axis."
+            )
 
 
 def linear_threadlike_routing(params: LinearThreadlikeRoutingParams, s: Array) -> Array:
@@ -302,7 +321,7 @@ class ThreadlikeRouting(eqx.Module):
         if not isinstance(params, BaseThreadlikeRoutingParams):
             raise TypeError("params must be BaseThreadlikeRoutingParams.")
         self.params.assert_same_topology(params)
-        params.validate()
+        params.validate_for_update()
         return ThreadlikeRouting(
             params=params,
             offset_fn=self.offset_fn,
@@ -320,16 +339,21 @@ class ThreadlikeTransmissionParams(BaseSystemParams):
     coordinate_scale: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.routing.validate()
+    def validate_structure(self) -> None:
+        """Validate threadlike transmission parameter structure."""
+        self.routing.validate_structure()
         scale = jnp.asarray(self.coordinate_scale)
         if scale.shape != (self.routing.num_paths,):
             raise ValueError(
                 "coordinate_scale must have shape "
                 f"({self.routing.num_paths},), got {scale.shape}."
             )
+
+    def validate_values(self) -> None:
+        """Validate eager nested routing values."""
+        self.routing.validate_values()
 
 
 class ThreadlikeTransmission(Transmission):
@@ -346,7 +370,7 @@ class ThreadlikeTransmission(Transmission):
     ) -> None:
         if not isinstance(params, ThreadlikeTransmissionParams):
             raise TypeError("params must be ThreadlikeTransmissionParams.")
-        params.validate()
+        params.validate_for_update()
         self.params = params
         if routing is None:
             if not isinstance(params.routing, LinearThreadlikeRoutingParams):
@@ -387,7 +411,7 @@ class ThreadlikeTransmission(Transmission):
         if not isinstance(params, ThreadlikeTransmissionParams):
             raise TypeError("params must be ThreadlikeTransmissionParams.")
         self.params.routing.assert_same_topology(params.routing)
-        params.validate()
+        params.validate_for_update()
         return ThreadlikeTransmission(params, routing=self.routing)
 
     def update_params(self, **updates: Any) -> ThreadlikeTransmission:
@@ -402,10 +426,11 @@ class ThreadlikeActuatorParams(BaseSystemParams):
     upper_bounds: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.transmission.validate()
+    def validate_structure(self) -> None:
+        """Validate threadlike actuator parameter structure."""
+        self.transmission.validate_structure()
         count = self.transmission.routing.num_paths
         for name in ("lower_bounds", "upper_bounds"):
             value = jnp.asarray(getattr(self, name))
@@ -413,6 +438,10 @@ class ThreadlikeActuatorParams(BaseSystemParams):
                 raise ValueError(
                     f"{name} must have shape ({count},), got {value.shape}."
                 )
+
+    def validate_values(self) -> None:
+        """Validate eager nested threadlike transmission values."""
+        self.transmission.validate_values()
 
 
 class ThreadlikeActuator(Actuator):
@@ -435,7 +464,7 @@ class ThreadlikeActuator(Actuator):
         name: str,
         kind: ThreadlikeKind,
     ) -> None:
-        params.validate()
+        params.validate_for_update()
         count = params.transmission.routing.num_paths
         if len(labels) != count:
             raise ValueError("labels must contain one entry per threadlike path.")
@@ -605,7 +634,7 @@ class ThreadlikeActuator(Actuator):
         self.params.transmission.routing.assert_same_topology(
             params.transmission.routing
         )
-        params.validate()
+        params.validate_for_update()
         return ThreadlikeActuator(
             params=params,
             routing=self.transmission.routing,
@@ -615,8 +644,14 @@ class ThreadlikeActuator(Actuator):
             kind=self.kind,
         )
 
-    def validate_for_robot(self, robot) -> None:
-        _validate_routing_for_robot(self.transmission.routing, robot)
+    def validate_structure_for_robot(self, robot) -> None:
+        _validate_routing_structure_for_robot(self.transmission.routing, robot)
+
+    def validate_values_for_robot(self, robot) -> None:
+        _validate_routing_values_for_robot(self.transmission.routing, robot)
+
+    def _robot_value_validation_tree(self):
+        return self.transmission.routing.params
 
     def path_lengths(self, robot, q: Array) -> Array:
         return self.transmission.path_lengths(robot, q)
@@ -637,10 +672,11 @@ class ThreadlikeImpedanceParams(BaseSystemParams):
     rest_length: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.routing.validate()
+    def validate_structure(self) -> None:
+        """Validate threadlike impedance parameter structure."""
+        self.routing.validate_structure()
         count = self.routing.num_paths
         for name in ("stiffness", "damping", "rest_length"):
             value = jnp.asarray(getattr(self, name))
@@ -648,6 +684,10 @@ class ThreadlikeImpedanceParams(BaseSystemParams):
                 raise ValueError(
                     f"{name} must have shape ({count},), got {value.shape}."
                 )
+
+    def validate_values(self) -> None:
+        """Validate eager nested threadlike routing values."""
+        self.routing.validate_values()
 
 
 class ThreadlikeImpedance(PassiveElement):
@@ -701,11 +741,17 @@ class ThreadlikeImpedance(PassiveElement):
         if not isinstance(params, ThreadlikeImpedanceParams):
             raise TypeError("params must be ThreadlikeImpedanceParams.")
         self.params.routing.assert_same_topology(params.routing)
-        params.validate()
+        params.validate_for_update()
         return self._from_params(params, name=self.name, routing=self.routing)
 
-    def validate_for_robot(self, robot) -> None:
-        _validate_routing_for_robot(self.routing, robot)
+    def validate_structure_for_robot(self, robot) -> None:
+        _validate_routing_structure_for_robot(self.routing, robot)
+
+    def validate_values_for_robot(self, robot) -> None:
+        _validate_routing_values_for_robot(self.routing, robot)
+
+    def _robot_value_validation_tree(self):
+        return self.routing.params
 
     def path_lengths(self, robot, q: Array) -> Array:
         """Return the raw lengths of the passive routed paths."""

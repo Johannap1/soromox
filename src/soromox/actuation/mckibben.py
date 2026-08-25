@@ -19,7 +19,7 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from soromox.systems.params import BaseSystemParams
+from soromox.systems.params import BaseSystemParams, _contains_tracer
 from soromox.utils.geometry.rotations import (
     principal_axis_rotation_matrix,
     principal_axis_rotation_matrix_derivative,
@@ -42,7 +42,7 @@ class ArticulatedMcKibbenTransmissionParams(BaseSystemParams):
     joint_pair_indices: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
     @property
     def group_shape(self) -> tuple[int, int]:
@@ -56,7 +56,7 @@ class ArticulatedMcKibbenTransmissionParams(BaseSystemParams):
     def num_channels(self) -> int:
         return self.group_shape[0] * self.group_shape[1]
 
-    def validate(self) -> None:
+    def validate_structure(self) -> None:
         shape = jnp.asarray(self.thread_length).shape
         if len(shape) != 2:
             raise ValueError(
@@ -78,6 +78,10 @@ class ArticulatedMcKibbenTransmissionParams(BaseSystemParams):
                 raise ValueError(
                     f"{name} must have shape {expected_shape}, got {value.shape}."
                 )
+
+    def validate_values(self) -> None:
+        """Validate eager McKibben topology values."""
+        shape = jnp.asarray(self.thread_length).shape
         joint_pair_indices = jnp.asarray(self.joint_pair_indices)
         if shape[0] > 0 and bool(
             jnp.any(joint_pair_indices[:, 0] == joint_pair_indices[:, 1])
@@ -95,7 +99,10 @@ class ArticulatedMcKibbenTransmissionParams(BaseSystemParams):
             raise ValueError(
                 "Changing McKibben group topology requires reconstruction."
             )
-        if not bool(jnp.array_equal(other.joint_pair_indices, self.joint_pair_indices)):
+        if not _contains_tracer(other.joint_pair_indices) and not np.array_equal(
+            np.asarray(other.joint_pair_indices),
+            np.asarray(self.joint_pair_indices),
+        ):
             raise ValueError(
                 "Changing McKibben joint-pair topology requires reconstruction."
             )
@@ -144,7 +151,7 @@ class ArticulatedMcKibbenTransmission(Transmission):
     def __init__(self, params: ArticulatedMcKibbenTransmissionParams) -> None:
         if not isinstance(params, ArticulatedMcKibbenTransmissionParams):
             raise TypeError("params must be ArticulatedMcKibbenTransmissionParams.")
-        params.validate()
+        params.validate_for_update()
         self.params = params
 
     @property
@@ -349,7 +356,12 @@ class ArticulatedMcKibbenTransmission(Transmission):
         self, params: ArticulatedMcKibbenTransmissionParams
     ) -> ArticulatedMcKibbenTransmission:
         self.params.assert_same_topology(params)
-        params.validate()
+        params.validate_for_update()
+        params = eqx.tree_at(
+            lambda current: current.joint_pair_indices,
+            params,
+            self.params.joint_pair_indices,
+        )
         return ArticulatedMcKibbenTransmission(params)
 
 
@@ -361,14 +373,19 @@ class ArticulatedMcKibbenActuatorParams(BaseSystemParams):
     upper_bounds: Array
 
     def __check_init__(self) -> None:
-        self.validate()
+        self.validate_for_update()
 
-    def validate(self) -> None:
-        self.transmission.validate()
+    def validate_structure(self) -> None:
+        """Validate McKibben actuator parameter structure."""
+        self.transmission.validate_structure()
         count = self.transmission.num_channels
         for name in ("lower_bounds", "upper_bounds"):
             if jnp.asarray(getattr(self, name)).shape != (count,):
                 raise ValueError(f"{name} must have shape ({count},).")
+
+    def validate_values(self) -> None:
+        """Validate eager nested McKibben transmission values."""
+        self.transmission.validate_values()
 
 
 class ArticulatedMcKibbenActuator(Actuator):
@@ -396,7 +413,7 @@ class ArticulatedMcKibbenActuator(Actuator):
     ) -> None:
         if not isinstance(params, ArticulatedMcKibbenActuatorParams):
             raise TypeError("params must be ArticulatedMcKibbenActuatorParams.")
-        params.validate()
+        params.validate_for_update()
         count = params.transmission.num_channels
         if labels is None:
             labels = tuple(f"mckibben_pressure_{index}" for index in range(count))
@@ -464,23 +481,34 @@ class ArticulatedMcKibbenActuator(Actuator):
     def metadata(self) -> ActuatorMetadata:
         return self._metadata
 
-    def validate_for_robot(self, robot) -> None:
+    def validate_structure_for_robot(self, robot) -> None:
         if not callable(getattr(robot, "_kinematic_frames", None)):
             raise TypeError(
                 "ArticulatedMcKibbenActuator requires a spatial articulated host "
                 "implementing the _kinematic_frames geometry contract."
             )
+
+    def validate_values_for_robot(self, robot) -> None:
         indices = self.params.transmission.joint_pair_indices
         if indices.shape[0] > 0 and (
-            bool(jnp.any(indices < 0)) or bool(jnp.any(indices >= robot.num_dofs))
+            np.any(np.asarray(indices) < 0)
+            or np.any(np.asarray(indices) >= robot.num_dofs)
         ):
             raise ValueError("joint_pair_indices must reference valid robot DOFs.")
+
+    def _robot_value_validation_tree(self):
+        return self.params.transmission.joint_pair_indices
 
     def with_params(self, params: BaseSystemParams) -> ArticulatedMcKibbenActuator:
         if not isinstance(params, ArticulatedMcKibbenActuatorParams):
             raise TypeError("params must be ArticulatedMcKibbenActuatorParams.")
         self.params.transmission.assert_same_topology(params.transmission)
-        params.validate()
+        params.validate_for_update()
+        params = eqx.tree_at(
+            lambda current: current.transmission.joint_pair_indices,
+            params,
+            self.params.transmission.joint_pair_indices,
+        )
         return ArticulatedMcKibbenActuator(
             params=params, labels=self.metadata.labels, name=self.name
         )
