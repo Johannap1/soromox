@@ -31,28 +31,30 @@ SPATIAL_DIM = 6
 
 
 @wp.func
-def _load_dynamic_column(
-    matrix: wp.array2d(dtype=wp.float64), base_row: int, column: int
+def _load_sparse_column(
+    values: wp.array2d(dtype=wp.float64),
+    rows: wp.array2d(dtype=wp.int32),
+    cell_item: int,
+    segment: int,
+    column: int,
 ) -> Vec6d:
-    return Vec6d(
-        matrix[base_row + 0, column],
-        matrix[base_row + 1, column],
-        matrix[base_row + 2, column],
-        matrix[base_row + 3, column],
-        matrix[base_row + 4, column],
-        matrix[base_row + 5, column],
-    )
+    result = Vec6d()
+    row = rows[segment, column]
+    if row >= 0:
+        result[row] = values[cell_item, column]
+    return result
 
 
 @wp.func
 def _dynamic_strain(
-    basis: wp.array2d(dtype=wp.float64),
+    basis_values: wp.array2d(dtype=wp.float64),
+    basis_rows: wp.array2d(dtype=wp.int32),
     reference: wp.array2d(dtype=wp.float64),
     coordinates: wp.array2d(dtype=wp.float64),
     cell_item: int,
+    segment: int,
     coordinate_item: int,
 ) -> Vec6d:
-    base_row = cell_item * SPATIAL_DIM
     value = Vec6d(
         reference[cell_item, 0],
         reference[cell_item, 1],
@@ -64,30 +66,29 @@ def _dynamic_strain(
     column = int(0)
     while column < coordinates.shape[1]:
         coordinate = coordinates[coordinate_item, column]
-        row = int(0)
-        while row < SPATIAL_DIM:
-            value[row] += basis[base_row + row, column] * coordinate
-            row += 1
+        row = basis_rows[segment, column]
+        if row >= 0:
+            value[row] += basis_values[cell_item, column] * coordinate
         column += 1
     return value
 
 
 @wp.func
 def _dynamic_strain_rate(
-    basis: wp.array2d(dtype=wp.float64),
+    basis_values: wp.array2d(dtype=wp.float64),
+    basis_rows: wp.array2d(dtype=wp.int32),
     velocities: wp.array2d(dtype=wp.float64),
     cell_item: int,
+    segment: int,
     coordinate_item: int,
 ) -> Vec6d:
-    base_row = cell_item * SPATIAL_DIM
     value = Vec6d()
     column = int(0)
     while column < velocities.shape[1]:
         velocity = velocities[coordinate_item, column]
-        row = int(0)
-        while row < SPATIAL_DIM:
-            value[row] += basis[base_row + row, column] * velocity
-            row += 1
+        row = basis_rows[segment, column]
+        if row >= 0:
+            value[row] += basis_values[cell_item, column] * velocity
         column += 1
     return value
 
@@ -98,6 +99,7 @@ def scalable_cell_terms_kernel(
     qd_link: wp.array2d(dtype=wp.float64),
     basis_z1: wp.array2d(dtype=wp.float64),
     basis_z2: wp.array2d(dtype=wp.float64),
+    basis_rows: wp.array2d(dtype=wp.int32),
     reference_z1: wp.array2d(dtype=wp.float64),
     reference_z2: wp.array2d(dtype=wp.float64),
     segment_lengths: wp.array(dtype=wp.float64),
@@ -121,14 +123,19 @@ def scalable_cell_terms_kernel(
     cell = environment_cell - segment * cells_per_segment
     cell_item = segment * cells_per_segment + cell
     coordinate_item = environment * segment_lengths.shape[0] + segment
-    base_row = cell_item * SPATIAL_DIM
     output_base_row = work_item * SPATIAL_DIM
 
     xi1 = _dynamic_strain(
-        basis_z1, reference_z1, q_link, cell_item, coordinate_item
+        basis_z1,
+        basis_rows,
+        reference_z1,
+        q_link,
+        cell_item,
+        segment,
+        coordinate_item,
     )
     xid1 = _dynamic_strain_rate(
-        basis_z1, qd_link, cell_item, coordinate_item
+        basis_z1, basis_rows, qd_link, cell_item, segment, coordinate_item
     )
     length = segment_lengths[segment]
     width = cell_widths[cell_item]
@@ -148,10 +155,16 @@ def scalable_cell_terms_kernel(
     magnus_dot = length * width * xid1
     if order_zero[0] == 0:
         xi2 = _dynamic_strain(
-            basis_z2, reference_z2, q_link, cell_item, coordinate_item
+            basis_z2,
+            basis_rows,
+            reference_z2,
+            q_link,
+            cell_item,
+            segment,
+            coordinate_item,
         )
         xid2 = _dynamic_strain_rate(
-            basis_z2, qd_link, cell_item, coordinate_item
+            basis_z2, basis_rows, qd_link, cell_item, segment, coordinate_item
         )
         magnus = alpha * (xi1 + xi2) + commutator_coefficient * _ad_action(
             xi1, xi2
@@ -188,10 +201,14 @@ def scalable_cell_terms_kernel(
 
     local_column = int(0)
     while local_column < q_link.shape[1]:
-        basis1 = _load_dynamic_column(basis_z1, base_row, local_column)
+        basis1 = _load_sparse_column(
+            basis_z1, basis_rows, cell_item, segment, local_column
+        )
         magnus_basis = length * width * basis1
         if order_zero[0] == 0:
-            basis2 = _load_dynamic_column(basis_z2, base_row, local_column)
+            basis2 = _load_sparse_column(
+                basis_z2, basis_rows, cell_item, segment, local_column
+            )
             magnus_basis = alpha * (
                 basis1 + basis2
             ) + commutator_coefficient * (
@@ -244,6 +261,7 @@ def _scalable_cell_terms(
     qd_link: wp.array2d(dtype=wp.float64),
     basis_z1: wp.array2d(dtype=wp.float64),
     basis_z2: wp.array2d(dtype=wp.float64),
+    basis_rows: wp.array2d(dtype=wp.int32),
     reference_z1: wp.array2d(dtype=wp.float64),
     reference_z2: wp.array2d(dtype=wp.float64),
     segment_lengths: wp.array(dtype=wp.float64),
@@ -267,6 +285,7 @@ def _scalable_cell_terms(
             qd_link,
             basis_z1,
             basis_z2,
+            basis_rows,
             reference_z1,
             reference_z2,
             segment_lengths,

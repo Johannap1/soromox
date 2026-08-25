@@ -10,7 +10,6 @@ from jax import Array
 from soromox.systems.gvs._warp.joint import scalable_joint_terms
 from soromox.systems.gvs._warp.persistent import scalable_persistent_chain
 from soromox.systems.gvs._warp.scalable import scalable_cell_terms
-from soromox.utils.lie_algebra import se3
 
 if TYPE_CHECKING:
     from soromox.systems.gvs.core import GVS
@@ -81,22 +80,16 @@ def _cell_terms(
     max_dof = model.max_dof
     work_items = batch_size * num_segments * num_cells
     matrix_rows = work_items * SPATIAL_DIM
-    basis_z1 = model.B_Z1
-    basis_z2 = model.B_Z2
-    if model.scale_rotational_basis_by_length:
-        scales = model.segment_lengths[:, None, None]
-        basis_z1 = basis_z1.at[:, :, :3].divide(scales)
-        basis_z2 = basis_z2.at[:, :, :3].divide(scales)
-    cell_widths = model.integration_points[:, 1:] - model.integration_points[:, :-1]
     outputs = scalable_cell_terms(
         q_link.reshape(batch_size * num_segments, max_dof),
         qd_link.reshape(batch_size * num_segments, max_dof),
-        basis_z1.reshape(num_segments * num_cells * SPATIAL_DIM, max_dof),
-        basis_z2.reshape(num_segments * num_cells * SPATIAL_DIM, max_dof),
+        model.scaled_B_Z1_values.reshape(num_segments * num_cells, max_dof),
+        model.scaled_B_Z2_values.reshape(num_segments * num_cells, max_dof),
+        model.link_basis_rows,
         model.xi_ref_Z1.reshape(num_segments * num_cells, SPATIAL_DIM),
         model.xi_ref_Z2.reshape(num_segments * num_cells, SPATIAL_DIM),
         model.segment_lengths,
-        cell_widths.reshape(num_segments * num_cells),
+        model.cell_widths.reshape(num_segments * num_cells),
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([0], dtype=jnp.int32),
         output_dims={
@@ -148,8 +141,6 @@ def dynamics_terms(
     state_rows = batch_size * SPATIAL_DIM
     joint_rows = batch_size * num_segments * SPATIAL_DIM
     cell_rows = batch_size * num_segments * num_cells * SPATIAL_DIM
-    gravity_base = se3.adjoint_inverse(model.g0) @ model.g
-    masses = jnp.diagonal(model.inner_mass_matrices, axis1=-2, axis2=-1)
     outputs = scalable_persistent_chain(
         joint_adjoint.reshape(joint_rows, SPATIAL_DIM),
         joint_adjoint_dot.reshape(joint_rows, SPATIAL_DIM),
@@ -165,8 +156,8 @@ def dynamics_terms(
         model.active_dofs_per_segment,
         qd,
         model.inner_integration_weights.reshape(num_segments * num_quadrature),
-        masses.reshape(num_segments * num_quadrature, SPATIAL_DIM),
-        gravity_base,
+        model.inner_mass_diagonals.reshape(num_segments * num_quadrature, SPATIAL_DIM),
+        model.gravity_base,
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([num_quadrature], dtype=jnp.int32),
         jnp.asarray([lanes_per_block], dtype=jnp.int32),

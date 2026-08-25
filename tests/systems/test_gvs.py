@@ -1869,6 +1869,56 @@ def test_warp_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
                     assert global_column == -1
 
 
+def test_warp_cached_operands_reconstruct_dense_model_data() -> None:
+    robots = (
+        build_varied_basis_gvs(num_segments=3),
+        build_constant_strain_gvs(
+            num_segments=2,
+            max_dof=8,
+            scale_rotational_basis_by_length=True,
+        ),
+    )
+
+    for robot in robots:
+        expected_z1 = robot.B_Z1
+        expected_z2 = robot.B_Z2
+        if robot.scale_rotational_basis_by_length:
+            scales = robot.segment_lengths[:, None, None, None]
+            expected_z1 = expected_z1.at[:, :, :3].divide(scales)
+            expected_z2 = expected_z2.at[:, :, :3].divide(scales)
+
+        row_selectors = jax.nn.one_hot(
+            robot.link_basis_rows, 6, dtype=robot.B_Z1.dtype
+        ).transpose(0, 2, 1)
+        reconstructed_z1 = (
+            robot.scaled_B_Z1_values[:, :, None, :] * row_selectors[:, None, :, :]
+        )
+        reconstructed_z2 = (
+            robot.scaled_B_Z2_values[:, :, None, :] * row_selectors[:, None, :, :]
+        )
+
+        assert_allclose(reconstructed_z1, expected_z1, rtol=0.0, atol=0.0)
+        assert_allclose(reconstructed_z2, expected_z2, rtol=0.0, atol=0.0)
+        assert_allclose(
+            robot.cell_widths,
+            robot.integration_points[:, 1:] - robot.integration_points[:, :-1],
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inner_mass_diagonals,
+            jnp.diagonal(robot.inner_mass_matrices, axis1=-2, axis2=-1),
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.gravity_base,
+            se3.adjoint_inverse(robot.g0) @ robot.g,
+            rtol=RTOL,
+            atol=ATOL,
+        )
+
+
 def test_dynamics_terms_batched_warp_matches_heterogeneous_jax(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -1890,6 +1940,31 @@ def test_dynamics_terms_batched_warp_matches_heterogeneous_jax(
     for result in (actual, automatic):
         for actual_term, expected_term in zip(result, expected, strict=True):
             assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
+
+
+def test_dynamics_terms_batched_warp_matches_length_scaled_basis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "warp-cache-scaled"))
+    pytest.importorskip("warp")
+    robot = build_constant_strain_gvs(
+        num_segments=2,
+        max_dof=8,
+        scale_rotational_basis_by_length=True,
+    )
+    q = jnp.stack(
+        (
+            jnp.linspace(-0.025, 0.02, robot.num_dofs, dtype=jnp.float64),
+            jnp.linspace(0.015, -0.01, robot.num_dofs, dtype=jnp.float64),
+        )
+    )
+    qd = -0.4 * q
+
+    expected = robot.dynamics_terms_batched(q, qd, backend="jax")
+    actual = robot.dynamics_terms_batched(q, qd, backend="warp")
+
+    for actual_term, expected_term in zip(actual, expected, strict=True):
+        assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
 
 
 def test_cached_constant_matrices_refresh_after_update_params() -> None:
@@ -1941,6 +2016,18 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     assert_allclose(
         updated.inner_mass_matrices,
         updated.mass_matrices[:, 1 : updated.max_num_integration_points - 1],
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        updated.inner_mass_diagonals,
+        jnp.diagonal(updated.inner_mass_matrices, axis1=-2, axis2=-1),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        updated.gravity_base,
+        se3.adjoint_inverse(updated.g0) @ updated.g,
         rtol=RTOL,
         atol=ATOL,
     )

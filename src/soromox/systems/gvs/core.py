@@ -210,9 +210,13 @@ class GVS(SoftRobot):
     inner_integration_weights: Array
     mass_matrices: Array
     inner_mass_matrices: Array
+    # Model-invariant operands reused by the batched Warp dynamics backend.
+    cell_widths: Array
     link_basis_rows: Array
     scaled_B_Z1_values: Array
     scaled_B_Z2_values: Array
+    inner_mass_diagonals: Array
+    gravity_base: Array
 
     B_joint: Array
     B_Xs: Array
@@ -928,12 +932,23 @@ class GVS(SoftRobot):
             "inner_mass_matrices",
             self.mass_matrices[:, 1 : self.max_num_integration_points - 1],
         )
+        object.__setattr__(
+            self,
+            "cell_widths",
+            self.integration_points[:, 1:] - self.integration_points[:, :-1],
+        )
         link_basis_rows, scaled_B_Z1_values, scaled_B_Z2_values = (
             self._compact_link_basis_operands(self.segment_lengths)
         )
         object.__setattr__(self, "link_basis_rows", link_basis_rows)
         object.__setattr__(self, "scaled_B_Z1_values", scaled_B_Z1_values)
         object.__setattr__(self, "scaled_B_Z2_values", scaled_B_Z2_values)
+        object.__setattr__(
+            self,
+            "inner_mass_diagonals",
+            jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1),
+        )
+        object.__setattr__(self, "gravity_base", se3.adjoint_inverse(self.g0) @ self.g)
         object.__setattr__(self, "gather_indices", gather_indices)
         object.__setattr__(self, "gather_mask", gather_mask)
         object.__setattr__(self, "joint_local_to_global", joint_local_to_global)
@@ -944,9 +959,7 @@ class GVS(SoftRobot):
         object.__setattr__(
             self, "link_global_to_local", invert_local_map(link_local_to_global)
         )
-        object.__setattr__(
-            self, "active_dofs_per_segment", active_dofs_per_segment
-        )
+        object.__setattr__(self, "active_dofs_per_segment", active_dofs_per_segment)
         object.__setattr__(self, "young_stiffness_operator", young_operator)
         object.__setattr__(self, "shear_stiffness_operator", shear_operator)
         object.__setattr__(self, "material_damping_operator", damping_operator)
@@ -1214,6 +1227,8 @@ class GVS(SoftRobot):
                 model.link_basis_rows,
                 model.scaled_B_Z1_values,
                 model.scaled_B_Z2_values,
+                model.inner_mass_diagonals,
+                model.gravity_base,
                 model.young_stiffness_operator,
                 model.shear_stiffness_operator,
                 model.material_damping_operator,
@@ -1234,6 +1249,14 @@ class GVS(SoftRobot):
                 link_basis_rows,
                 scaled_B_Z1_values,
                 scaled_B_Z2_values,
+                jnp.diagonal(
+                    updated_self.mass_matrices[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ],
+                    axis1=-2,
+                    axis2=-1,
+                ),
+                se3.adjoint_inverse(updated_self.g0) @ updated_self.g,
                 young_operator,
                 shear_operator,
                 damping_operator,
@@ -4678,8 +4701,7 @@ class GVS(SoftRobot):
             raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
         if backend not in ("auto", "jax", "warp"):
             raise ValueError(
-                "backend must be one of 'auto', 'jax', or 'warp', "
-                f"got {backend!r}."
+                f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
             )
 
         selected_backend = backend
