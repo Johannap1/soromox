@@ -36,8 +36,9 @@ def scalable_persistent_chain_kernel(
     global_to_local: wp.array2d(dtype=wp.int32),
     active_dofs: wp.array(dtype=wp.int32),
     qd: wp.array2d(dtype=wp.float64),
-    weights: wp.array(dtype=wp.float64),
-    masses: wp.array2d(dtype=wp.float64),
+    inertia_upper_rows: wp.array(dtype=wp.int32),
+    inertia_upper_columns: wp.array(dtype=wp.int32),
+    weighted_masses: wp.array2d(dtype=wp.float64),
     gravity_base: wp.array(dtype=wp.float64),
     num_cells_array: wp.array(dtype=wp.int32),
     num_quadrature_array: wp.array(dtype=wp.int32),
@@ -64,6 +65,12 @@ def scalable_persistent_chain_kernel(
     lane_stride = lanes_per_block[0]
     state_base_row = environment * SPATIAL_DIM
     barrier = wp.tile_zeros(shape=(1,), dtype=wp.int32, storage="shared")
+    source_jacobian_velocity_shared = wp.tile_zeros(
+        shape=(SPATIAL_DIM,), dtype=wp.float64, storage="shared"
+    )
+    transported_source_velocity_shared = wp.tile_zeros(
+        shape=(SPATIAL_DIM,), dtype=wp.float64, storage="shared"
+    )
 
     entry = lane
     while entry < SPATIAL_DIM * num_dofs:
@@ -95,9 +102,7 @@ def scalable_persistent_chain_kernel(
     segment = int(0)
     while segment < num_segments:
         segment_dofs = active_dofs[segment]
-        joint_base_row = (
-            (environment * num_segments + segment) * SPATIAL_DIM
-        )
+        joint_base_row = (environment * num_segments + segment) * SPATIAL_DIM
         destination_is_first = not current_is_first
 
         entry = lane
@@ -130,23 +135,53 @@ def scalable_persistent_chain_kernel(
             )
             entry += lane_stride
 
-        state_row = lane
-        while state_row < SPATIAL_DIM:
-            source_jacobian_velocity = Vec6d()
-            k = int(0)
-            while k < SPATIAL_DIM:
+        if lane_stride == 1:
+            source_row = int(0)
+            while source_row < SPATIAL_DIM:
+                source_velocity_value = wp.float64(0.0)
                 source_column = int(0)
                 while source_column < segment_dofs:
-                    source_jacobian_velocity[k] += _matrix_value(
-                        jacobian_first,
-                        jacobian_second,
-                        current_is_first,
-                        state_base_row,
-                        k,
-                        source_column,
-                    ) * qd[environment, source_column]
+                    source_velocity_value += (
+                        _matrix_value(
+                            jacobian_first,
+                            jacobian_second,
+                            current_is_first,
+                            state_base_row,
+                            source_row,
+                            source_column,
+                        )
+                        * qd[environment, source_column]
+                    )
                     source_column += 1
-                k += 1
+                source_jacobian_velocity_shared[source_row] = source_velocity_value
+                source_row += 1
+        else:
+            source_row = lane
+            source_velocity_value = wp.float64(0.0)
+            if source_row < SPATIAL_DIM:
+                source_column = int(0)
+                while source_column < segment_dofs:
+                    source_velocity_value += (
+                        _matrix_value(
+                            jacobian_first,
+                            jacobian_second,
+                            current_is_first,
+                            state_base_row,
+                            source_row,
+                            source_column,
+                        )
+                        * qd[environment, source_column]
+                    )
+                    source_column += 1
+            wp.tile_scatter_masked(
+                source_jacobian_velocity_shared,
+                source_row,
+                source_velocity_value,
+                source_row < SPATIAL_DIM,
+            )
+
+        state_row = lane
+        while state_row < SPATIAL_DIM:
             derivative_value = wp.float64(0.0)
             velocity_value = wp.float64(0.0)
             gravity_value = wp.float64(0.0)
@@ -165,11 +200,9 @@ def scalable_persistent_chain_kernel(
                         + joint_tangent_dot_qd[joint_base_row + k, 0]
                     )
                     + joint_adjoint_dot[joint_base_row + state_row, k]
-                    * source_jacobian_velocity[k]
+                    * source_jacobian_velocity_shared[k]
                 )
-                velocity_value += joint_adjoint[
-                    joint_base_row + state_row, k
-                ] * (
+                velocity_value += joint_adjoint[joint_base_row + state_row, k] * (
                     _vector_value(
                         velocity_first,
                         velocity_second,
@@ -221,12 +254,8 @@ def scalable_persistent_chain_kernel(
         while cell < num_cells:
             destination_is_first = not current_is_first
             cell_base_row = (
-                (
-                    (environment * num_segments + segment) * num_cells
-                    + cell
-                )
-                * SPATIAL_DIM
-            )
+                (environment * num_segments + segment) * num_cells + cell
+            ) * SPATIAL_DIM
 
             entry = lane
             while entry < SPATIAL_DIM * segment_dofs:
@@ -264,42 +293,98 @@ def scalable_persistent_chain_kernel(
                 )
                 entry += lane_stride
 
-            state_row = lane
-            while state_row < SPATIAL_DIM:
-                source_jacobian_velocity = Vec6d()
-                k = int(0)
-                while k < SPATIAL_DIM:
+            if lane_stride == 1:
+                source_row = int(0)
+                while source_row < SPATIAL_DIM:
+                    source_velocity_value = wp.float64(0.0)
                     source_column = int(0)
                     while source_column < segment_dofs:
-                        source_jacobian_velocity[k] += _matrix_value(
-                            jacobian_first,
-                            jacobian_second,
-                            current_is_first,
-                            state_base_row,
-                            k,
-                            source_column,
-                        ) * qd[environment, source_column]
+                        source_velocity_value += (
+                            _matrix_value(
+                                jacobian_first,
+                                jacobian_second,
+                                current_is_first,
+                                state_base_row,
+                                source_row,
+                                source_column,
+                            )
+                            * qd[environment, source_column]
+                        )
                         source_column += 1
-                    k += 1
-                transported_source_velocity = Vec6d()
+                    source_jacobian_velocity_shared[source_row] = source_velocity_value
+                    source_row += 1
+            else:
+                source_row = lane
+                source_velocity_value = wp.float64(0.0)
+                if source_row < SPATIAL_DIM:
+                    source_column = int(0)
+                    while source_column < segment_dofs:
+                        source_velocity_value += (
+                            _matrix_value(
+                                jacobian_first,
+                                jacobian_second,
+                                current_is_first,
+                                state_base_row,
+                                source_row,
+                                source_column,
+                            )
+                            * qd[environment, source_column]
+                        )
+                        source_column += 1
+                wp.tile_scatter_masked(
+                    source_jacobian_velocity_shared,
+                    source_row,
+                    source_velocity_value,
+                    source_row < SPATIAL_DIM,
+                )
+
+            if lane_stride == 1:
                 target = int(0)
                 while target < SPATIAL_DIM:
+                    transported_value = wp.float64(0.0)
                     k = int(0)
                     while k < SPATIAL_DIM:
-                        transported_source_velocity[target] += (
+                        transported_value += (
                             cell_adjoint[cell_base_row + target, k]
-                            * source_jacobian_velocity[k]
+                            * source_jacobian_velocity_shared[k]
                         )
                         k += 1
+                    transported_source_velocity_shared[target] = transported_value
                     target += 1
+            else:
+                target = lane
+                transported_value = wp.float64(0.0)
+                if target < SPATIAL_DIM:
+                    k = int(0)
+                    while k < SPATIAL_DIM:
+                        transported_value += (
+                            cell_adjoint[cell_base_row + target, k]
+                            * source_jacobian_velocity_shared[k]
+                        )
+                        k += 1
+                wp.tile_scatter_masked(
+                    transported_source_velocity_shared,
+                    target,
+                    transported_value,
+                    target < SPATIAL_DIM,
+                )
+
+            state_row = lane
+            while state_row < SPATIAL_DIM:
+                transported_source_velocity = Vec6d(
+                    transported_source_velocity_shared[0],
+                    transported_source_velocity_shared[1],
+                    transported_source_velocity_shared[2],
+                    transported_source_velocity_shared[3],
+                    transported_source_velocity_shared[4],
+                    transported_source_velocity_shared[5],
+                )
                 derivative_value = wp.float64(0.0)
                 velocity_value = wp.float64(0.0)
                 gravity_value = wp.float64(0.0)
                 k = int(0)
                 while k < SPATIAL_DIM:
-                    adjoint_value = cell_adjoint[
-                        cell_base_row + state_row, k
-                    ]
+                    adjoint_value = cell_adjoint[cell_base_row + state_row, k]
                     derivative_value += adjoint_value * (
                         _vector_value(
                             jacobian_dot_qd_first,
@@ -367,11 +452,11 @@ def scalable_persistent_chain_kernel(
 
             if cell < num_quadrature:
                 quadrature_item = segment * num_quadrature + cell
-                weight = weights[quadrature_item]
+                num_inertia_pairs = segment_dofs * (segment_dofs + 1) // 2
                 entry = lane
-                while entry < segment_dofs * segment_dofs:
-                    output_row = entry // segment_dofs
-                    output_column = entry - output_row * segment_dofs
+                while entry < num_inertia_pairs:
+                    output_row = inertia_upper_rows[entry]
+                    output_column = inertia_upper_columns[entry]
                     value = wp.float64(0.0)
                     row = int(0)
                     while row < SPATIAL_DIM:
@@ -384,8 +469,7 @@ def scalable_persistent_chain_kernel(
                                 row,
                                 output_row,
                             )
-                            * weight
-                            * masses[quadrature_item, row]
+                            * weighted_masses[quadrature_item, row]
                             * _matrix_value(
                                 jacobian_first,
                                 jacobian_second,
@@ -397,6 +481,8 @@ def scalable_persistent_chain_kernel(
                         )
                         row += 1
                     inertia[environment, output_row, output_column] += value
+                    if output_row != output_column:
+                        inertia[environment, output_column, output_row] += value
                     entry += lane_stride
 
                 column = lane
@@ -408,7 +494,7 @@ def scalable_persistent_chain_kernel(
                         jacobian_dot_qd_second,
                         current_is_first,
                         state_base_row,
-                        masses,
+                        weighted_masses,
                         quadrature_item,
                     )
                     coriolis_value = wp.float64(0.0)
@@ -423,13 +509,10 @@ def scalable_persistent_chain_kernel(
                             row,
                             column,
                         )
-                        coriolis_value += (
-                            weight * jacobian_value * wrench[row]
-                        )
+                        coriolis_value += jacobian_value * wrench[row]
                         gravity_value -= (
-                            weight
-                            * jacobian_value
-                            * masses[quadrature_item, row]
+                            jacobian_value
+                            * weighted_masses[quadrature_item, row]
                             * _vector_value(
                                 gravity_first,
                                 gravity_second,
@@ -461,8 +544,9 @@ def _scalable_persistent_chain(
     global_to_local: wp.array2d(dtype=wp.int32),
     active_dofs: wp.array(dtype=wp.int32),
     qd: wp.array2d(dtype=wp.float64),
-    weights: wp.array(dtype=wp.float64),
-    masses: wp.array2d(dtype=wp.float64),
+    inertia_upper_rows: wp.array(dtype=wp.int32),
+    inertia_upper_columns: wp.array(dtype=wp.int32),
+    weighted_masses: wp.array2d(dtype=wp.float64),
     gravity_base: wp.array(dtype=wp.float64),
     num_cells: wp.array(dtype=wp.int32),
     num_quadrature: wp.array(dtype=wp.int32),
@@ -496,8 +580,9 @@ def _scalable_persistent_chain(
             global_to_local,
             active_dofs,
             qd,
-            weights,
-            masses,
+            inertia_upper_rows,
+            inertia_upper_columns,
+            weighted_masses,
             gravity_base,
             num_cells,
             num_quadrature,
@@ -516,10 +601,8 @@ def _scalable_persistent_chain(
             coriolis_qd,
             gravity_force,
         ],
-        block_dim=BLOCK_DIM,
+        block_dim=192 if qd.shape[1] > 64 else BLOCK_DIM,
     )
 
 
-scalable_persistent_chain = wp.jax_callable(
-    _scalable_persistent_chain, num_outputs=11
-)
+scalable_persistent_chain = wp.jax_callable(_scalable_persistent_chain, num_outputs=11)
