@@ -70,6 +70,8 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
             bucket_count,
             bucket_policy,
             local_shape_policy,
+            recurrence_bucket_count,
+            recurrence_bucket_policy,
         ) = benchmark._variant_options(system, variant)
         return system._dynamics_terms_impl(
             configuration,
@@ -80,6 +82,8 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
             reduction_bucket_count=bucket_count,
             reduction_bucket_policy=bucket_policy,
             local_shape_policy=local_shape_policy,
+            recurrence_bucket_count=recurrence_bucket_count,
+            recurrence_bucket_policy=recurrence_bucket_policy,
         )
 
     tangent = jnp.linspace(-0.02, 0.02, system.num_dofs)
@@ -98,6 +102,8 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
         "bucket_optimal_4",
         "local_dofs_4",
         "local_full_4",
+        "recurrence_uniform_4",
+        "recurrence_uniform_8",
         "active_prefix",
         "compact_basis",
         "optimized",

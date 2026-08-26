@@ -58,14 +58,26 @@ Tree = Any
 
 def _variant_options(
     system: GVS, variant: str
-) -> tuple[bool, bool, bool, int, str, str]:
+) -> tuple[bool, bool, bool, int, str, str, int, str]:
     """Return velocity, active-prefix, compact-basis, and bucket switches."""
     if variant == "baseline":
-        return False, False, False, 0, "uniform", "none"
+        return False, False, False, 0, "uniform", "none", 0, "uniform"
     if variant == "velocity":
-        return True, False, False, 0, "uniform", "none"
+        return True, False, False, 0, "uniform", "none", 0, "uniform"
     if variant in ("fixed_compact", "fixed_optimized"):
-        return True, False, True, 0, "uniform", "none"
+        return True, False, True, 0, "uniform", "none", 0, "uniform"
+    if variant.startswith("recurrence_uniform_"):
+        bucket_count = int(variant.rsplit("_", maxsplit=1)[1])
+        return (
+            True,
+            False,
+            True,
+            bucket_count,
+            "uniform",
+            "none",
+            bucket_count,
+            "uniform",
+        )
     for name, local_policy in (
         ("local_dofs_", "dofs"),
         ("local_full_", "full"),
@@ -78,6 +90,8 @@ def _variant_options(
                 int(variant.rsplit("_", maxsplit=1)[1]),
                 "uniform",
                 local_policy,
+                0,
+                "uniform",
             )
     for name, policy in (
         ("bucket_uniform_", "uniform"),
@@ -92,11 +106,13 @@ def _variant_options(
                 int(variant.rsplit("_", maxsplit=1)[1]),
                 policy,
                 "none",
+                0,
+                "uniform",
             )
     if variant == "active_prefix":
-        return True, True, False, 0, "uniform", "none"
+        return True, True, False, 0, "uniform", "none", 0, "uniform"
     if variant == "compact_basis":
-        return True, True, True, 0, "uniform", "none"
+        return True, True, True, 0, "uniform", "none", 0, "uniform"
     if variant == "optimized":
         use_optimization = system.num_segments > 1
         return (
@@ -106,6 +122,8 @@ def _variant_options(
             0,
             "uniform",
             "none",
+            0,
+            "uniform",
         )
     raise ValueError(f"Unknown dynamics variant: {variant}")
 
@@ -196,6 +214,8 @@ def _dynamics_callable(
         reduction_bucket_count,
         reduction_bucket_policy,
         local_shape_policy,
+        recurrence_bucket_count,
+        recurrence_bucket_policy,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Tree:
@@ -208,6 +228,8 @@ def _dynamics_callable(
             reduction_bucket_count=reduction_bucket_count,
             reduction_bucket_policy=reduction_bucket_policy,
             local_shape_policy=local_shape_policy,
+            recurrence_bucket_count=recurrence_bucket_count,
+            recurrence_bucket_policy=recurrence_bucket_policy,
         )
 
     if batch_size == 1 and jax.default_backend() == "cpu":
@@ -225,6 +247,8 @@ def _forward_dynamics_callable(
         reduction_bucket_count,
         reduction_bucket_policy,
         local_shape_policy,
+        recurrence_bucket_count,
+        recurrence_bucket_policy,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Array:
@@ -237,6 +261,8 @@ def _forward_dynamics_callable(
             reduction_bucket_count=reduction_bucket_count,
             reduction_bucket_policy=reduction_bucket_policy,
             local_shape_policy=local_shape_policy,
+            recurrence_bucket_count=recurrence_bucket_count,
+            recurrence_bucket_policy=recurrence_bucket_policy,
         )
         u = jnp.zeros((system.num_actuators,), dtype=q.dtype)
         actuation = system.actuation_force(q, u, qd=qd)
@@ -350,6 +376,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "local_dofs_8",
             "local_full_4",
             "local_full_8",
+            "recurrence_uniform_4",
+            "recurrence_uniform_8",
             "active_prefix",
             "compact_basis",
             "optimized",

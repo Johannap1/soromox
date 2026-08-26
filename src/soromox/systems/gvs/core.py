@@ -4638,6 +4638,8 @@ class GVS(SoftRobot):
         reduction_bucket_policy: str = "uniform",
         local_shape_policy: str = "none",
         local_shape_class_limit: int = 4,
+        recurrence_bucket_count: int = 0,
+        recurrence_bucket_policy: str = "uniform",
     ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
@@ -4832,10 +4834,8 @@ class GVS(SoftRobot):
         interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
         tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
         mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
-        if use_active_prefix and reduction_bucket_count:
-            raise ValueError(
-                "reduction buckets and exact active-prefix assembly are exclusive"
-            )
+        if use_active_prefix and (reduction_bucket_count or recurrence_bucket_count):
+            raise ValueError("bucketed and exact active-prefix assembly are exclusive")
         if use_active_prefix:
             return self._assemble_dynamics_active_prefix(
                 q,
@@ -4852,6 +4852,35 @@ class GVS(SoftRobot):
         gravity_initial = se3.adjoint_inverse(self.g0) @ self.g
         inertia_initial = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
         generalized_vector_initial = jnp.zeros((self.num_dofs,), dtype=dtype)
+        if recurrence_bucket_count:
+            recurrence_bucket_widths, recurrence_segment_bucket_indices = (
+                _prefix_buckets(
+                    self.active_dof_prefixes,
+                    recurrence_bucket_count,
+                    recurrence_bucket_policy,
+                )
+            )
+            recurrence_segment_bucket_indices_array = jnp.asarray(
+                recurrence_segment_bucket_indices
+            )
+
+            def make_recurrence_branch(bucket_width: int):
+                def advance_jacobian(operands: tuple[Array, Array, Array]) -> Array:
+                    adjoint_inverse, jacobian_previous, tangent_basis = operands
+                    jacobian_prefix = adjoint_inverse @ (
+                        jacobian_previous[:, :bucket_width]
+                        + tangent_basis[:, :bucket_width]
+                    )
+                    return jnp.pad(
+                        jacobian_prefix,
+                        ((0, 0), (0, self.num_dofs - bucket_width)),
+                    )
+
+                return advance_jacobian
+
+            recurrence_branches = tuple(
+                make_recurrence_branch(width) for width in recurrence_bucket_widths
+            )
         if reduction_bucket_count:
             reduction_bucket_widths, segment_bucket_indices = _prefix_buckets(
                 self.active_dof_prefixes,
@@ -4946,7 +4975,17 @@ class GVS(SoftRobot):
             ) = joint_terms_i
 
             joint_tangent = insert_local_basis(joint_tangent_basis, segment_index, 0)
-            jacobian_joint = joint_adjoint_inverse @ (jacobian_tip + joint_tangent)
+            if recurrence_bucket_count:
+                recurrence_bucket_index = recurrence_segment_bucket_indices_array[
+                    segment_index
+                ]
+                jacobian_joint = lax.switch(
+                    recurrence_bucket_index,
+                    recurrence_branches,
+                    (joint_adjoint_inverse, jacobian_tip, joint_tangent),
+                )
+            else:
+                jacobian_joint = joint_adjoint_inverse @ (jacobian_tip + joint_tangent)
             jacobian_source_velocity = (
                 velocity_tip if reuse_recurrence_velocity else jacobian_tip @ qd
             )
@@ -4986,7 +5025,16 @@ class GVS(SoftRobot):
                 link_velocity = local_tangent_basis @ qd_blocks[segment_index, 1]
                 step_velocity = adjoint_inverse @ link_velocity
                 velocity_next = adjoint_inverse @ (velocity_previous + link_velocity)
-                jacobian_next = adjoint_inverse @ (jacobian_previous + tangent_basis)
+                if recurrence_bucket_count:
+                    jacobian_next = lax.switch(
+                        recurrence_bucket_index,
+                        recurrence_branches,
+                        (adjoint_inverse, jacobian_previous, tangent_basis),
+                    )
+                else:
+                    jacobian_next = adjoint_inverse @ (
+                        jacobian_previous + tangent_basis
+                    )
                 tangent_velocity_dot = (
                     tangent_dot @ magnus_basis + tangent @ magnus_basis_dot
                 ) @ qd_blocks[segment_index, 1]
