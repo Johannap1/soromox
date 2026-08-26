@@ -7,6 +7,10 @@ import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
 
+from soromox.systems.gvs.core import (
+    _equal_count_prefix_buckets,
+    _uniform_prefix_buckets,
+)
 from tools.benchmarks import benchmark_gvs_jax_dynamics as benchmark
 
 
@@ -57,6 +61,23 @@ def test_build_system_supports_heterogeneous_topologies() -> None:
     )
 
 
+def test_prefix_bucket_policies_cover_each_segment_with_bounded_branches() -> None:
+    prefixes = (7, 20, 31, 50, 60)
+
+    assert _equal_count_prefix_buckets(prefixes, 4) == (
+        (20, 31, 50, 60),
+        (0, 0, 1, 2, 3),
+    )
+    assert _uniform_prefix_buckets(prefixes, 4) == (
+        (15, 30, 45, 60),
+        (0, 1, 2, 3, 3),
+    )
+    assert _equal_count_prefix_buckets(prefixes[:2], 4) == (
+        prefixes[:2],
+        (0, 1),
+    )
+
+
 def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
     system = benchmark._build_system(2, 1, 5, "revolute")
     q, qd = benchmark._batched_inputs(system, 1)
@@ -69,10 +90,6 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
             use_compact_basis,
             bucket_count,
             bucket_policy,
-            local_shape_policy,
-            recurrence_bucket_count,
-            recurrence_bucket_policy,
-            reduction_tile_width,
         ) = benchmark._variant_options(system, variant)
         return system._dynamics_terms_impl(
             configuration,
@@ -82,10 +99,6 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=bucket_count,
             reduction_bucket_policy=bucket_policy,
-            local_shape_policy=local_shape_policy,
-            recurrence_bucket_count=recurrence_bucket_count,
-            recurrence_bucket_policy=recurrence_bucket_policy,
-            reduction_tile_width=reduction_tile_width,
         )
 
     tangent = jnp.linspace(-0.02, 0.02, system.num_dofs)
@@ -100,18 +113,13 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
         "bucket_uniform_2",
         "bucket_uniform_4",
         "bucket_uniform_8",
+        "bucket_equal_2",
         "bucket_equal_4",
-        "bucket_optimal_4",
+        "bucket_equal_8",
         "bucket_equal_16",
-        "local_dofs_4",
-        "local_full_4",
-        "recurrence_uniform_4",
-        "recurrence_uniform_8",
-        "tile_32",
-        "tile_64",
-        "tile_128",
         "active_prefix",
         "compact_basis",
+        "exact_prefix",
         "optimized",
     ):
 
@@ -141,15 +149,24 @@ def test_compact_forward_dynamics_benchmark_matches_public_api() -> None:
     assert_allclose(actual, expected, rtol=1e-10, atol=1e-11)
 
 
-def test_local_shape_variants_match_heterogeneous_baseline() -> None:
+def test_bucket_variant_matches_heterogeneous_baseline() -> None:
     system = benchmark._build_system(2, 3, 7, "revolute", "alternating")
     q, qd = benchmark._batched_inputs(system, 1)
     expected = benchmark._dynamics_callable(system, 1, "baseline")(q, qd)
 
-    for variant in ("local_dofs_4", "local_full_4"):
-        actual = benchmark._dynamics_callable(system, 1, variant)(q, qd)
-        for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
-            assert_allclose(actual_leaf, expected_leaf, rtol=1e-10, atol=1e-11)
+    actual = benchmark._dynamics_callable(system, 1, "bucket_equal_8")(q, qd)
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        assert_allclose(actual_leaf, expected_leaf, rtol=1e-10, atol=1e-11)
+
+
+def test_multi_segment_public_path_uses_bounded_bucket_variant() -> None:
+    system = benchmark._build_system(4, 3, 7, "revolute")
+    q, qd = benchmark._batched_inputs(system, 1)
+    expected = benchmark._dynamics_callable(system, 1, "optimized")(q, qd)
+    actual = system.dynamics_terms(q[0], qd[0])
+
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        assert_allclose(actual_leaf, expected_leaf, rtol=0.0, atol=0.0)
 
 
 def test_single_segment_public_path_matches_fixed_shape_baseline() -> None:
@@ -162,6 +179,16 @@ def test_single_segment_public_path_matches_fixed_shape_baseline() -> None:
         use_active_prefix=False,
         use_compact_basis=False,
     )
+    actual = system.dynamics_terms(q[0], qd[0])
+
+    for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+        assert_allclose(actual_leaf, expected_leaf, rtol=0.0, atol=0.0)
+
+
+def test_small_public_path_matches_fixed_shape_baseline() -> None:
+    system = benchmark._build_system(4, 1, 5, "revolute")
+    q, qd = benchmark._batched_inputs(system, 1)
+    expected = benchmark._dynamics_callable(system, 1, "baseline")(q, qd)
     actual = system.dynamics_terms(q[0], qd[0])
 
     for actual_leaf, expected_leaf in zip(actual, expected, strict=True):

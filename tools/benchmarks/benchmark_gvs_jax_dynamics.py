@@ -56,61 +56,17 @@ Array = jax.Array
 Tree = Any
 
 
-def _variant_options(
-    system: GVS, variant: str
-) -> tuple[bool, bool, bool, int, str, str, int, str, int]:
+def _variant_options(system: GVS, variant: str) -> tuple[bool, bool, bool, int, str]:
     """Return velocity, active-prefix, compact-basis, and bucket switches."""
     if variant == "baseline":
-        return False, False, False, 0, "uniform", "none", 0, "uniform", 0
+        return False, False, False, 0, "uniform"
     if variant == "velocity":
-        return True, False, False, 0, "uniform", "none", 0, "uniform", 0
+        return True, False, False, 0, "uniform"
     if variant in ("fixed_compact", "fixed_optimized"):
-        return True, False, True, 0, "uniform", "none", 0, "uniform", 0
-    if variant.startswith("tile_"):
-        return (
-            True,
-            False,
-            True,
-            0,
-            "uniform",
-            "none",
-            0,
-            "uniform",
-            int(variant.rsplit("_", maxsplit=1)[1]),
-        )
-    if variant.startswith("recurrence_uniform_"):
-        bucket_count = int(variant.rsplit("_", maxsplit=1)[1])
-        return (
-            True,
-            False,
-            True,
-            bucket_count,
-            "uniform",
-            "none",
-            bucket_count,
-            "uniform",
-            0,
-        )
-    for name, local_policy in (
-        ("local_dofs_", "dofs"),
-        ("local_full_", "full"),
-    ):
-        if variant.startswith(name):
-            return (
-                True,
-                False,
-                True,
-                int(variant.rsplit("_", maxsplit=1)[1]),
-                "uniform",
-                local_policy,
-                0,
-                "uniform",
-                0,
-            )
+        return True, False, True, 0, "uniform"
     for name, policy in (
         ("bucket_uniform_", "uniform"),
         ("bucket_equal_", "equal_count"),
-        ("bucket_optimal_", "cost_optimal"),
     ):
         if variant.startswith(name):
             return (
@@ -119,27 +75,19 @@ def _variant_options(
                 True,
                 int(variant.rsplit("_", maxsplit=1)[1]),
                 policy,
-                "none",
-                0,
-                "uniform",
-                0,
             )
     if variant == "active_prefix":
-        return True, True, False, 0, "uniform", "none", 0, "uniform", 0
-    if variant == "compact_basis":
-        return True, True, True, 0, "uniform", "none", 0, "uniform", 0
+        return True, True, False, 0, "uniform"
+    if variant in ("compact_basis", "exact_prefix"):
+        return True, True, True, 0, "uniform"
     if variant == "optimized":
-        use_optimization = system.num_segments > 1
+        use_optimization = system._use_bounded_dynamics_optimization()
         return (
             use_optimization,
+            False,
             use_optimization,
-            use_optimization,
-            0,
-            "uniform",
-            "none",
-            0,
-            "uniform",
-            0,
+            4 if use_optimization else 0,
+            "equal_count",
         )
     raise ValueError(f"Unknown dynamics variant: {variant}")
 
@@ -229,10 +177,6 @@ def _dynamics_callable(
         use_compact_basis,
         reduction_bucket_count,
         reduction_bucket_policy,
-        local_shape_policy,
-        recurrence_bucket_count,
-        recurrence_bucket_policy,
-        reduction_tile_width,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Tree:
@@ -244,10 +188,6 @@ def _dynamics_callable(
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=reduction_bucket_count,
             reduction_bucket_policy=reduction_bucket_policy,
-            local_shape_policy=local_shape_policy,
-            recurrence_bucket_count=recurrence_bucket_count,
-            recurrence_bucket_policy=recurrence_bucket_policy,
-            reduction_tile_width=reduction_tile_width,
         )
 
     if batch_size == 1 and jax.default_backend() == "cpu":
@@ -264,10 +204,6 @@ def _forward_dynamics_callable(
         use_compact_basis,
         reduction_bucket_count,
         reduction_bucket_policy,
-        local_shape_policy,
-        recurrence_bucket_count,
-        recurrence_bucket_policy,
-        reduction_tile_width,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Array:
@@ -279,10 +215,6 @@ def _forward_dynamics_callable(
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=reduction_bucket_count,
             reduction_bucket_policy=reduction_bucket_policy,
-            local_shape_policy=local_shape_policy,
-            recurrence_bucket_count=recurrence_bucket_count,
-            recurrence_bucket_policy=recurrence_bucket_policy,
-            reduction_tile_width=reduction_tile_width,
         )
         u = jnp.zeros((system.num_actuators,), dtype=q.dtype)
         actuation = system.actuation_force(q, u, qd=qd)
@@ -388,22 +320,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "bucket_uniform_2",
             "bucket_uniform_4",
             "bucket_uniform_8",
+            "bucket_equal_2",
             "bucket_equal_4",
             "bucket_equal_8",
             "bucket_equal_16",
-            "bucket_optimal_4",
-            "bucket_optimal_8",
-            "local_dofs_4",
-            "local_dofs_8",
-            "local_full_4",
-            "local_full_8",
-            "recurrence_uniform_4",
-            "recurrence_uniform_8",
-            "tile_32",
-            "tile_64",
-            "tile_128",
             "active_prefix",
             "compact_basis",
+            "exact_prefix",
             "optimized",
         ),
         default=["velocity"],
