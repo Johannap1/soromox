@@ -90,20 +90,112 @@ solving the dense inertia system.
 
 ## Compilation tradeoff
 
-Active-prefix specialization unrolls the segment recurrence at trace time. In
-fresh processes for an 8-segment, order-5, 9-Gauss-point model, the fixed-shape
-reference below includes the already accepted recurrence-velocity reuse:
+Active-prefix specialization unrolls the segment recurrence at trace time. A
+second compilation-only sweep measured every shape in a fresh Python/JAX
+process, avoiding in-process compilation caches. `compile` below is the time
+spent in `lowered.compile()`; JAX lowering is reported separately afterward.
+The 1-segment public paths are identical, so their differences establish a
+rough 2–10% fresh-process noise floor.
 
-| Device/workload | Fixed-shape compile | Active-prefix compile | Compact compile | Fixed-shape run | Final run |
-|---|---:|---:|---:|---:|---:|
-| CPU, batch 1 | 1.933 s | 4.351 s | 4.443 s | 1.778 ms | 1.058 ms |
-| GPU, batch 256 | 2.622 s | 7.913 s | 8.142 s | 25.637 ms | 13.434 ms |
+### CPU segment scaling
 
-For this shape, the extra compilation cost breaks even after roughly 3,500 CPU
-calls or 450 batched GPU calls. The optimization is therefore aimed at compiled
-simulation/training workloads with repeated evaluations. Short-lived workloads
-that compile a multi-segment shape and evaluate it only a handful of times can
-have worse wall-clock latency despite faster steady-state execution.
+CPU compilation was pinned to the same high-performance core as execution.
+Cells show fixed-shape / optimized compile seconds.
+
+| Segments | order 1 / GQ 5 | ratio | order 5 / GQ 9 | ratio |
+|---:|---:|---:|---:|---:|
+| 1 | 1.384 / 1.386 | 1.00x | 1.450 / 1.420 | 0.98x |
+| 2 | 1.805 / 1.907 | 1.06x | 1.905 / 1.975 | 1.04x |
+| 4 | 1.875 / 2.679 | 1.43x | 1.936 / 2.825 | 1.46x |
+| 8 | 1.869 / 4.408 | 2.36x | 1.952 / 4.461 | 2.28x |
+| 16 | 1.912 / 7.661 | 4.01x | 1.968 / 7.887 | 4.01x |
+
+For 2–16 segments, the fixed-shape compiler time is effectively constant:
+approximately `1.82 + 0.006 S` seconds at order 1 and
+`1.91 + 0.004 S` seconds at order 5. The optimized path is linear in segment
+count with an almost perfect fit: `1.07 + 0.413 S` seconds at order 1 and
+`1.12 + 0.422 S` seconds at order 5 (`R² = 1.000` for both). Strain order has
+little effect on CPU compilation.
+
+Lowering the fixed-shape CPU graph takes about 0.17 seconds for 2–16 segments.
+Optimized lowering grows to 0.35 seconds at 16 segments/order 1 and 0.50 seconds
+at 16 segments/order 5. Including lowering, the 16-segment cold compilation
+ratio is 3.85–3.92x rather than 4.01x.
+
+### GPU segment and batch scaling
+
+For order 1 / GQ 5, cells show fixed-shape / optimized compile seconds and the
+ratio in parentheses.
+
+| Segments | batch 1 | batch 64 | batch 256 | batch 1024 |
+|---:|---:|---:|---:|---:|
+| 1 | 0.84 / 0.92 (1.10x) | 0.97 / 0.99 (1.02x) | 1.11 / 1.14 (1.02x) | 1.32 / 1.39 (1.05x) |
+| 2 | 0.99 / 1.11 (1.12x) | 1.14 / 1.21 (1.06x) | 1.16 / 1.19 (1.03x) | 1.41 / 1.49 (1.06x) |
+| 4 | 1.23 / 1.85 (1.50x) | 1.34 / 1.97 (1.47x) | 1.35 / 2.07 (1.54x) | 1.47 / 2.44 (1.66x) |
+| 8 | 1.25 / 3.35 (2.69x) | 1.23 / 3.55 (2.88x) | 1.64 / 3.48 (2.13x) | 1.46 / 4.07 (2.78x) |
+| 16 | 1.29 / 6.26 (4.84x) | 1.48 / 6.35 (4.28x) | 1.40 / 6.41 (4.57x) | 1.80 / 6.98 (3.88x) |
+
+At fixed batch size, optimized order-1 compilation adds 0.37–0.39 seconds per
+segment (`R² >= 0.998`), whereas the fixed-shape scan adds only 0.01–0.03
+seconds per segment. A two-factor fit over 2–16 segments gives:
+
+`T_optimized ≈ 0.339 + 0.364 S + 0.037 log2(B) + 0.0015 S log2(B)` seconds
+
+with `R² = 0.994`. Segment count is therefore the dominant compile axis. Batch
+size changes tensor shapes but does not unroll the graph; from batch 1 to 1024,
+compile time usually grows by only 0.2–0.7 seconds at order 1.
+
+Higher strain order introduces a stronger batch/code-generation interaction:
+
+| Segments | batch 1 | batch 256 | batch 1024 |
+|---:|---:|---:|---:|
+| 4 | 1.77 / 3.86 (2.18x) | 2.69 / 4.53 (1.68x) | 3.09 / 5.72 (1.85x) |
+| 8 | 1.80 / 6.56 (3.63x) | 2.98 / 8.17 (2.74x) | 3.20 / 8.87 (2.77x) |
+| 16 | 1.63 / 12.25 (7.50x) | 3.37 / 15.50 (4.61x) | 4.60 / 21.60 (4.69x) |
+
+These order-5 optimized slopes are about 0.70 seconds/segment at batch 1,
+0.91 at batch 256, and 1.36 at batch 1024. Repeats of the 8- and 16-segment,
+batch-1024 points agreed within 6%, confirming the large-shape increase is not
+an ordering artifact.
+
+### Why the scaling changes
+
+StableHLO inspection separates graph growth from shape-driven code generation:
+
+- At batch 1, the fixed-shape graph stays at 2,933 StableHLO operations from
+  2 through 16 segments. The optimized graph has 3,260 operations at 4
+  segments, 4,048 at 8, and 5,624 at 16—an exactly linear increment of about
+  197 operations per added segment after segment 4.
+- At batch 1024, the corresponding counts are 3,120 operations for every
+  fixed-shape model and 3,480 / 4,364 / 6,132 for optimized 4 / 8 / 16-segment
+  models, or about 221 operations per added segment.
+- Increasing from order 1 to order 5 does not change those operation counts,
+  but it enlarges constants, tensor types, GEMMs, and layout/fusion search. For
+  example, the 16-segment/batch-1024 fixed-shape StableHLO text grows from
+  0.62 MB to 1.61 MB. This explains why high order and large batches increase
+  GPU compilation even though they do not add recurrence bodies.
+
+The implementation trades a reusable fixed-width scan body for one statically
+specialized body per segment. That makes compiler work approximately linear in
+segment count, while execution avoids arithmetic on all not-yet-active DOFs.
+
+### Compile amortization
+
+Combining isolated compile overhead with warmed execution medians gives the
+number of calls needed to recover the additional compile time:
+
+- CPU order 5: about 7,400 calls at 4 segments, 3,300 at 8, and 925 at 16.
+  Low-order CPU cases can require 13,000–114,000 calls because each call saves
+  only microseconds.
+- GPU order 5, batch 256: about 1,215 calls at 4 segments, 414 at 8, and 131 at
+  16. At batch 1024 this falls to about 342 calls at 4 segments and 113 at 8.
+- GPU batch 1 generally requires 10,000–44,000 calls. Although steady-state
+  execution is faster, compilation dominates short single-batch jobs.
+
+The optimization is consequently best for long-running simulations, training,
+or batched rollouts. If cold-start latency matters, the current default is a
+clear tradeoff: multi-segment steady-state throughput improves, but compilation
+scales linearly rather than remaining nearly constant.
 
 ## Correctness coverage
 
