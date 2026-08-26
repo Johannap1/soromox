@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 from jax import Array
 
+from soromox.systems.gvs._warp.cooperative import cooperative_joint_terms
 from soromox.systems.gvs._warp.joint import scalable_joint_terms
 from soromox.systems.gvs._warp.persistent import scalable_persistent_chain
 from soromox.systems.gvs._warp.scalable import scalable_cell_terms
@@ -27,7 +28,7 @@ def _gather_local(values: Array, local_to_global: Array) -> Array:
 
 
 def _joint_terms(
-    model: GVS, q: Array, qd: Array
+    model: GVS, q: Array, qd: Array, *, cooperative: bool
 ) -> tuple[Array, Array, Array, Array, Array]:
     """Evaluate all general-joint Lie terms in one runtime-shaped launch."""
 
@@ -37,7 +38,8 @@ def _joint_terms(
     num_dofs = model.num_dofs
     work_items = batch_size * num_segments
     matrix_rows = work_items * SPATIAL_DIM
-    outputs = scalable_joint_terms(
+    joint_terms = cooperative_joint_terms if cooperative else scalable_joint_terms
+    outputs = joint_terms(
         q,
         qd,
         model.B_joint.reshape(num_segments * SPATIAL_DIM, max_dof),
@@ -121,7 +123,7 @@ def dynamics_terms(
         joint_tangent,
         joint_tangent_dot_qd,
         joint_velocity,
-    ) = _joint_terms(model, q, qd)
+    ) = _joint_terms(model, q, qd, cooperative=lanes_per_block > 1)
     q_link = _gather_local(q, model.link_local_to_global)
     qd_link = _gather_local(qd, model.link_local_to_global)
     (
@@ -155,8 +157,11 @@ def dynamics_terms(
         model.link_global_to_local,
         model.active_dofs_per_segment,
         qd,
-        model.inner_integration_weights.reshape(num_segments * num_quadrature),
-        model.inner_mass_diagonals.reshape(num_segments * num_quadrature, SPATIAL_DIM),
+        model.inertia_upper_rows,
+        model.inertia_upper_columns,
+        model.inner_weighted_mass_diagonals.reshape(
+            num_segments * num_quadrature, SPATIAL_DIM
+        ),
         model.gravity_base,
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([num_quadrature], dtype=jnp.int32),

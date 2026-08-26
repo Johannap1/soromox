@@ -216,7 +216,10 @@ class GVS(SoftRobot):
     scaled_B_Z1_values: Array
     scaled_B_Z2_values: Array
     inner_mass_diagonals: Array
+    inner_weighted_mass_diagonals: Array
     gravity_base: Array
+    inertia_upper_rows: Array
+    inertia_upper_columns: Array
 
     B_joint: Array
     B_Xs: Array
@@ -921,17 +924,16 @@ class GVS(SoftRobot):
                 self.num_segments, 2, self.max_dof, self.num_dofs
             ),
         )
-        object.__setattr__(
-            self,
-            "inner_integration_weights",
+        inner_integration_weights = (
             self.integration_weights[:, 1 : self.max_num_integration_points - 1]
-            * self.segment_lengths[:, None],
+            * self.segment_lengths[:, None]
         )
-        object.__setattr__(
-            self,
-            "inner_mass_matrices",
-            self.mass_matrices[:, 1 : self.max_num_integration_points - 1],
-        )
+        inner_mass_matrices = self.mass_matrices[
+            :, 1 : self.max_num_integration_points - 1
+        ]
+        inner_mass_diagonals = jnp.diagonal(inner_mass_matrices, axis1=-2, axis2=-1)
+        object.__setattr__(self, "inner_integration_weights", inner_integration_weights)
+        object.__setattr__(self, "inner_mass_matrices", inner_mass_matrices)
         object.__setattr__(
             self,
             "cell_widths",
@@ -943,12 +945,27 @@ class GVS(SoftRobot):
         object.__setattr__(self, "link_basis_rows", link_basis_rows)
         object.__setattr__(self, "scaled_B_Z1_values", scaled_B_Z1_values)
         object.__setattr__(self, "scaled_B_Z2_values", scaled_B_Z2_values)
+        object.__setattr__(self, "inner_mass_diagonals", inner_mass_diagonals)
         object.__setattr__(
             self,
-            "inner_mass_diagonals",
-            jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1),
+            "inner_weighted_mass_diagonals",
+            inner_integration_weights[..., None] * inner_mass_diagonals,
         )
         object.__setattr__(self, "gravity_base", se3.adjoint_inverse(self.g0) @ self.g)
+        upper_rows = tuple(
+            row for column in range(self.num_dofs) for row in range(column + 1)
+        )
+        upper_columns = tuple(
+            column for column in range(self.num_dofs) for _ in range(column + 1)
+        )
+        object.__setattr__(
+            self, "inertia_upper_rows", jnp.asarray(upper_rows, dtype=jnp.int32)
+        )
+        object.__setattr__(
+            self,
+            "inertia_upper_columns",
+            jnp.asarray(upper_columns, dtype=jnp.int32),
+        )
         object.__setattr__(self, "gather_indices", gather_indices)
         object.__setattr__(self, "gather_mask", gather_mask)
         object.__setattr__(self, "joint_local_to_global", joint_local_to_global)
@@ -1228,6 +1245,7 @@ class GVS(SoftRobot):
                 model.scaled_B_Z1_values,
                 model.scaled_B_Z2_values,
                 model.inner_mass_diagonals,
+                model.inner_weighted_mass_diagonals,
                 model.gravity_base,
                 model.young_stiffness_operator,
                 model.shear_stiffness_operator,
@@ -1250,6 +1268,19 @@ class GVS(SoftRobot):
                 scaled_B_Z1_values,
                 scaled_B_Z2_values,
                 jnp.diagonal(
+                    updated_self.mass_matrices[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ],
+                    axis1=-2,
+                    axis2=-1,
+                ),
+                (
+                    updated_self.integration_weights[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ]
+                    * updated_self.segment_lengths[:, None]
+                )[..., None]
+                * jnp.diagonal(
                     updated_self.mass_matrices[
                         :, 1 : updated_self.max_num_integration_points - 1
                     ],
@@ -4728,7 +4759,10 @@ class GVS(SoftRobot):
                 ) from error
             raise
 
-        lanes_per_block = 128 if jax.default_backend() == "gpu" else 1
+        if jax.default_backend() == "gpu":
+            lanes_per_block = 192 if self.num_dofs > 64 else 128
+        else:
+            lanes_per_block = 1
         return dynamics_terms(self, q, qd, lanes_per_block=lanes_per_block)
 
     @eqx.filter_jit

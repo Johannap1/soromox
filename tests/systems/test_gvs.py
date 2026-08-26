@@ -1831,12 +1831,8 @@ def test_dynamics_terms_match_public_matrices(
 def test_dynamics_terms_batched_jax_matches_single_environment_api() -> None:
     robot = build_varied_basis_gvs(num_segments=3)
     key_q, key_qd = jax.random.split(jax.random.PRNGKey(6125))
-    q = jax.random.normal(
-        key_q, (3, robot.num_dofs), dtype=jnp.float64
-    ) * 0.02
-    qd = jax.random.normal(
-        key_qd, (3, robot.num_dofs), dtype=jnp.float64
-    ) * 0.04
+    q = jax.random.normal(key_q, (3, robot.num_dofs), dtype=jnp.float64) * 0.02
+    qd = jax.random.normal(key_qd, (3, robot.num_dofs), dtype=jnp.float64) * 0.04
 
     expected = jax.vmap(robot.dynamics_terms)(q, qd)
     actual = robot.dynamics_terms_batched(q, qd, backend="jax")
@@ -1862,9 +1858,7 @@ def test_warp_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
                 global_column = int(local_to_global[segment, local_column])
                 if local_column < dofs:
                     assert global_column >= 0
-                    assert (
-                        int(global_to_local[segment, global_column]) == local_column
-                    )
+                    assert int(global_to_local[segment, global_column]) == local_column
                 else:
                     assert global_column == -1
 
@@ -1908,6 +1902,32 @@ def test_warp_cached_operands_reconstruct_dense_model_data() -> None:
         assert_allclose(
             robot.inner_mass_diagonals,
             jnp.diagonal(robot.inner_mass_matrices, axis1=-2, axis2=-1),
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inner_weighted_mass_diagonals,
+            robot.inner_integration_weights[..., None] * robot.inner_mass_diagonals,
+            rtol=0.0,
+            atol=0.0,
+        )
+        expected_upper_rows = onp.asarray(
+            [row for column in range(robot.num_dofs) for row in range(column + 1)],
+            dtype=onp.int32,
+        )
+        expected_upper_columns = onp.asarray(
+            [column for column in range(robot.num_dofs) for _ in range(column + 1)],
+            dtype=onp.int32,
+        )
+        assert_allclose(
+            robot.inertia_upper_rows,
+            expected_upper_rows,
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inertia_upper_columns,
+            expected_upper_columns,
             rtol=0.0,
             atol=0.0,
         )
