@@ -49,17 +49,16 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
     q, qd = q[0], qd[0]
 
     def evaluate(variant: str, configuration: jax.Array):
-        reuse_velocity = variant != "baseline" and not (
-            variant == "optimized" and system.num_segments == 1
+        reuse_velocity, use_active_prefix, use_compact_basis, bucket_count = (
+            benchmark._variant_options(system, variant)
         )
-        use_optimized_prefix = variant == "optimized" and system.num_segments > 1
         return system._dynamics_terms_impl(
             configuration,
             qd,
             reuse_recurrence_velocity=reuse_velocity,
-            use_active_prefix=variant in ("active_prefix", "compact_basis")
-            or use_optimized_prefix,
-            use_compact_basis=variant == "compact_basis" or use_optimized_prefix,
+            use_active_prefix=use_active_prefix,
+            use_compact_basis=use_compact_basis,
+            reduction_bucket_count=bucket_count,
         )
 
     tangent = jnp.linspace(-0.02, 0.02, system.num_dofs)
@@ -70,6 +69,10 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
     )
     for variant in (
         "velocity",
+        "fixed_compact",
+        "bucket_uniform_2",
+        "bucket_uniform_4",
+        "bucket_uniform_8",
         "active_prefix",
         "compact_basis",
         "optimized",

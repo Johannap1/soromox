@@ -56,6 +56,26 @@ Array = jax.Array
 Tree = Any
 
 
+def _variant_options(system: GVS, variant: str) -> tuple[bool, bool, bool, int]:
+    """Return velocity, active-prefix, compact-basis, and bucket switches."""
+    if variant == "baseline":
+        return False, False, False, 0
+    if variant == "velocity":
+        return True, False, False, 0
+    if variant in ("fixed_compact", "fixed_optimized"):
+        return True, False, True, 0
+    if variant.startswith("bucket_uniform_"):
+        return True, False, True, int(variant.rsplit("_", maxsplit=1)[1])
+    if variant == "active_prefix":
+        return True, True, False, 0
+    if variant == "compact_basis":
+        return True, True, True, 0
+    if variant == "optimized":
+        use_optimization = system.num_segments > 1
+        return use_optimization, use_optimization, use_optimization, 0
+    raise ValueError(f"Unknown dynamics variant: {variant}")
+
+
 def _parse_strain_gauss_pair(value: str) -> tuple[int, int]:
     try:
         order_text, gauss_text = value.split(":", maxsplit=1)
@@ -119,23 +139,12 @@ def _batched_inputs(system: GVS, batch_size: int) -> tuple[Array, Array]:
 def _dynamics_callable(
     system: GVS, batch_size: int, variant: str
 ) -> Callable[[Array, Array], Tree]:
-    if variant not in (
-        "baseline",
-        "velocity",
-        "active_prefix",
-        "compact_basis",
-        "optimized",
-    ):
-        raise ValueError(f"Unknown dynamics variant: {variant}")
-    reuse_recurrence_velocity = variant != "baseline" and not (
-        variant == "optimized" and system.num_segments == 1
-    )
-    use_active_prefix = variant in ("active_prefix", "compact_basis") or (
-        variant == "optimized" and system.num_segments > 1
-    )
-    use_compact_basis = variant == "compact_basis" or (
-        variant == "optimized" and system.num_segments > 1
-    )
+    (
+        reuse_recurrence_velocity,
+        use_active_prefix,
+        use_compact_basis,
+        reduction_bucket_count,
+    ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Tree:
         return system._dynamics_terms_impl(
@@ -144,6 +153,7 @@ def _dynamics_callable(
             reuse_recurrence_velocity=reuse_recurrence_velocity,
             use_active_prefix=use_active_prefix,
             use_compact_basis=use_compact_basis,
+            reduction_bucket_count=reduction_bucket_count,
         )
 
     if batch_size == 1 and jax.default_backend() == "cpu":
@@ -154,15 +164,12 @@ def _dynamics_callable(
 def _forward_dynamics_callable(
     system: GVS, batch_size: int, variant: str
 ) -> Callable[[Array, Array], Tree]:
-    reuse_recurrence_velocity = variant != "baseline" and not (
-        variant == "optimized" and system.num_segments == 1
-    )
-    use_active_prefix = variant in ("active_prefix", "compact_basis") or (
-        variant == "optimized" and system.num_segments > 1
-    )
-    use_compact_basis = variant == "compact_basis" or (
-        variant == "optimized" and system.num_segments > 1
-    )
+    (
+        reuse_recurrence_velocity,
+        use_active_prefix,
+        use_compact_basis,
+        reduction_bucket_count,
+    ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Array:
         inertia, coriolis_qd, gravity = system._dynamics_terms_impl(
@@ -171,6 +178,7 @@ def _forward_dynamics_callable(
             reuse_recurrence_velocity=reuse_recurrence_velocity,
             use_active_prefix=use_active_prefix,
             use_compact_basis=use_compact_basis,
+            reduction_bucket_count=reduction_bucket_count,
         )
         u = jnp.zeros((system.num_actuators,), dtype=q.dtype)
         actuation = system.actuation_force(q, u, qd=qd)
@@ -202,6 +210,7 @@ def _measure(
     start = time.perf_counter()
     lowered = jitted.lower(q, qd)
     lower_time = time.perf_counter() - start
+    stablehlo_text = lowered.as_text()
 
     start = time.perf_counter()
     executable = lowered.compile()
@@ -226,6 +235,10 @@ def _measure(
     return {
         "lower_time_s": lower_time,
         "compile_time_s": compile_time,
+        "stablehlo_text_bytes": len(stablehlo_text.encode("utf-8")),
+        "stablehlo_operation_count": stablehlo_text.count("stablehlo."),
+        "stablehlo_case_count": stablehlo_text.count("stablehlo.case"),
+        "stablehlo_while_count": stablehlo_text.count("stablehlo.while"),
         "first_execution_time_s": first_execution_time,
         "execution_median_s": statistics.median(samples),
         "execution_min_s": min(samples),
@@ -261,6 +274,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         choices=(
             "baseline",
             "velocity",
+            "fixed_compact",
+            "fixed_optimized",
+            "bucket_uniform_2",
+            "bucket_uniform_4",
+            "bucket_uniform_8",
             "active_prefix",
             "compact_basis",
             "optimized",

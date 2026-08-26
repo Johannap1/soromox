@@ -66,6 +66,32 @@ from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 __all__ = ["GVS"]
 
 
+def _uniform_prefix_buckets(
+    active_prefixes: tuple[int, ...], bucket_count: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Map active prefixes to uniformly spaced, compile-bounded widths."""
+    if bucket_count < 1:
+        raise ValueError("bucket_count must be positive")
+    total_dofs = active_prefixes[-1]
+    widths = tuple(
+        sorted(
+            {
+                math.ceil(total_dofs * bucket_index / bucket_count)
+                for bucket_index in range(1, bucket_count + 1)
+            }
+        )
+    )
+    bucket_indices = tuple(
+        next(
+            bucket_index
+            for bucket_index, width in enumerate(widths)
+            if prefix <= width
+        )
+        for prefix in active_prefixes
+    )
+    return widths, bucket_indices
+
+
 class GVS(SoftRobot):
     """
     Geometric Variable Strain (GVS) model for 3D soft continuum robots.
@@ -4484,6 +4510,7 @@ class GVS(SoftRobot):
         reuse_recurrence_velocity: bool,
         use_active_prefix: bool,
         use_compact_basis: bool,
+        reduction_bucket_count: int = 0,
     ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
@@ -4601,6 +4628,10 @@ class GVS(SoftRobot):
         interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
         tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
         mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
+        if use_active_prefix and reduction_bucket_count:
+            raise ValueError(
+                "reduction buckets and exact active-prefix assembly are exclusive"
+            )
         if use_active_prefix:
             return self._assemble_dynamics_active_prefix(
                 q,
@@ -4617,6 +4648,57 @@ class GVS(SoftRobot):
         gravity_initial = se3.adjoint_inverse(self.g0) @ self.g
         inertia_initial = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
         generalized_vector_initial = jnp.zeros((self.num_dofs,), dtype=dtype)
+        if reduction_bucket_count:
+            reduction_bucket_widths, segment_bucket_indices = (
+                _uniform_prefix_buckets(
+                    self.active_dof_prefixes, reduction_bucket_count
+                )
+            )
+            segment_bucket_indices_array = jnp.asarray(segment_bucket_indices)
+
+            def make_reduction_branch(bucket_width: int):
+                def reduce_bucket(
+                    operands: tuple[Array, Array, Array, Array, Array]
+                ) -> tuple[Array, Array, Array]:
+                    (
+                        jacobians,
+                        weights,
+                        mass_diagonals_i,
+                        wrenches,
+                        gravity_wrenches,
+                    ) = operands
+                    flattened_row_count = (
+                        self.max_num_integration_points - 2
+                    ) * 6
+                    jacobians_prefix = jacobians[..., :bucket_width]
+                    jacobians_flat = jacobians_prefix.reshape(
+                        flattened_row_count, bucket_width
+                    )
+                    weighted_jacobians_flat = (
+                        weights[:, None, None]
+                        * mass_diagonals_i[:, :, None]
+                        * jacobians_prefix
+                    ).reshape(flattened_row_count, bucket_width)
+                    inertia_prefix = jacobians_flat.T @ weighted_jacobians_flat
+                    coriolis_prefix = jacobians_flat.T @ (
+                        weights[:, None] * wrenches
+                    ).reshape(flattened_row_count)
+                    gravity_prefix = -jacobians_flat.T @ (
+                        weights[:, None] * gravity_wrenches
+                    ).reshape(flattened_row_count)
+                    vector_padding = (0, self.num_dofs - bucket_width)
+                    matrix_padding = (vector_padding, vector_padding)
+                    return (
+                        jnp.pad(inertia_prefix, matrix_padding),
+                        jnp.pad(coriolis_prefix, vector_padding),
+                        jnp.pad(gravity_prefix, vector_padding),
+                    )
+
+                return reduce_bucket
+
+            reduction_branches = tuple(
+                make_reduction_branch(width) for width in reduction_bucket_widths
+            )
 
         def insert_local_basis(
             local_basis: Array, segment_index: Array, block_index: int
@@ -4754,20 +4836,41 @@ class GVS(SoftRobot):
             weights = self.inner_integration_weights[segment_index]
             mass_diagonals_i = mass_diagonals[segment_index]
             flattened_row_count = (self.max_num_integration_points - 2) * 6
-            jacobians_flat = jacobians.reshape(flattened_row_count, self.num_dofs)
-            inertia_segment = jacobians_flat.T @ (
-                weights[:, None, None] * mass_diagonals_i[:, :, None] * jacobians
-            ).reshape(flattened_row_count, self.num_dofs)
-
             momenta = mass_diagonals_i * velocities
             coadjoint_momenta = jax.vmap(se3.coadjoint_action)(velocities, momenta)
             wrenches = mass_diagonals_i * jacobians_dot_qd + coadjoint_momenta
-            coriolis_segment = jacobians_flat.T @ (weights[:, None] * wrenches).reshape(
-                flattened_row_count
-            )
-            gravity_segment = -jacobians_flat.T @ (
-                weights[:, None] * mass_diagonals_i * gravities
-            ).reshape(flattened_row_count)
+            gravity_wrenches = mass_diagonals_i * gravities
+            if reduction_bucket_count:
+                (
+                    inertia_segment,
+                    coriolis_segment,
+                    gravity_segment,
+                ) = lax.switch(
+                    segment_bucket_indices_array[segment_index],
+                    reduction_branches,
+                    (
+                        jacobians,
+                        weights,
+                        mass_diagonals_i,
+                        wrenches,
+                        gravity_wrenches,
+                    ),
+                )
+            else:
+                jacobians_flat = jacobians.reshape(
+                    flattened_row_count, self.num_dofs
+                )
+                inertia_segment = jacobians_flat.T @ (
+                    weights[:, None, None]
+                    * mass_diagonals_i[:, :, None]
+                    * jacobians
+                ).reshape(flattened_row_count, self.num_dofs)
+                coriolis_segment = jacobians_flat.T @ (
+                    weights[:, None] * wrenches
+                ).reshape(flattened_row_count)
+                gravity_segment = -jacobians_flat.T @ (
+                    weights[:, None] * gravity_wrenches
+                ).reshape(flattened_row_count)
 
             kinematics_tip = advance_cell(kinematics_last_quad, tip_cell_terms_i)
             return (
