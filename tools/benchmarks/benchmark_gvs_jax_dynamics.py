@@ -56,23 +56,57 @@ Array = jax.Array
 Tree = Any
 
 
-def _variant_options(system: GVS, variant: str) -> tuple[bool, bool, bool, int]:
+def _variant_options(
+    system: GVS, variant: str
+) -> tuple[bool, bool, bool, int, str, str]:
     """Return velocity, active-prefix, compact-basis, and bucket switches."""
     if variant == "baseline":
-        return False, False, False, 0
+        return False, False, False, 0, "uniform", "none"
     if variant == "velocity":
-        return True, False, False, 0
+        return True, False, False, 0, "uniform", "none"
     if variant in ("fixed_compact", "fixed_optimized"):
-        return True, False, True, 0
-    if variant.startswith("bucket_uniform_"):
-        return True, False, True, int(variant.rsplit("_", maxsplit=1)[1])
+        return True, False, True, 0, "uniform", "none"
+    for name, local_policy in (
+        ("local_dofs_", "dofs"),
+        ("local_full_", "full"),
+    ):
+        if variant.startswith(name):
+            return (
+                True,
+                False,
+                True,
+                int(variant.rsplit("_", maxsplit=1)[1]),
+                "uniform",
+                local_policy,
+            )
+    for name, policy in (
+        ("bucket_uniform_", "uniform"),
+        ("bucket_equal_", "equal_count"),
+        ("bucket_optimal_", "cost_optimal"),
+    ):
+        if variant.startswith(name):
+            return (
+                True,
+                False,
+                True,
+                int(variant.rsplit("_", maxsplit=1)[1]),
+                policy,
+                "none",
+            )
     if variant == "active_prefix":
-        return True, True, False, 0
+        return True, True, False, 0, "uniform", "none"
     if variant == "compact_basis":
-        return True, True, True, 0
+        return True, True, True, 0, "uniform", "none"
     if variant == "optimized":
         use_optimization = system.num_segments > 1
-        return use_optimization, use_optimization, use_optimization, 0
+        return (
+            use_optimization,
+            use_optimization,
+            use_optimization,
+            0,
+            "uniform",
+            "none",
+        )
     raise ValueError(f"Unknown dynamics variant: {variant}")
 
 
@@ -102,27 +136,43 @@ def _build_system(
     strain_order: int,
     gauss_points: int,
     joint_type: str,
+    topology: str = "homogeneous",
 ) -> GVS:
-    segment = GVSSegment(
-        link=LinkSpec.circular(
-            young_modulus=1.0e6,
-            shear_modulus=1.0e6 / 2.9,
-            density=980.0,
-            material_damping_coefficient=2.5e3,
-            length=0.25,
-            radius=0.02,
-            reference_strain=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        ),
-        joint=JointSpec(type=joint_type, axis="z"),
-        basis=StrainBasisSpec(
-            type="legendre",
-            strain_selector=[1, 1, 1, 1, 1, 1],
-            basis_order=strain_order,
-        ),
-        num_gauss_points=gauss_points,
-    )
+    def build_segment(order: int, segment_gauss_points: int) -> GVSSegment:
+        return GVSSegment(
+            link=LinkSpec.circular(
+                young_modulus=1.0e6,
+                shear_modulus=1.0e6 / 2.9,
+                density=980.0,
+                material_damping_coefficient=2.5e3,
+                length=0.25,
+                radius=0.02,
+                reference_strain=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            ),
+            joint=JointSpec(type=joint_type, axis="z"),
+            basis=StrainBasisSpec(
+                type="legendre",
+                strain_selector=[1, 1, 1, 1, 1, 1],
+                basis_order=order,
+            ),
+            num_gauss_points=segment_gauss_points,
+        )
+
+    high_shape = (strain_order, gauss_points)
+    low_shape = (max(0, strain_order - 2), max(5, gauss_points - 2))
+    if topology == "homogeneous":
+        shapes = [high_shape] * num_segments
+    elif topology == "alternating":
+        shapes = [
+            low_shape if index % 2 == 0 else high_shape for index in range(num_segments)
+        ]
+    elif topology == "grouped":
+        split = (num_segments + 1) // 2
+        shapes = [low_shape] * split + [high_shape] * (num_segments - split)
+    else:
+        raise ValueError(f"unknown segment topology: {topology}")
     return GVS.from_segments(
-        segments=[segment for _ in range(num_segments)],
+        segments=[build_segment(*shape) for shape in shapes],
         gravity=jnp.array([0.0, 0.0, 9.81], dtype=jnp.float64),
     )
 
@@ -144,6 +194,8 @@ def _dynamics_callable(
         use_active_prefix,
         use_compact_basis,
         reduction_bucket_count,
+        reduction_bucket_policy,
+        local_shape_policy,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Tree:
@@ -154,6 +206,8 @@ def _dynamics_callable(
             use_active_prefix=use_active_prefix,
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=reduction_bucket_count,
+            reduction_bucket_policy=reduction_bucket_policy,
+            local_shape_policy=local_shape_policy,
         )
 
     if batch_size == 1 and jax.default_backend() == "cpu":
@@ -169,6 +223,8 @@ def _forward_dynamics_callable(
         use_active_prefix,
         use_compact_basis,
         reduction_bucket_count,
+        reduction_bucket_policy,
+        local_shape_policy,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Array:
@@ -179,6 +235,8 @@ def _forward_dynamics_callable(
             use_active_prefix=use_active_prefix,
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=reduction_bucket_count,
+            reduction_bucket_policy=reduction_bucket_policy,
+            local_shape_policy=local_shape_policy,
         )
         u = jnp.zeros((system.num_actuators,), dtype=q.dtype)
         actuation = system.actuation_force(q, u, qd=qd)
@@ -263,6 +321,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--joint-type", choices=("fixed", "revolute"), default="revolute"
     )
     parser.add_argument(
+        "--topology",
+        choices=("homogeneous", "alternating", "grouped"),
+        default="homogeneous",
+    )
+    parser.add_argument(
         "--operations",
         nargs="+",
         choices=("dynamics_terms", "forward_dynamics"),
@@ -279,6 +342,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "bucket_uniform_2",
             "bucket_uniform_4",
             "bucket_uniform_8",
+            "bucket_equal_4",
+            "bucket_equal_8",
+            "bucket_optimal_4",
+            "bucket_optimal_8",
+            "local_dofs_4",
+            "local_dofs_8",
+            "local_full_4",
+            "local_full_8",
             "active_prefix",
             "compact_basis",
             "optimized",
@@ -327,6 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "python_version": platform.python_version(),
         "cpu_affinity": affinity,
         "joint_type": args.joint_type,
+        "topology": args.topology,
         "repeats": args.repeats,
         "warmup_iterations": args.warmup_iterations,
     }
@@ -336,7 +408,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     for num_segments in args.segment_counts:
         for strain_order, gauss_points in args.strain_gauss_pairs:
             system = _build_system(
-                num_segments, strain_order, gauss_points, args.joint_type
+                num_segments,
+                strain_order,
+                gauss_points,
+                args.joint_type,
+                args.topology,
             )
             for batch_size in args.batch_sizes:
                 q, qd = _batched_inputs(system, batch_size)
@@ -368,6 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "batch_size": batch_size,
                             "num_dofs": system.num_dofs,
                             "operation": operation,
+                            "topology": args.topology,
                             "variant": variant,
                             **timing,
                         }

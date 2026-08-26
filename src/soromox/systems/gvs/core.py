@@ -83,13 +83,137 @@ def _uniform_prefix_buckets(
     )
     bucket_indices = tuple(
         next(
-            bucket_index
-            for bucket_index, width in enumerate(widths)
-            if prefix <= width
+            bucket_index for bucket_index, width in enumerate(widths) if prefix <= width
         )
         for prefix in active_prefixes
     )
     return widths, bucket_indices
+
+
+def _equal_count_prefix_buckets(
+    active_prefixes: tuple[int, ...], bucket_count: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Partition ordered segments into equally populated prefix buckets."""
+    if bucket_count < 1:
+        raise ValueError("bucket_count must be positive")
+    effective_bucket_count = min(bucket_count, len(active_prefixes))
+    bucket_ends = tuple(
+        math.ceil(len(active_prefixes) * index / effective_bucket_count)
+        for index in range(1, effective_bucket_count + 1)
+    )
+    widths = tuple(active_prefixes[end - 1] for end in bucket_ends)
+    bucket_indices = tuple(
+        next(index for index, end in enumerate(bucket_ends) if segment < end)
+        for segment in range(len(active_prefixes))
+    )
+    return widths, bucket_indices
+
+
+def _cost_optimal_prefix_buckets(
+    active_prefixes: tuple[int, ...], bucket_count: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Minimize padded matrix and vector work over contiguous prefix buckets."""
+    if bucket_count < 1:
+        raise ValueError("bucket_count must be positive")
+    segment_count = len(active_prefixes)
+    effective_bucket_count = min(bucket_count, segment_count)
+    work = tuple(prefix**2 + 2 * prefix for prefix in active_prefixes)
+    work_prefix_sum = [0]
+    for value in work:
+        work_prefix_sum.append(work_prefix_sum[-1] + value)
+
+    def group_padding(start: int, end: int) -> int:
+        bucket_work = work[end - 1]
+        exact_work = work_prefix_sum[end] - work_prefix_sum[start]
+        return (end - start) * bucket_work - exact_work
+
+    infinity = math.inf
+    costs = [
+        [infinity] * (segment_count + 1) for _ in range(effective_bucket_count + 1)
+    ]
+    previous_ends = [
+        [-1] * (segment_count + 1) for _ in range(effective_bucket_count + 1)
+    ]
+    costs[0][0] = 0
+    for groups in range(1, effective_bucket_count + 1):
+        for end in range(groups, segment_count + 1):
+            for start in range(groups - 1, end):
+                candidate = costs[groups - 1][start] + group_padding(start, end)
+                if candidate < costs[groups][end]:
+                    costs[groups][end] = candidate
+                    previous_ends[groups][end] = start
+
+    bucket_ends_reversed = []
+    end = segment_count
+    for groups in range(effective_bucket_count, 0, -1):
+        bucket_ends_reversed.append(end)
+        end = previous_ends[groups][end]
+    bucket_ends = tuple(reversed(bucket_ends_reversed))
+    widths = tuple(active_prefixes[end - 1] for end in bucket_ends)
+    bucket_indices = tuple(
+        next(index for index, end in enumerate(bucket_ends) if segment < end)
+        for segment in range(segment_count)
+    )
+    return widths, bucket_indices
+
+
+def _prefix_buckets(
+    active_prefixes: tuple[int, ...], bucket_count: int, policy: str
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if policy == "uniform":
+        return _uniform_prefix_buckets(active_prefixes, bucket_count)
+    if policy == "equal_count":
+        return _equal_count_prefix_buckets(active_prefixes, bucket_count)
+    if policy == "cost_optimal":
+        return _cost_optimal_prefix_buckets(active_prefixes, bucket_count)
+    raise ValueError(f"unknown reduction bucket policy: {policy}")
+
+
+def _local_shape_groups(
+    dofs_per_segment: tuple[tuple[int, int], ...],
+    gauss_points_per_segment: tuple[int, ...],
+    max_cell_count: int,
+    policy: str,
+    class_limit: int,
+) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
+    """Group segment indices by reusable local link-computation shapes."""
+    if class_limit < 1:
+        raise ValueError("local shape class limit must be positive")
+    if policy == "dofs":
+        signatures = tuple(
+            (link_dofs, max_cell_count) for _, link_dofs in dofs_per_segment
+        )
+    elif policy == "full":
+        signatures = tuple(
+            (link_dofs, gauss_points + 1)
+            for (_, link_dofs), gauss_points in zip(
+                dofs_per_segment, gauss_points_per_segment, strict=True
+            )
+        )
+    else:
+        raise ValueError(f"unknown local shape policy: {policy}")
+
+    unique_signatures = tuple(dict.fromkeys(signatures))
+    if len(unique_signatures) > class_limit:
+        return (
+            (
+                max(link_dofs for _, link_dofs in dofs_per_segment),
+                max_cell_count,
+                tuple(range(len(dofs_per_segment))),
+            ),
+        )
+    return tuple(
+        (
+            link_dofs,
+            cell_count,
+            tuple(
+                index
+                for index, signature_i in enumerate(signatures)
+                if signature_i == (link_dofs, cell_count)
+            ),
+        )
+        for link_dofs, cell_count in unique_signatures
+    )
 
 
 class GVS(SoftRobot):
@@ -4511,6 +4635,9 @@ class GVS(SoftRobot):
         use_active_prefix: bool,
         use_compact_basis: bool,
         reduction_bucket_count: int = 0,
+        reduction_bucket_policy: str = "uniform",
+        local_shape_policy: str = "none",
+        local_shape_class_limit: int = 4,
     ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
@@ -4570,8 +4697,8 @@ class GVS(SoftRobot):
                 velocity,
             )
 
-        def evaluate_segment_cells(
-            segment_index: Array,
+        def evaluate_segment_cells_for_shape(
+            segment_index: Array, link_dofs: int, evaluated_cell_count: int
         ) -> tuple[Array, Array, Array, Array, Array]:
             def evaluate_cell(
                 cell_index: Array,
@@ -4585,11 +4712,15 @@ class GVS(SoftRobot):
                         self._compact_magnus_jacobian_time_derivative_step_terms(
                             self.segment_lengths[segment_index],
                             cell_width,
-                            q_blocks[segment_index, 1],
-                            qd_blocks[segment_index, 1],
-                            self.link_basis_rows[segment_index],
-                            self.scaled_B_Z1_values[segment_index, cell_index],
-                            self.scaled_B_Z2_values[segment_index, cell_index],
+                            q_blocks[segment_index, 1, :link_dofs],
+                            qd_blocks[segment_index, 1, :link_dofs],
+                            self.link_basis_rows[segment_index, :link_dofs],
+                            self.scaled_B_Z1_values[
+                                segment_index, cell_index, :link_dofs
+                            ],
+                            self.scaled_B_Z2_values[
+                                segment_index, cell_index, :link_dofs
+                            ],
                             self.xi_ref_Z1[segment_index, cell_index],
                             self.xi_ref_Z2[segment_index, cell_index],
                         )
@@ -4598,10 +4729,10 @@ class GVS(SoftRobot):
                     local_terms = self._magnus_jacobian_time_derivative_step_terms(
                         self.segment_lengths[segment_index],
                         cell_width,
-                        q_blocks[segment_index, 1],
-                        qd_blocks[segment_index, 1],
-                        self.B_Z1[segment_index, cell_index],
-                        self.B_Z2[segment_index, cell_index],
+                        q_blocks[segment_index, 1, :link_dofs],
+                        qd_blocks[segment_index, 1, :link_dofs],
+                        self.B_Z1[segment_index, cell_index, :, :link_dofs],
+                        self.B_Z2[segment_index, cell_index, :, :link_dofs],
                         self.xi_ref_Z1[segment_index, cell_index],
                         self.xi_ref_Z2[segment_index, cell_index],
                     )
@@ -4613,18 +4744,91 @@ class GVS(SoftRobot):
                     magnus_basis,
                     magnus_basis_dot,
                 ) = local_terms
+                basis_padding = ((0, 0), (0, self.max_dof - link_dofs))
                 return (
                     tangent,
                     tangent_dot,
                     adjoint_inverse,
-                    magnus_basis,
-                    magnus_basis_dot,
+                    jnp.pad(magnus_basis, basis_padding),
+                    jnp.pad(magnus_basis_dot, basis_padding),
                 )
 
-            return jax.vmap(evaluate_cell)(cell_indices)
+            evaluated_terms = jax.vmap(evaluate_cell)(
+                cell_indices[:evaluated_cell_count]
+            )
+            if evaluated_cell_count == len(cell_indices):
+                return evaluated_terms
+            missing_cell_count = len(cell_indices) - evaluated_cell_count
+            identity_padding = jnp.broadcast_to(
+                jnp.eye(6, dtype=dtype), (missing_cell_count, 6, 6)
+            )
+            zero_matrix_padding = jnp.zeros_like(identity_padding)
+            zero_basis_padding = jnp.zeros(
+                (missing_cell_count, 6, self.max_dof), dtype=dtype
+            )
+            (
+                tangents,
+                tangent_dots,
+                adjoint_inverses,
+                magnus_bases,
+                magnus_basis_dots,
+            ) = evaluated_terms
+            return (
+                jnp.concatenate((tangents, identity_padding)),
+                jnp.concatenate((tangent_dots, zero_matrix_padding)),
+                jnp.concatenate((adjoint_inverses, identity_padding)),
+                jnp.concatenate((magnus_bases, zero_basis_padding)),
+                jnp.concatenate((magnus_basis_dots, zero_basis_padding)),
+            )
 
         joint_terms = jax.vmap(evaluate_joint)(segment_indices)
-        cell_terms = jax.vmap(evaluate_segment_cells)(segment_indices)
+        if local_shape_policy == "none":
+            cell_terms = jax.vmap(
+                lambda segment_index: evaluate_segment_cells_for_shape(
+                    segment_index, self.max_dof, len(cell_indices)
+                )
+            )(segment_indices)
+        else:
+            local_shape_groups = _local_shape_groups(
+                self.dofs_per_segment_static,
+                tuple(segment.num_gauss_points for segment in self.structure.segments),
+                len(cell_indices),
+                local_shape_policy,
+                local_shape_class_limit,
+            )
+            cell_terms = None
+            for link_dofs, evaluated_cell_count, group_indices in local_shape_groups:
+                group_indices_array = jnp.asarray(group_indices)
+                group_terms = jax.vmap(
+                    lambda segment_index, link_dofs_i=link_dofs, evaluated_cell_count_i=evaluated_cell_count: (
+                        evaluate_segment_cells_for_shape(
+                            segment_index,
+                            link_dofs_i,
+                            evaluated_cell_count_i,
+                        )
+                    )
+                )(group_indices_array)
+                if cell_terms is None:
+                    cell_terms = jax.tree.map(
+                        lambda value, indices=group_indices_array: (
+                            jnp.zeros(
+                                (self.num_segments, *value.shape[1:]), dtype=value.dtype
+                            )
+                            .at[indices]
+                            .set(value)
+                        ),
+                        group_terms,
+                    )
+                else:
+                    cell_terms = jax.tree.map(
+                        lambda destination, value, indices=group_indices_array: (
+                            destination.at[indices].set(value)
+                        ),
+                        cell_terms,
+                        group_terms,
+                    )
+            if cell_terms is None:
+                raise RuntimeError("local shape grouping produced no classes")
         interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
         tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
         mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
@@ -4649,16 +4853,16 @@ class GVS(SoftRobot):
         inertia_initial = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
         generalized_vector_initial = jnp.zeros((self.num_dofs,), dtype=dtype)
         if reduction_bucket_count:
-            reduction_bucket_widths, segment_bucket_indices = (
-                _uniform_prefix_buckets(
-                    self.active_dof_prefixes, reduction_bucket_count
-                )
+            reduction_bucket_widths, segment_bucket_indices = _prefix_buckets(
+                self.active_dof_prefixes,
+                reduction_bucket_count,
+                reduction_bucket_policy,
             )
             segment_bucket_indices_array = jnp.asarray(segment_bucket_indices)
 
             def make_reduction_branch(bucket_width: int):
                 def reduce_bucket(
-                    operands: tuple[Array, Array, Array, Array, Array]
+                    operands: tuple[Array, Array, Array, Array, Array],
                 ) -> tuple[Array, Array, Array]:
                     (
                         jacobians,
@@ -4667,9 +4871,7 @@ class GVS(SoftRobot):
                         wrenches,
                         gravity_wrenches,
                     ) = operands
-                    flattened_row_count = (
-                        self.max_num_integration_points - 2
-                    ) * 6
+                    flattened_row_count = (self.max_num_integration_points - 2) * 6
                     jacobians_prefix = jacobians[..., :bucket_width]
                     jacobians_flat = jacobians_prefix.reshape(
                         flattened_row_count, bucket_width
@@ -4857,13 +5059,9 @@ class GVS(SoftRobot):
                     ),
                 )
             else:
-                jacobians_flat = jacobians.reshape(
-                    flattened_row_count, self.num_dofs
-                )
+                jacobians_flat = jacobians.reshape(flattened_row_count, self.num_dofs)
                 inertia_segment = jacobians_flat.T @ (
-                    weights[:, None, None]
-                    * mass_diagonals_i[:, :, None]
-                    * jacobians
+                    weights[:, None, None] * mass_diagonals_i[:, :, None] * jacobians
                 ).reshape(flattened_row_count, self.num_dofs)
                 coriolis_segment = jacobians_flat.T @ (
                     weights[:, None] * wrenches

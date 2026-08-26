@@ -43,15 +43,34 @@ def test_build_system_uses_coupled_shape() -> None:
     assert system.num_dofs == 2 * (1 + 6 * (3 + 1))
 
 
+def test_build_system_supports_heterogeneous_topologies() -> None:
+    alternating = benchmark._build_system(4, 5, 9, "revolute", "alternating")
+    grouped = benchmark._build_system(4, 5, 9, "revolute", "grouped")
+
+    expected_dofs = ((1, 24), (1, 36), (1, 24), (1, 36))
+    assert alternating.dofs_per_segment_static == expected_dofs
+    assert grouped.dofs_per_segment_static == (
+        (1, 24),
+        (1, 24),
+        (1, 36),
+        (1, 36),
+    )
+
+
 def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
     system = benchmark._build_system(2, 1, 5, "revolute")
     q, qd = benchmark._batched_inputs(system, 1)
     q, qd = q[0], qd[0]
 
     def evaluate(variant: str, configuration: jax.Array):
-        reuse_velocity, use_active_prefix, use_compact_basis, bucket_count = (
-            benchmark._variant_options(system, variant)
-        )
+        (
+            reuse_velocity,
+            use_active_prefix,
+            use_compact_basis,
+            bucket_count,
+            bucket_policy,
+            local_shape_policy,
+        ) = benchmark._variant_options(system, variant)
         return system._dynamics_terms_impl(
             configuration,
             qd,
@@ -59,6 +78,8 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
             use_active_prefix=use_active_prefix,
             use_compact_basis=use_compact_basis,
             reduction_bucket_count=bucket_count,
+            reduction_bucket_policy=bucket_policy,
+            local_shape_policy=local_shape_policy,
         )
 
     tangent = jnp.linspace(-0.02, 0.02, system.num_dofs)
@@ -73,6 +94,10 @@ def test_dynamics_variants_match_values_and_directional_derivatives() -> None:
         "bucket_uniform_2",
         "bucket_uniform_4",
         "bucket_uniform_8",
+        "bucket_equal_4",
+        "bucket_optimal_4",
+        "local_dofs_4",
+        "local_full_4",
         "active_prefix",
         "compact_basis",
         "optimized",
@@ -102,6 +127,17 @@ def test_compact_forward_dynamics_benchmark_matches_public_api() -> None:
     expected = system.forward_dynamics(jnp.array(0.0), y, (u, tau))
 
     assert_allclose(actual, expected, rtol=1e-10, atol=1e-11)
+
+
+def test_local_shape_variants_match_heterogeneous_baseline() -> None:
+    system = benchmark._build_system(2, 3, 7, "revolute", "alternating")
+    q, qd = benchmark._batched_inputs(system, 1)
+    expected = benchmark._dynamics_callable(system, 1, "baseline")(q, qd)
+
+    for variant in ("local_dofs_4", "local_full_4"):
+        actual = benchmark._dynamics_callable(system, 1, variant)(q, qd)
+        for actual_leaf, expected_leaf in zip(actual, expected, strict=True):
+            assert_allclose(actual_leaf, expected_leaf, rtol=1e-10, atol=1e-11)
 
 
 def test_single_segment_public_path_matches_fixed_shape_baseline() -> None:
