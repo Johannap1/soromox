@@ -58,14 +58,26 @@ Tree = Any
 
 def _variant_options(
     system: GVS, variant: str
-) -> tuple[bool, bool, bool, int, str, str, int, str]:
+) -> tuple[bool, bool, bool, int, str, str, int, str, int]:
     """Return velocity, active-prefix, compact-basis, and bucket switches."""
     if variant == "baseline":
-        return False, False, False, 0, "uniform", "none", 0, "uniform"
+        return False, False, False, 0, "uniform", "none", 0, "uniform", 0
     if variant == "velocity":
-        return True, False, False, 0, "uniform", "none", 0, "uniform"
+        return True, False, False, 0, "uniform", "none", 0, "uniform", 0
     if variant in ("fixed_compact", "fixed_optimized"):
-        return True, False, True, 0, "uniform", "none", 0, "uniform"
+        return True, False, True, 0, "uniform", "none", 0, "uniform", 0
+    if variant.startswith("tile_"):
+        return (
+            True,
+            False,
+            True,
+            0,
+            "uniform",
+            "none",
+            0,
+            "uniform",
+            int(variant.rsplit("_", maxsplit=1)[1]),
+        )
     if variant.startswith("recurrence_uniform_"):
         bucket_count = int(variant.rsplit("_", maxsplit=1)[1])
         return (
@@ -77,6 +89,7 @@ def _variant_options(
             "none",
             bucket_count,
             "uniform",
+            0,
         )
     for name, local_policy in (
         ("local_dofs_", "dofs"),
@@ -92,6 +105,7 @@ def _variant_options(
                 local_policy,
                 0,
                 "uniform",
+                0,
             )
     for name, policy in (
         ("bucket_uniform_", "uniform"),
@@ -108,11 +122,12 @@ def _variant_options(
                 "none",
                 0,
                 "uniform",
+                0,
             )
     if variant == "active_prefix":
-        return True, True, False, 0, "uniform", "none", 0, "uniform"
+        return True, True, False, 0, "uniform", "none", 0, "uniform", 0
     if variant == "compact_basis":
-        return True, True, True, 0, "uniform", "none", 0, "uniform"
+        return True, True, True, 0, "uniform", "none", 0, "uniform", 0
     if variant == "optimized":
         use_optimization = system.num_segments > 1
         return (
@@ -124,6 +139,7 @@ def _variant_options(
             "none",
             0,
             "uniform",
+            0,
         )
     raise ValueError(f"Unknown dynamics variant: {variant}")
 
@@ -216,6 +232,7 @@ def _dynamics_callable(
         local_shape_policy,
         recurrence_bucket_count,
         recurrence_bucket_policy,
+        reduction_tile_width,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Tree:
@@ -230,6 +247,7 @@ def _dynamics_callable(
             local_shape_policy=local_shape_policy,
             recurrence_bucket_count=recurrence_bucket_count,
             recurrence_bucket_policy=recurrence_bucket_policy,
+            reduction_tile_width=reduction_tile_width,
         )
 
     if batch_size == 1 and jax.default_backend() == "cpu":
@@ -249,6 +267,7 @@ def _forward_dynamics_callable(
         local_shape_policy,
         recurrence_bucket_count,
         recurrence_bucket_policy,
+        reduction_tile_width,
     ) = _variant_options(system, variant)
 
     def single(q: Array, qd: Array) -> Array:
@@ -263,6 +282,7 @@ def _forward_dynamics_callable(
             local_shape_policy=local_shape_policy,
             recurrence_bucket_count=recurrence_bucket_count,
             recurrence_bucket_policy=recurrence_bucket_policy,
+            reduction_tile_width=reduction_tile_width,
         )
         u = jnp.zeros((system.num_actuators,), dtype=q.dtype)
         actuation = system.actuation_force(q, u, qd=qd)
@@ -370,6 +390,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "bucket_uniform_8",
             "bucket_equal_4",
             "bucket_equal_8",
+            "bucket_equal_16",
             "bucket_optimal_4",
             "bucket_optimal_8",
             "local_dofs_4",
@@ -378,6 +399,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "local_full_8",
             "recurrence_uniform_4",
             "recurrence_uniform_8",
+            "tile_32",
+            "tile_64",
+            "tile_128",
             "active_prefix",
             "compact_basis",
             "optimized",

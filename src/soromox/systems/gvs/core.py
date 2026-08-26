@@ -4640,6 +4640,7 @@ class GVS(SoftRobot):
         local_shape_class_limit: int = 4,
         recurrence_bucket_count: int = 0,
         recurrence_bucket_policy: str = "uniform",
+        reduction_tile_width: int = 0,
     ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
@@ -4834,8 +4835,14 @@ class GVS(SoftRobot):
         interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
         tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
         mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
-        if use_active_prefix and (reduction_bucket_count or recurrence_bucket_count):
+        if use_active_prefix and (
+            reduction_bucket_count or recurrence_bucket_count or reduction_tile_width
+        ):
             raise ValueError("bucketed and exact active-prefix assembly are exclusive")
+        if reduction_tile_width and reduction_bucket_count:
+            raise ValueError("tiled and bucketed reductions are exclusive")
+        if reduction_tile_width < 0:
+            raise ValueError("reduction tile width must be non-negative")
         if use_active_prefix:
             return self._assemble_dynamics_active_prefix(
                 q,
@@ -4852,6 +4859,104 @@ class GVS(SoftRobot):
         gravity_initial = se3.adjoint_inverse(self.g0) @ self.g
         inertia_initial = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
         generalized_vector_initial = jnp.zeros((self.num_dofs,), dtype=dtype)
+        if reduction_tile_width:
+            padded_dof_count = (
+                math.ceil(self.num_dofs / reduction_tile_width) * reduction_tile_width
+            )
+            dof_padding = padded_dof_count - self.num_dofs
+            active_prefixes_array = jnp.asarray(self.active_dof_prefixes)
+
+            def reduce_dynamics_tiled(
+                jacobians: Array,
+                weights: Array,
+                mass_diagonals_i: Array,
+                wrenches: Array,
+                gravity_wrenches: Array,
+                active_prefix: Array,
+            ) -> tuple[Array, Array, Array]:
+                flattened_row_count = (self.max_num_integration_points - 2) * 6
+                jacobians_flat = jnp.pad(
+                    jacobians.reshape(flattened_row_count, self.num_dofs),
+                    ((0, 0), (0, dof_padding)),
+                )
+                weighted_jacobians_flat = jnp.pad(
+                    (
+                        weights[:, None, None]
+                        * mass_diagonals_i[:, :, None]
+                        * jacobians
+                    ).reshape(flattened_row_count, self.num_dofs),
+                    ((0, 0), (0, dof_padding)),
+                )
+                weighted_wrenches = (weights[:, None] * wrenches).reshape(
+                    flattened_row_count
+                )
+                weighted_gravity = (weights[:, None] * gravity_wrenches).reshape(
+                    flattened_row_count
+                )
+                active_tile_count = (
+                    active_prefix + reduction_tile_width - 1
+                ) // reduction_tile_width
+
+                def reduce_row_tile(
+                    row_tile: Array,
+                    carry: tuple[Array, Array, Array],
+                ) -> tuple[Array, Array, Array]:
+                    inertia, coriolis, gravity = carry
+                    row_start = row_tile * reduction_tile_width
+                    jacobian_row = lax.dynamic_slice(
+                        jacobians_flat,
+                        (0, row_start),
+                        (flattened_row_count, reduction_tile_width),
+                    )
+                    coriolis_row = jacobian_row.T @ weighted_wrenches
+                    gravity_row = -(jacobian_row.T @ weighted_gravity)
+                    coriolis = lax.dynamic_update_slice(
+                        coriolis, coriolis_row, (row_start,)
+                    )
+                    gravity = lax.dynamic_update_slice(
+                        gravity, gravity_row, (row_start,)
+                    )
+
+                    def reduce_column_tile(
+                        column_tile: Array, inertia_i: Array
+                    ) -> Array:
+                        column_start = column_tile * reduction_tile_width
+                        weighted_jacobian_column = lax.dynamic_slice(
+                            weighted_jacobians_flat,
+                            (0, column_start),
+                            (flattened_row_count, reduction_tile_width),
+                        )
+                        inertia_block = jacobian_row.T @ weighted_jacobian_column
+                        return lax.dynamic_update_slice(
+                            inertia_i,
+                            inertia_block,
+                            (row_start, column_start),
+                        )
+
+                    inertia = lax.fori_loop(
+                        0,
+                        active_tile_count,
+                        reduce_column_tile,
+                        inertia,
+                    )
+                    return inertia, coriolis, gravity
+
+                padded_matrix = jnp.zeros(
+                    (padded_dof_count, padded_dof_count), dtype=dtype
+                )
+                padded_vector = jnp.zeros((padded_dof_count,), dtype=dtype)
+                inertia, coriolis, gravity = lax.fori_loop(
+                    0,
+                    active_tile_count,
+                    reduce_row_tile,
+                    (padded_matrix, padded_vector, padded_vector),
+                )
+                return (
+                    inertia[: self.num_dofs, : self.num_dofs],
+                    coriolis[: self.num_dofs],
+                    gravity[: self.num_dofs],
+                )
+
         if recurrence_bucket_count:
             recurrence_bucket_widths, recurrence_segment_bucket_indices = (
                 _prefix_buckets(
@@ -5090,7 +5195,20 @@ class GVS(SoftRobot):
             coadjoint_momenta = jax.vmap(se3.coadjoint_action)(velocities, momenta)
             wrenches = mass_diagonals_i * jacobians_dot_qd + coadjoint_momenta
             gravity_wrenches = mass_diagonals_i * gravities
-            if reduction_bucket_count:
+            if reduction_tile_width:
+                (
+                    inertia_segment,
+                    coriolis_segment,
+                    gravity_segment,
+                ) = reduce_dynamics_tiled(
+                    jacobians,
+                    weights,
+                    mass_diagonals_i,
+                    wrenches,
+                    gravity_wrenches,
+                    active_prefixes_array[segment_index],
+                )
+            elif reduction_bucket_count:
                 (
                     inertia_segment,
                     coriolis_segment,
