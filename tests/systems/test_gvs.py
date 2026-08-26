@@ -1911,6 +1911,18 @@ def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -
         rtol=RTOL,
         atol=ATOL,
     )
+    B_scaled, Cqd_scaled, G_scaled = scaled.dynamics_terms(q_scaled, qd_scaled)
+    B_unscaled, Cqd_unscaled, G_unscaled = unscaled.dynamics_terms(
+        q_unscaled, qd_unscaled
+    )
+    assert_allclose(
+        B_scaled,
+        coordinate_map.T @ B_unscaled @ coordinate_map,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(Cqd_scaled, coordinate_map.T @ Cqd_unscaled, rtol=RTOL, atol=ATOL)
+    assert_allclose(G_scaled, coordinate_map.T @ G_unscaled, rtol=RTOL, atol=ATOL)
 
 
 @pytest.mark.parametrize("num_segments", [1, 2])

@@ -155,6 +155,8 @@ class GVS(SoftRobot):
     num_padded_dofs: int = eqx.field(
         static=True
     )  # Total number of DOFs for the robot, considering the maximum DOFs per link: num_segments * 2 * max_dof
+    dofs_per_segment_static: tuple[tuple[int, int], ...] = eqx.field(static=True)
+    active_dof_prefixes: tuple[int, ...] = eqx.field(static=True)
 
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
@@ -179,6 +181,9 @@ class GVS(SoftRobot):
     inner_integration_weights: Array
     mass_matrices: Array
     inner_mass_matrices: Array
+    link_basis_rows: Array
+    scaled_B_Z1_values: Array
+    scaled_B_Z2_values: Array
 
     B_joint: Array
     B_Xs: Array
@@ -742,6 +747,44 @@ class GVS(SoftRobot):
             joint_stiffness=K_joint_full,
         )
 
+    def _compact_link_basis_operands(
+        self, segment_lengths: Array
+    ) -> tuple[Array, Array, Array]:
+        """Pack the structurally one-row columns of each link strain basis."""
+        active = self.basis_active_params.astype(jnp.int32)
+        orders = self.basis_order_params.astype(jnp.int32)
+        standard_widths = active * (orders + 1)
+        fourier_widths = active * (2 * orders + 1)
+        widths = jnp.where(
+            (self.basis_type_index == Basis.BASISTYPE_MAP["fourier"])[:, None],
+            fourier_widths,
+            standard_widths,
+        )
+        offsets = jnp.concatenate(
+            [
+                jnp.zeros((self.num_segments, 1), dtype=jnp.int32),
+                jnp.cumsum(widths[:, :-1], axis=1),
+            ],
+            axis=1,
+        )
+        columns = jnp.arange(self.max_dof, dtype=jnp.int32)[None, None, :]
+        row_numbers = jnp.arange(6, dtype=jnp.int32)[None, :, None]
+        active_columns = (columns >= offsets[:, :, None]) & (
+            columns < (offsets + widths)[:, :, None]
+        )
+        rows = jnp.max(jnp.where(active_columns, row_numbers, -1), axis=1)
+
+        B_Z1 = self.B_Z1
+        B_Z2 = self.B_Z2
+        if self.scale_rotational_basis_by_length:
+            scales = segment_lengths[:, None, None, None]
+            B_Z1 = B_Z1.at[:, :, :3].divide(scales)
+            B_Z2 = B_Z2.at[:, :, :3].divide(scales)
+        gather_rows = jnp.maximum(rows, 0)[:, None, None, :]
+        values_Z1 = jnp.take_along_axis(B_Z1, gather_rows, axis=2).squeeze(2)
+        values_Z2 = jnp.take_along_axis(B_Z2, gather_rows, axis=2).squeeze(2)
+        return rows.astype(jnp.int32), values_Z1, values_Z2
+
     def precompute(self) -> None:
         """Precompute padded gathers and canonical system matrices.
 
@@ -754,6 +797,16 @@ class GVS(SoftRobot):
             initial construction.
         """
         dofs_flat = self.dofs_per_segment.reshape(-1)
+        dofs_per_segment_static = tuple(
+            (int(row[0]), int(row[1])) for row in self.dofs_per_segment.tolist()
+        )
+        prefix = 0
+        active_dof_prefixes = []
+        for joint_dofs, link_dofs in dofs_per_segment_static:
+            prefix += joint_dofs + link_dofs
+            active_dof_prefixes.append(prefix)
+        object.__setattr__(self, "dofs_per_segment_static", dofs_per_segment_static)
+        object.__setattr__(self, "active_dof_prefixes", tuple(active_dof_prefixes))
         start_indices_flat = jnp.cumsum(jnp.pad(dofs_flat, (1, 0)))[:-1]
         start_indices = start_indices_flat.reshape(self.num_segments, 2)
         gather_indices = start_indices[..., None] + jnp.arange(self.max_dof)
@@ -782,6 +835,12 @@ class GVS(SoftRobot):
             "inner_mass_matrices",
             self.mass_matrices[:, 1 : self.max_num_integration_points - 1],
         )
+        link_basis_rows, scaled_B_Z1_values, scaled_B_Z2_values = (
+            self._compact_link_basis_operands(self.segment_lengths)
+        )
+        object.__setattr__(self, "link_basis_rows", link_basis_rows)
+        object.__setattr__(self, "scaled_B_Z1_values", scaled_B_Z1_values)
+        object.__setattr__(self, "scaled_B_Z2_values", scaled_B_Z2_values)
         object.__setattr__(self, "gather_indices", gather_indices)
         object.__setattr__(self, "gather_mask", gather_mask)
         object.__setattr__(self, "young_stiffness_operator", young_operator)
@@ -1041,10 +1100,16 @@ class GVS(SoftRobot):
         young_operator, shear_operator, damping_operator = (
             material_operators_from_params(params, self.structure)
         )
+        link_basis_rows, scaled_B_Z1_values, scaled_B_Z2_values = (
+            updated_self._compact_link_basis_operands(updated_self.segment_lengths)
+        )
         return eqx.tree_at(
             lambda model: (
                 model.inner_integration_weights,
                 model.inner_mass_matrices,
+                model.link_basis_rows,
+                model.scaled_B_Z1_values,
+                model.scaled_B_Z2_values,
                 model.young_stiffness_operator,
                 model.shear_stiffness_operator,
                 model.material_damping_operator,
@@ -1062,6 +1127,9 @@ class GVS(SoftRobot):
                 updated_self.mass_matrices[
                     :, 1 : updated_self.max_num_integration_points - 1
                 ],
+                link_basis_rows,
+                scaled_B_Z1_values,
+                scaled_B_Z2_values,
                 young_operator,
                 shear_operator,
                 damping_operator,
@@ -1396,10 +1464,9 @@ class GVS(SoftRobot):
         ad_xi_Z1 = se3.small_adjoint(xi_Z1)
         ad_xi_Z2 = se3.small_adjoint(xi_Z2)
         comm_coeff = jnp.sqrt(3) * (length**2) * H**2 / 12
-
-        Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + (comm_coeff * (ad_xi_Z1 @ xi_Z2))
-        B_Magnus = length * (H / 2) * (B_Z1 + B_Z2) + (
-            comm_coeff * (ad_xi_Z1 @ B_Z2 - ad_xi_Z2 @ B_Z1)
+        Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + comm_coeff * (ad_xi_Z1 @ xi_Z2)
+        B_Magnus = length * (H / 2) * (B_Z1 + B_Z2) + comm_coeff * (
+            ad_xi_Z1 @ B_Z2 - ad_xi_Z2 @ B_Z1
         )
         return Magnus, B_Magnus, comm_coeff
 
@@ -1533,6 +1600,56 @@ class GVS(SoftRobot):
         )
         B_Magnus_dot = comm_coeff * (
             se3.small_adjoint(xid_Z1) @ B_Z2 - se3.small_adjoint(xid_Z2) @ B_Z1
+        )
+        Magnusd = B_Magnus @ qd_i
+
+        g_step, T_step, Td_step = (
+            se3._exp_with_left_jacobian_and_directional_derivative(
+                Magnus, Magnusd, self.global_eps, self.tangent_eps
+            )
+        )
+        Ad_step_inv = se3.adjoint_inverse(g_step)
+        return g_step, T_step, Td_step, Ad_step_inv, B_Magnus, B_Magnus_dot
+
+    def _compact_magnus_jacobian_time_derivative_step_terms(
+        self,
+        length: Array,
+        H: Array,
+        q_i: Array,
+        qd_i: Array,
+        basis_rows: Array,
+        B_Z1_values: Array,
+        B_Z2_values: Array,
+        xi_ref_Z1: Array,
+        xi_ref_Z2: Array,
+    ) -> tuple[Array, Array, Array, Array, Array, Array]:
+        """Evaluate one cell from compact one-row-per-column basis operands."""
+        valid = basis_rows >= 0
+        safe_rows = jnp.maximum(basis_rows, 0)
+        values_Z1 = jnp.where(valid, B_Z1_values, 0.0)
+        values_Z2 = jnp.where(valid, B_Z2_values, 0.0)
+        row_indicators = (
+            jax.nn.one_hot(safe_rows, 6, dtype=q_i.dtype).T * valid[None, :]
+        )
+
+        xi_Z1 = row_indicators @ (values_Z1 * q_i) + xi_ref_Z1
+        xi_Z2 = row_indicators @ (values_Z2 * q_i) + xi_ref_Z2
+        xid_Z1 = row_indicators @ (values_Z1 * qd_i)
+        xid_Z2 = row_indicators @ (values_Z2 * qd_i)
+
+        ad_xi_Z1 = se3.small_adjoint(xi_Z1)
+        ad_xi_Z2 = se3.small_adjoint(xi_Z2)
+        comm_coeff = jnp.sqrt(3) * (length**2) * H**2 / 12
+        Magnus = length * (H / 2) * (xi_Z1 + xi_Z2) + comm_coeff * (ad_xi_Z1 @ xi_Z2)
+        B_Magnus = length * (H / 2) * row_indicators * (values_Z1 + values_Z2)[
+            None, :
+        ] + comm_coeff * (
+            ad_xi_Z1[:, safe_rows] * values_Z2[None, :]
+            - ad_xi_Z2[:, safe_rows] * values_Z1[None, :]
+        )
+        B_Magnus_dot = comm_coeff * (
+            se3.small_adjoint(xid_Z1)[:, safe_rows] * values_Z2[None, :]
+            - se3.small_adjoint(xid_Z2)[:, safe_rows] * values_Z1[None, :]
         )
         Magnusd = B_Magnus @ qd_i
 
@@ -4359,7 +4476,15 @@ class GVS(SoftRobot):
         return weights, g_quads, J_quads, Jd_or_Jd_qd_quads
 
     @eqx.filter_jit
-    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+    def _dynamics_terms_impl(
+        self,
+        q: Array,
+        qd: Array,
+        *,
+        reuse_recurrence_velocity: bool,
+        use_active_prefix: bool,
+        use_compact_basis: bool,
+    ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
 
@@ -4418,8 +4543,6 @@ class GVS(SoftRobot):
                 velocity,
             )
 
-        joint_terms = jax.vmap(evaluate_joint)(segment_indices)
-
         def evaluate_segment_cells(
             segment_index: Array,
         ) -> tuple[Array, Array, Array, Array, Array]:
@@ -4430,6 +4553,31 @@ class GVS(SoftRobot):
                     self.integration_points[segment_index, cell_index + 1]
                     - self.integration_points[segment_index, cell_index]
                 )
+                if use_compact_basis:
+                    local_terms = (
+                        self._compact_magnus_jacobian_time_derivative_step_terms(
+                            self.segment_lengths[segment_index],
+                            cell_width,
+                            q_blocks[segment_index, 1],
+                            qd_blocks[segment_index, 1],
+                            self.link_basis_rows[segment_index],
+                            self.scaled_B_Z1_values[segment_index, cell_index],
+                            self.scaled_B_Z2_values[segment_index, cell_index],
+                            self.xi_ref_Z1[segment_index, cell_index],
+                            self.xi_ref_Z2[segment_index, cell_index],
+                        )
+                    )
+                else:
+                    local_terms = self._magnus_jacobian_time_derivative_step_terms(
+                        self.segment_lengths[segment_index],
+                        cell_width,
+                        q_blocks[segment_index, 1],
+                        qd_blocks[segment_index, 1],
+                        self.B_Z1[segment_index, cell_index],
+                        self.B_Z2[segment_index, cell_index],
+                        self.xi_ref_Z1[segment_index, cell_index],
+                        self.xi_ref_Z2[segment_index, cell_index],
+                    )
                 (
                     _,
                     tangent,
@@ -4437,16 +4585,7 @@ class GVS(SoftRobot):
                     adjoint_inverse,
                     magnus_basis,
                     magnus_basis_dot,
-                ) = self._magnus_jacobian_time_derivative_step_terms(
-                    self.segment_lengths[segment_index],
-                    cell_width,
-                    q_blocks[segment_index, 1],
-                    qd_blocks[segment_index, 1],
-                    self.B_Z1[segment_index, cell_index],
-                    self.B_Z2[segment_index, cell_index],
-                    self.xi_ref_Z1[segment_index, cell_index],
-                    self.xi_ref_Z2[segment_index, cell_index],
-                )
+                ) = local_terms
                 return (
                     tangent,
                     tangent_dot,
@@ -4457,10 +4596,21 @@ class GVS(SoftRobot):
 
             return jax.vmap(evaluate_cell)(cell_indices)
 
+        joint_terms = jax.vmap(evaluate_joint)(segment_indices)
         cell_terms = jax.vmap(evaluate_segment_cells)(segment_indices)
         interior_cell_terms = jax.tree.map(lambda value: value[:, :-1], cell_terms)
         tip_cell_terms = jax.tree.map(lambda value: value[:, -1], cell_terms)
         mass_diagonals = jnp.diagonal(self.inner_mass_matrices, axis1=-2, axis2=-1)
+        if use_active_prefix:
+            return self._assemble_dynamics_active_prefix(
+                q,
+                q_blocks,
+                qd_blocks,
+                joint_terms,
+                interior_cell_terms,
+                tip_cell_terms,
+                mass_diagonals,
+            )
 
         jacobian_initial = jnp.zeros((6, self.num_dofs), dtype=dtype)
         spatial_vector_initial = jnp.zeros((6,), dtype=dtype)
@@ -4513,10 +4663,17 @@ class GVS(SoftRobot):
 
             joint_tangent = insert_local_basis(joint_tangent_basis, segment_index, 0)
             jacobian_joint = joint_adjoint_inverse @ (jacobian_tip + joint_tangent)
-            jacobian_dot_qd_joint = joint_adjoint_inverse @ (
-                jacobian_dot_qd_tip
-                + joint_tangent_basis_dot @ qd_blocks[segment_index, 0]
-            ) + joint_adjoint_inverse_dot @ (jacobian_tip @ qd)
+            jacobian_source_velocity = (
+                velocity_tip if reuse_recurrence_velocity else jacobian_tip @ qd
+            )
+            jacobian_dot_qd_joint = (
+                joint_adjoint_inverse
+                @ (
+                    jacobian_dot_qd_tip
+                    + joint_tangent_basis_dot @ qd_blocks[segment_index, 0]
+                )
+                + joint_adjoint_inverse_dot @ jacobian_source_velocity
+            )
             velocity_joint = joint_adjoint_inverse @ (velocity_tip + joint_velocity)
             gravity_joint = joint_adjoint_inverse @ gravity_tip
 
@@ -4549,10 +4706,15 @@ class GVS(SoftRobot):
                 tangent_velocity_dot = (
                     tangent_dot @ magnus_basis + tangent @ magnus_basis_dot
                 ) @ qd_blocks[segment_index, 1]
+                jacobian_source_velocity = (
+                    velocity_previous
+                    if reuse_recurrence_velocity
+                    else jacobian_previous @ qd
+                )
                 jacobian_dot_qd_next = adjoint_inverse @ (
                     jacobian_dot_qd_previous + tangent_velocity_dot
                 ) - se3.small_adjoint_action(
-                    step_velocity, adjoint_inverse @ (jacobian_previous @ qd)
+                    step_velocity, adjoint_inverse @ jacobian_source_velocity
                 )
                 gravity_next = adjoint_inverse @ gravity_previous
                 return (
@@ -4645,6 +4807,183 @@ class GVS(SoftRobot):
             ),
         )
         return inertia, coriolis_qd, gravity_force
+
+    def _assemble_dynamics_active_prefix(
+        self,
+        q: Array,
+        q_blocks: Array,
+        qd_blocks: Array,
+        joint_terms: tuple[Array, Array, Array, Array, Array],
+        interior_cell_terms: tuple[Array, Array, Array, Array, Array],
+        tip_cell_terms: tuple[Array, Array, Array, Array, Array],
+        mass_diagonals: Array,
+    ) -> tuple[Array, Array, Array]:
+        """Assemble dynamics while specializing each segment to its active prefix."""
+        dtype = q.dtype
+        spatial_zero = jnp.zeros((6,), dtype=dtype)
+        jacobian_tip = jnp.zeros((6, 0), dtype=dtype)
+        jacobian_dot_qd_tip = spatial_zero
+        velocity_tip = spatial_zero
+        gravity_tip = se3.adjoint_inverse(self.g0) @ self.g
+        inertia = jnp.zeros((self.num_dofs, self.num_dofs), dtype=dtype)
+        coriolis_qd = jnp.zeros((self.num_dofs,), dtype=dtype)
+        gravity_force = jnp.zeros((self.num_dofs,), dtype=dtype)
+        previous_prefix = 0
+
+        for segment_index, ((joint_dofs, link_dofs), active_prefix) in enumerate(
+            zip(
+                self.dofs_per_segment_static,
+                self.active_dof_prefixes,
+                strict=True,
+            )
+        ):
+            jacobian_tip = jnp.pad(
+                jacobian_tip,
+                ((0, 0), (0, active_prefix - previous_prefix)),
+            )
+            (
+                joint_adjoint_inverse,
+                joint_adjoint_inverse_dot,
+                joint_tangent_basis,
+                joint_tangent_basis_dot,
+                joint_velocity,
+            ) = tuple(value[segment_index] for value in joint_terms)
+            interior_terms_i = tuple(
+                value[segment_index] for value in interior_cell_terms
+            )
+            tip_terms_i = tuple(value[segment_index] for value in tip_cell_terms)
+
+            joint_tangent = (
+                jnp.zeros((6, active_prefix), dtype=dtype)
+                .at[:, previous_prefix : previous_prefix + joint_dofs]
+                .set(joint_tangent_basis[:, :joint_dofs])
+            )
+            jacobian_joint = joint_adjoint_inverse @ (jacobian_tip + joint_tangent)
+            jacobian_dot_qd_joint = (
+                joint_adjoint_inverse
+                @ (
+                    jacobian_dot_qd_tip
+                    + joint_tangent_basis_dot @ qd_blocks[segment_index, 0]
+                )
+                + joint_adjoint_inverse_dot @ velocity_tip
+            )
+            velocity_joint = joint_adjoint_inverse @ (velocity_tip + joint_velocity)
+            gravity_joint = joint_adjoint_inverse @ gravity_tip
+            link_start = previous_prefix + joint_dofs
+
+            def advance_cell(
+                kinematics: tuple[Array, Array, Array, Array],
+                local_terms: tuple[Array, Array, Array, Array, Array],
+                *,
+                active_prefix_i: int = active_prefix,
+                link_start_i: int = link_start,
+                link_dofs_i: int = link_dofs,
+                segment_index_i: int = segment_index,
+            ) -> tuple[Array, Array, Array, Array]:
+                (
+                    jacobian_previous,
+                    jacobian_dot_qd_previous,
+                    velocity_previous,
+                    gravity_previous,
+                ) = kinematics
+                (
+                    tangent,
+                    tangent_dot,
+                    adjoint_inverse,
+                    magnus_basis,
+                    magnus_basis_dot,
+                ) = local_terms
+
+                local_tangent_basis = tangent @ magnus_basis
+                tangent_basis = (
+                    jnp.zeros((6, active_prefix_i), dtype=dtype)
+                    .at[:, link_start_i : link_start_i + link_dofs_i]
+                    .set(local_tangent_basis[:, :link_dofs_i])
+                )
+                link_velocity = local_tangent_basis @ qd_blocks[segment_index_i, 1]
+                step_velocity = adjoint_inverse @ link_velocity
+                velocity_next = adjoint_inverse @ (velocity_previous + link_velocity)
+                jacobian_next = adjoint_inverse @ (jacobian_previous + tangent_basis)
+                tangent_velocity_dot = (
+                    tangent_dot @ magnus_basis + tangent @ magnus_basis_dot
+                ) @ qd_blocks[segment_index_i, 1]
+                jacobian_dot_qd_next = adjoint_inverse @ (
+                    jacobian_dot_qd_previous + tangent_velocity_dot
+                ) - se3.small_adjoint_action(
+                    step_velocity, adjoint_inverse @ velocity_previous
+                )
+                gravity_next = adjoint_inverse @ gravity_previous
+                return (
+                    jacobian_next,
+                    jacobian_dot_qd_next,
+                    velocity_next,
+                    gravity_next,
+                )
+
+            def body_cell(
+                kinematics: tuple[Array, Array, Array, Array],
+                local_terms: tuple[Array, Array, Array, Array, Array],
+            ) -> tuple[
+                tuple[Array, Array, Array, Array],
+                tuple[Array, Array, Array, Array],
+            ]:
+                kinematics_next = advance_cell(kinematics, local_terms)
+                return kinematics_next, kinematics_next
+
+            kinematics_last_quad, quadrature_kinematics = lax.scan(
+                body_cell,
+                (
+                    jacobian_joint,
+                    jacobian_dot_qd_joint,
+                    velocity_joint,
+                    gravity_joint,
+                ),
+                interior_terms_i,
+            )
+            jacobians, jacobians_dot_qd, velocities, gravities = quadrature_kinematics
+
+            weights = self.inner_integration_weights[segment_index]
+            mass_diagonals_i = mass_diagonals[segment_index]
+            flattened_row_count = (self.max_num_integration_points - 2) * 6
+            jacobians_flat = jacobians.reshape(flattened_row_count, active_prefix)
+            weighted_jacobians_flat = (
+                weights[:, None, None] * mass_diagonals_i[:, :, None] * jacobians
+            ).reshape(flattened_row_count, active_prefix)
+            inertia_segment = jacobians_flat.T @ weighted_jacobians_flat
+
+            momenta = mass_diagonals_i * velocities
+            coadjoint_momenta = jax.vmap(se3.coadjoint_action)(velocities, momenta)
+            wrenches = mass_diagonals_i * jacobians_dot_qd + coadjoint_momenta
+            coriolis_segment = jacobians_flat.T @ (weights[:, None] * wrenches).reshape(
+                flattened_row_count
+            )
+            gravity_segment = -jacobians_flat.T @ (
+                weights[:, None] * mass_diagonals_i * gravities
+            ).reshape(flattened_row_count)
+
+            inertia = inertia.at[:active_prefix, :active_prefix].add(inertia_segment)
+            coriolis_qd = coriolis_qd.at[:active_prefix].add(coriolis_segment)
+            gravity_force = gravity_force.at[:active_prefix].add(gravity_segment)
+            (
+                jacobian_tip,
+                jacobian_dot_qd_tip,
+                velocity_tip,
+                gravity_tip,
+            ) = advance_cell(kinematics_last_quad, tip_terms_i)
+            previous_prefix = active_prefix
+
+        return inertia, coriolis_qd, gravity_force
+
+    @eqx.filter_jit
+    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+        """Assemble the active inertia, convective, and gravity terms."""
+        return self._dynamics_terms_impl(
+            q,
+            qd,
+            reuse_recurrence_velocity=self.num_segments > 1,
+            use_active_prefix=self.num_segments > 1,
+            use_compact_basis=self.num_segments > 1,
+        )
 
     # ===========================================
     # Dynamical matrices computation
