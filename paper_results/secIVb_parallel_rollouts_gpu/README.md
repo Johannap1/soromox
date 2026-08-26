@@ -19,27 +19,14 @@ uv sync --extra paper_results
 uv run python -c "import jax; print(jax.devices())"
 ```
 
-Generate the segment-scaling CSVs with the paper integration settings:
-
-```bash
-for system in articulated_soft_robot planar_pcs pcs; do
-  uv run python paper_results/secIVb_parallel_rollouts_gpu/code/generate_benchmark_gpu.py \
-    --systems "$system" \
-    --segment-counts 1 2 4 8 16 32 \
-    --batch-sizes 1 2 4 8 16 32 64 128 256 \
-    --duration 1 --solver-dt 1e-4 --save-dt 1e-2 \
-    --csv "paper_results/secIVb_parallel_rollouts_gpu/data/${system}_1s.csv"
-done
-```
-
-The GVS segment sweep in the committed paper data stops at 16 segments:
+Generate the segment-scaling CSV with the paper integration settings:
 
 ```bash
 uv run python paper_results/secIVb_parallel_rollouts_gpu/code/generate_benchmark_gpu.py \
-  --systems gvs --gvs-scaling segments --segment-counts 1 2 4 8 16 \
+  --systems articulated_soft_robot planar_pcs pcs gvs \
+  --gvs-scaling segments --segment-counts 1 2 4 8 16 32 \
   --batch-sizes 1 2 4 8 16 32 64 128 256 \
-  --duration 1 --solver-dt 1e-4 --save-dt 1e-2 \
-  --csv paper_results/secIVb_parallel_rollouts_gpu/data/gvs_segments_1s.csv
+  --duration 1 --solver-dt 1e-4 --save-dt 1e-2
 ```
 
 Generate the GVS strain-basis-order sweep:

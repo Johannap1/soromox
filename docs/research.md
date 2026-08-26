@@ -47,13 +47,14 @@ table below retains the matched PCS and GVS comparison with SoRoSim:
 
 <figure markdown>
   ![GPU batch simulation throughput for articulated, PCS, and GVS models as the leading batch size increases](assets/paper/gpu-batch-scaling.png){ .soromox-figure .soromox-figure--plot }
-  <figcaption>On the reported RTX 5090 benchmark, scaling the leading batch size from 1 to 256 yields up to 220.4× higher simulation throughput.</figcaption>
+  <figcaption>On the reported RTX 5090 benchmark, scaling the leading batch size from 1 to 256 raises GVS simulation throughput by up to 172.1×.</figcaption>
 </figure>
 
 The exact scaling depends on the model, number of links or segments, hardware,
-and discretization. Under the paper's settings, the articulated models show the
-strongest scaling, while the more expensive spatial PCS and GVS models still
-benefit substantially from batching.
+and discretization. Under the paper's settings, GVS reaches 172.1× the
+single-environment throughput for one segment at batch size 256 and retains a
+50.3× increase for 32 segments. Aggregate throughput increases monotonically
+for every tested GVS configuration.
 
 ## Application case studies
 
