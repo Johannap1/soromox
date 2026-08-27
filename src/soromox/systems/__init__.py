@@ -53,7 +53,7 @@ from soromox.systems.system_state import EnvironmentState, SystemState
 from .articulated import ArticulatedSoftRobot, McKibbenActuatedUMArm
 from .gvs import (
     GVS,
-    GVSBackend,
+    ExecutionBackend,
     GVSSegment,
     StrainBasisSpec,
 )
@@ -94,8 +94,8 @@ __all__ = [
     "McKibbenActuatedUMArm",
     "McKibbenActuatedUMArmParams",
     # gvs systems
+    "ExecutionBackend",
     "GVS",
-    "GVSBackend",
     "GVSParams",
     "GVSStructure",
     "GVSSegmentStructure",

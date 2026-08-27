@@ -17,6 +17,7 @@ from soromox.systems.components import (
     IsotropicMaterialParams,
 )
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
+from soromox.systems.gvs._dynamics import evaluate_terms
 from soromox.systems.gvs._runtime import SegmentRuntimeData
 from soromox.systems.gvs.construction import (
     _resolve_structure,
@@ -63,9 +64,9 @@ from soromox.utils.integration import gauss_quadrature
 from soromox.utils.lie_algebra import se3, so3
 from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 
-GVSBackend = Literal["auto", "jax", "warp"]
+ExecutionBackend = Literal["auto", "jax", "warp"]
 
-__all__ = ["GVS", "GVSBackend"]
+__all__ = ["ExecutionBackend", "GVS"]
 
 
 class GVS(SoftRobot):
@@ -158,6 +159,8 @@ class GVS(SoftRobot):
         static=True
     )  # Total number of DOFs for the robot, considering the maximum DOFs per link: num_segments * 2 * max_dof
 
+    backend: ExecutionBackend = eqx.field(static=True, default="auto")
+
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
 
@@ -244,6 +247,7 @@ class GVS(SoftRobot):
         structure: GVSStructure,
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
+        backend: ExecutionBackend = "auto",
         **kwargs: Any,
     ) -> None:
         """Initialize a GVS robot from typed parameters and static structure.
@@ -257,6 +261,10 @@ class GVS(SoftRobot):
                 model.
             passive_elements: Optional passive element or tuple of passive
                 elements. Pass ``None`` or an empty tuple to disable them.
+            backend: Preferred execution backend for accelerated GVS methods.
+                ``"auto"`` selects Warp on GPU and JAX on CPU. Currently the
+                Warp implementation covers dynamics; other methods remain in
+                JAX. Transformations that request derivatives always use JAX.
             **kwargs: Additional keyword arguments forwarded to
                 :class:`BaseContinuumSoftRobot`.
 
@@ -269,10 +277,16 @@ class GVS(SoftRobot):
             raise TypeError("params must be a GVSParams instance.")
         if not isinstance(structure, GVSStructure):
             raise TypeError("structure must be a GVSStructure instance.")
+        if backend not in ("auto", "jax", "warp"):
+            raise ValueError(
+                "backend must be one of 'auto', 'jax', or 'warp', "
+                f"got {backend!r}."
+            )
         structure = _resolve_structure(params, structure)
         super().__init__(base_pose=params.base_pose, **kwargs)
         self.params = params
         self.structure = structure
+        self.backend = backend
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -4501,15 +4515,17 @@ class GVS(SoftRobot):
 
         return weights, g_quads, J_quads, Jd_or_Jd_qd_quads
 
-    @eqx.filter_jit
-    def dynamics_terms_batched(
+    # The selected implementations own their JIT boundaries. Keeping this
+    # transform-aware dispatcher outside ``filter_jit`` lets JVP and transpose
+    # rules select JAX before a forward-only Warp primal is staged.
+    def dynamics_terms(
         self,
         q: Array,
         qd: Array,
         *,
-        backend: GVSBackend = "auto",
+        backend: ExecutionBackend | None = None,
     ) -> tuple[Array, Array, Array]:
-        """Assemble dynamics terms for a batch of independent environments.
+        """Assemble single- or multi-environment forward-dynamics terms.
 
         With ``"warp"``, all general-joint and spatially varying link Lie terms
         are prepared by runtime-shaped kernels. One persistent cooperative block
@@ -4518,80 +4534,66 @@ class GVS(SoftRobot):
         Generated Warp source is independent of the batch size, number of
         segments, basis order, quadrature count, and supported joint family.
 
+        ``backend=None`` uses the model's configured ``backend``.
         ``"auto"`` selects Warp on GPU and JAX on CPU, without a model-order or
-        batch-size crossover policy. Use ``"jax"`` explicitly when GPU
-        differentiability is required. ``"jax"`` is fully differentiable;
-        ``"warp"`` is forward-only and must not be used through JAX transforms
-        that request derivatives.
+        batch-size crossover policy. Forward- and reverse-mode differentiation
+        always use the JAX assembly, including when primal execution selects
+        Warp. Applying :func:`jax.vmap` to scalar calls invokes the batch-shaped
+        Warp pipeline once rather than mapping batch-one kernel launches.
 
         Warp is an optional dependency. Install ``soromox[warp]`` before
         explicitly requesting that backend. The current kernels use FP64 to
         preserve the numerical behavior of GVS dynamics.
 
         Args:
-            q: Batched active generalized coordinates with shape
-                ``(batch_size, self.num_dofs)``.
-            qd: Batched active generalized velocities with the same shape.
-            backend: ``"auto"``, ``"jax"``, or ``"warp"``.
+            q: Active generalized coordinates with shape ``(num_dofs,)`` or
+                ``(batch_size, num_dofs)``.
+            qd: Generalized velocities with the same shape as ``q``.
+            backend: Optional per-call override: ``"auto"``, ``"jax"``, or
+                ``"warp"``.
 
         Returns:
-            Batched ``(B, Cqd, G)`` with shapes
-            ``(batch_size, num_dofs, num_dofs)``,
-            ``(batch_size, num_dofs)``, and ``(batch_size, num_dofs)``.
+            ``(B, Cqd, G)`` with the same optional leading batch dimension as
+            the inputs.
 
         Raises:
             ValueError: If the backend or input shapes are invalid, or an empty
-                batch is explicitly sent to Warp.
+                batch is sent to Warp.
             TypeError: If Warp is requested for non-FP64 inputs.
             ImportError: If Warp is requested but not installed.
         """
         q = jnp.asarray(q)
         qd = jnp.asarray(qd)
-        expected_suffix = (self.num_dofs,)
-        if q.ndim != 2 or q.shape[1:] != expected_suffix:
+        if q.ndim not in (1, 2) or q.shape[-1:] != (self.num_dofs,):
             raise ValueError(
-                "q must have shape (batch_size, num_dofs); "
-                f"expected (*, {self.num_dofs}), got {q.shape}."
+                "q must have shape (num_dofs,) or (batch_size, num_dofs); "
+                f"expected (..., {self.num_dofs}), got {q.shape}."
             )
         if qd.shape != q.shape:
             raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
-        if backend not in ("auto", "jax", "warp"):
+        configured_backend = self.backend if backend is None else backend
+        if configured_backend not in ("auto", "jax", "warp"):
             raise ValueError(
                 f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
             )
 
-        selected_backend = backend
+        selected_backend = configured_backend
         if selected_backend == "auto":
             selected_backend = "warp" if jax.default_backend() == "gpu" else "jax"
 
         if selected_backend == "jax":
-            return jax.vmap(self.dynamics_terms)(q, qd)
+            if q.ndim == 1:
+                return self._assemble_dynamics_terms(q, qd)
+            return jax.vmap(self._assemble_dynamics_terms)(q, qd)
 
-        if q.shape[0] == 0:
-            raise ValueError("The Warp backend requires a non-empty batch.")
-        if q.dtype != jnp.float64 or qd.dtype != jnp.float64:
-            raise TypeError(
-                "The Warp GVS backend currently requires float64 q and qd; "
-                f"got {q.dtype} and {qd.dtype}."
-            )
-        try:
-            from soromox.systems.gvs._warp.backend import dynamics_terms
-        except ModuleNotFoundError as error:
-            if error.name == "warp":
-                raise ImportError(
-                    "The Warp GVS backend requires the optional 'warp-lang' "
-                    "dependency. Install it with `pip install soromox[warp]`."
-                ) from error
-            raise
-
-        if jax.default_backend() == "gpu":
-            lanes_per_block = 192 if self.num_dofs > 64 else 128
-        else:
-            lanes_per_block = 1
-        return dynamics_terms(self, q, qd, lanes_per_block=lanes_per_block)
+        if q.ndim == 1:
+            return evaluate_terms(self, q, qd)
+        return jax.vmap(evaluate_terms, in_axes=(None, 0, 0))(self, q, qd)
 
     @eqx.filter_jit
-    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+    def _assemble_dynamics_terms(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
 
@@ -5370,7 +5372,8 @@ class GVS(SoftRobot):
             params.end_segment_index_array,
         )
 
-    @eqx.filter_jit
+    # As with ``dynamics_terms``, the compiled implementation lives behind the
+    # transform-aware wrapper so differentiation can select JAX before staging.
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
@@ -5387,6 +5390,44 @@ class GVS(SoftRobot):
         Returns:
             yd (Array): Time derivative of the state vector.
         """
+        return GVS._forward_dynamics_custom_jvp(self, t, y, actuation_args)
+
+    @eqx.filter_custom_jvp
+    @staticmethod
+    def _forward_dynamics_custom_jvp(
+        model: "GVS", t: Array, y: Array, actuation_args: tuple | None
+    ) -> Array:
+        """Custom-JVP entry point for the public forward-dynamics wrapper."""
+
+        return model._evaluate_forward_dynamics(t, y, actuation_args, backend=None)
+
+    @_forward_dynamics_custom_jvp.def_jvp
+    def _forward_dynamics_custom_jvp_jvp(
+        primals: tuple["GVS", Array, Array, tuple | None],
+        tangents: tuple[Any, Any, Any, Any],
+    ) -> tuple[Array, Array]:
+        """Differentiate the complete forward-dynamics calculation with JAX."""
+
+        return eqx.filter_jvp(
+            lambda model, t, y, actuation_args: model._evaluate_forward_dynamics(
+                t, y, actuation_args, backend="jax"
+            ),
+            primals,
+            tangents,
+        )
+
+    @eqx.filter_jit
+    def _evaluate_forward_dynamics(
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None,
+        *,
+        backend: ExecutionBackend | None,
+    ) -> Array:
+        """Evaluate forward dynamics with an explicitly selected terms backend."""
+
+        del t
         # Split the state vector into configuration and velocity
         q, qd = jnp.split(y, 2)
 
@@ -5406,7 +5447,7 @@ class GVS(SoftRobot):
         if tau_ext is None:
             tau_ext = jnp.zeros((q.shape[-1],))
 
-        B, Cqd, G = self.dynamics_terms(q, qd)
+        B, Cqd, G = self.dynamics_terms(q, qd, backend=backend)
         tau_el = self.elastic_force(q)
         tau_u = self.actuation_force(q, u, qd=qd)
 

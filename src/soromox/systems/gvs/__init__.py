@@ -7,12 +7,12 @@ from soromox.systems.gvs.structures import (
     GVSStructure,
 )
 
-from .core import GVS, GVSBackend
+from .core import GVS, ExecutionBackend
 from .specs import GVSSegment, StrainBasisSpec
 
 __all__ = [
+    "ExecutionBackend",
     "GVS",
-    "GVSBackend",
     "GVSSegment",
     "StrainBasisSpec",
     "GVSParams",
