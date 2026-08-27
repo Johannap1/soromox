@@ -246,6 +246,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "soromox_version",
         "jax_version",
         "jaxlib_version",
+        "warp_version",
         "x64_enabled",
         "device_kind",
         "platform_version",

@@ -86,6 +86,7 @@ def test_csv_records_execution_backend_metadata(tmp_path) -> None:
     assert "backend" in header
     assert "resolved_backend" in header
     assert "backend_applies" in header
+    assert "warp_version" in header
 
 
 def test_json_records_resolved_backend(tmp_path) -> None:

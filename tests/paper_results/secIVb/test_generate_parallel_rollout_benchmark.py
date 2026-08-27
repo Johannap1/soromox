@@ -89,3 +89,4 @@ def test_csv_records_environment_metadata(tmp_path):
     assert "backend" in header
     assert "resolved_backend" in header
     assert "backend_applies" in header
+    assert "warp_version" in header

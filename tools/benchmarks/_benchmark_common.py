@@ -88,6 +88,7 @@ def benchmark_environment_metadata(device: jax.Device) -> dict[str, Any]:
         "soromox_version": _distribution_version("soromox"),
         "jax_version": jax.__version__,
         "jaxlib_version": _distribution_version("jaxlib"),
+        "warp_version": _distribution_version("warp-lang"),
         "x64_enabled": bool(jax.config.x64_enabled),
         "device_kind": device_kind,
         "device_id": f"{device.platform}:{device_kind or 'unknown'}:{device.id}",
