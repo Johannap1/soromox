@@ -1,20 +1,17 @@
-"""JAX-facing orchestration for persistent batched GVS dynamics in Warp."""
+"""Family executor for persistent batched GVS dynamics in Warp."""
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 from jax import Array
 
-from soromox.systems.gvs._warp.cooperative import cooperative_joint_terms
-from soromox.systems.gvs._warp.joint import scalable_joint_terms
-from soromox.systems.gvs._warp.persistent import scalable_persistent_chain
-from soromox.systems.gvs._warp.scalable import scalable_cell_terms
-
-if TYPE_CHECKING:
-    from soromox.systems.gvs.core import GVS
-
+from soromox.systems._execution.warp.gvs.cell import scalable_cell_terms
+from soromox.systems._execution.warp.gvs.chain import scalable_persistent_chain
+from soromox.systems._execution.warp.gvs.joint import scalable_joint_terms
+from soromox.systems._execution.warp.gvs.joint_cooperative import (
+    cooperative_joint_terms,
+)
+from soromox.systems._execution.warp.gvs.operands import GVSOperands
 
 SPATIAL_DIM = 6
 
@@ -28,23 +25,23 @@ def _gather_local(values: Array, local_to_global: Array) -> Array:
 
 
 def _joint_terms(
-    model: GVS, q: Array, qd: Array, *, cooperative: bool
+    operands: GVSOperands, q: Array, qd: Array, *, cooperative: bool
 ) -> tuple[Array, Array, Array, Array, Array]:
     """Evaluate all general-joint Lie terms in one runtime-shaped launch."""
 
     batch_size = q.shape[0]
-    num_segments = model.num_segments
-    max_dof = model.max_dof
-    num_dofs = model.num_dofs
+    num_segments = operands.num_segments
+    max_dof = operands.max_dof
+    num_dofs = operands.num_dofs
     work_items = batch_size * num_segments
     matrix_rows = work_items * SPATIAL_DIM
     joint_terms = cooperative_joint_terms if cooperative else scalable_joint_terms
     outputs = joint_terms(
         q,
         qd,
-        model.B_joint.reshape(num_segments * SPATIAL_DIM, max_dof),
-        model.xi_ref_joint,
-        model.joint_local_to_global,
+        operands.joint_basis.reshape(num_segments * SPATIAL_DIM, max_dof),
+        operands.joint_reference,
+        operands.joint_local_to_global,
         output_dims={
             "adjoint": (matrix_rows, SPATIAL_DIM),
             "adjoint_dot": (matrix_rows, SPATIAL_DIM),
@@ -55,13 +52,13 @@ def _joint_terms(
     )
     leading = (batch_size, num_segments, SPATIAL_DIM)
     tangent_local = outputs[2].reshape(*leading, max_dof)
-    local_columns = jnp.maximum(model.joint_global_to_local, 0)
+    local_columns = jnp.maximum(operands.joint_global_to_local, 0)
     local_columns = jnp.broadcast_to(
         local_columns[None, :, None, :],
         (batch_size, num_segments, SPATIAL_DIM, num_dofs),
     )
     tangent_active = jnp.take_along_axis(tangent_local, local_columns, axis=-1)
-    tangent_active *= (model.joint_global_to_local >= 0)[None, :, None, :]
+    tangent_active *= (operands.joint_global_to_local >= 0)[None, :, None, :]
     return (
         outputs[0].reshape(*leading, SPATIAL_DIM),
         outputs[1].reshape(*leading, SPATIAL_DIM),
@@ -72,26 +69,26 @@ def _joint_terms(
 
 
 def _cell_terms(
-    model: GVS, q_link: Array, qd_link: Array
+    operands: GVSOperands, q_link: Array, qd_link: Array
 ) -> tuple[Array, Array, Array, Array, Array]:
     """Evaluate spatially varying link-cell Lie terms in local coordinates."""
 
     batch_size = q_link.shape[0]
-    num_segments = model.num_segments
-    num_cells = model.max_num_integration_points - 1
-    max_dof = model.max_dof
+    num_segments = operands.num_segments
+    num_cells = operands.num_cells
+    max_dof = operands.max_dof
     work_items = batch_size * num_segments * num_cells
     matrix_rows = work_items * SPATIAL_DIM
     outputs = scalable_cell_terms(
         q_link.reshape(batch_size * num_segments, max_dof),
         qd_link.reshape(batch_size * num_segments, max_dof),
-        model.scaled_B_Z1_values.reshape(num_segments * num_cells, max_dof),
-        model.scaled_B_Z2_values.reshape(num_segments * num_cells, max_dof),
-        model.link_basis_rows,
-        model.xi_ref_Z1.reshape(num_segments * num_cells, SPATIAL_DIM),
-        model.xi_ref_Z2.reshape(num_segments * num_cells, SPATIAL_DIM),
-        model.segment_lengths,
-        model.cell_widths.reshape(num_segments * num_cells),
+        operands.link_basis_z1_values.reshape(num_segments * num_cells, max_dof),
+        operands.link_basis_z2_values.reshape(num_segments * num_cells, max_dof),
+        operands.link_basis_rows,
+        operands.link_reference_z1.reshape(num_segments * num_cells, SPATIAL_DIM),
+        operands.link_reference_z2.reshape(num_segments * num_cells, SPATIAL_DIM),
+        operands.segment_lengths,
+        operands.cell_widths.reshape(num_segments * num_cells),
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([0], dtype=jnp.int32),
         output_dims={
@@ -112,8 +109,8 @@ def _cell_terms(
     )
 
 
-def dynamics_terms(
-    model: GVS, q: Array, qd: Array, *, lanes_per_block: int
+def execute_dynamics_terms(
+    operands: GVSOperands, q: Array, qd: Array
 ) -> tuple[Array, Array, Array]:
     """Assemble batched ``(B, C @ qd, G)`` with the persistent Warp pipeline."""
 
@@ -123,23 +120,23 @@ def dynamics_terms(
         joint_tangent,
         joint_tangent_dot_qd,
         joint_velocity,
-    ) = _joint_terms(model, q, qd, cooperative=lanes_per_block > 1)
-    q_link = _gather_local(q, model.link_local_to_global)
-    qd_link = _gather_local(qd, model.link_local_to_global)
+    ) = _joint_terms(operands, q, qd, cooperative=operands.block_dim > 1)
+    q_link = _gather_local(q, operands.link_local_to_global)
+    qd_link = _gather_local(qd, operands.link_local_to_global)
     (
         cell_adjoint,
         cell_tangent_local,
         cell_link_velocity,
         cell_step_velocity,
         cell_tangent_velocity_dot,
-    ) = _cell_terms(model, q_link, qd_link)
+    ) = _cell_terms(operands, q_link, qd_link)
 
     batch_size = q.shape[0]
-    num_segments = model.num_segments
-    num_cells = model.max_num_integration_points - 1
-    num_quadrature = model.max_num_integration_points - 2
-    num_dofs = model.num_dofs
-    max_dof = model.max_dof
+    num_segments = operands.num_segments
+    num_cells = operands.num_cells
+    num_quadrature = operands.num_quadrature
+    num_dofs = operands.num_dofs
+    max_dof = operands.max_dof
     state_rows = batch_size * SPATIAL_DIM
     joint_rows = batch_size * num_segments * SPATIAL_DIM
     cell_rows = batch_size * num_segments * num_cells * SPATIAL_DIM
@@ -154,18 +151,18 @@ def dynamics_terms(
         cell_link_velocity.reshape(cell_rows, 1),
         cell_step_velocity.reshape(cell_rows, 1),
         cell_tangent_velocity_dot.reshape(cell_rows, 1),
-        model.link_global_to_local,
-        model.active_dofs_per_segment,
+        operands.link_global_to_local,
+        operands.active_dofs_per_segment,
         qd,
-        model.inertia_upper_rows,
-        model.inertia_upper_columns,
-        model.inner_weighted_mass_diagonals.reshape(
+        operands.inertia_upper_rows,
+        operands.inertia_upper_columns,
+        operands.weighted_mass_diagonals.reshape(
             num_segments * num_quadrature, SPATIAL_DIM
         ),
-        model.gravity_base,
+        operands.gravity_base,
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([num_quadrature], dtype=jnp.int32),
-        jnp.asarray([lanes_per_block], dtype=jnp.int32),
+        jnp.asarray([operands.block_dim], dtype=jnp.int32),
         output_dims={
             "jacobian_first": (state_rows, num_dofs),
             "jacobian_dot_qd_first": (state_rows, 1),
@@ -181,3 +178,6 @@ def dynamics_terms(
         },
     )
     return outputs[-3], outputs[-2], outputs[-1]
+
+
+__all__ = ["execute_dynamics_terms"]

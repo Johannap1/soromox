@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.systems.gvs._warp.joint import _joint_basis_column
-from soromox.systems.gvs._warp.lie import (
+from soromox.systems._execution.warp.common.se3 import (
     Vec6d,
     _ad_action,
     _adjoint_inverse_action,
@@ -18,6 +17,7 @@ from soromox.systems.gvs._warp.lie import (
     _left_total_derivative_action,
     _translation,
 )
+from soromox.systems._execution.warp.gvs.joint import _joint_basis_column
 
 wp.set_module_options({"enable_backward": False})
 

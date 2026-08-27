@@ -1,44 +1,41 @@
-"""JAX-facing orchestration for PlanarPCS and PCS Warp dynamics."""
+"""Family executor for PlanarPCS and PCS dynamics in Warp."""
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 from jax import Array
 
-from soromox.systems.pcs._warp.planar import (
+from soromox.systems._execution.warp.pcs.operands import PCSOperands
+from soromox.systems._execution.warp.pcs.planar_kernels import (
     planar_local_operators,
     planar_persistent_chain,
 )
-from soromox.systems.pcs._warp.spatial import (
+from soromox.systems._execution.warp.pcs.spatial_kernels import (
     spatial_local_operators,
     spatial_persistent_chain,
 )
 
-if TYPE_CHECKING:
-    from soromox.systems.pcs.pcs import PCS
-    from soromox.systems.pcs.planar_pcs import PlanarPCS
-
 
 def _planar_dynamics_terms(
-    model: PlanarPCS, q: Array, qd: Array, *, block_dim: int
+    operands: PCSOperands, q: Array, qd: Array
 ) -> tuple[Array, Array, Array]:
     """Execute the staged constant-strain SE(2) pipeline."""
 
     batch_size = q.shape[0]
-    num_segments = model.num_segments
-    num_dofs = model.num_dofs
-    points_per_segment = model.num_gauss_points + 1
+    num_segments = operands.num_segments
+    num_dofs = operands.num_dofs
+    points_per_segment = operands.num_gauss_points + 1
     operator_rows = batch_size * num_segments * points_per_segment * 3
     operators = planar_local_operators(
         q,
         qd,
-        model.active_strain_indices,
-        model.active_strain_scales,
-        model.xi_ref.reshape(num_segments, 3),
-        model.dynamics_local_points,
-        jnp.asarray([model.global_eps, model.tangent_eps], dtype=jnp.float64),
+        operands.active_strain_indices,
+        operands.active_strain_scales,
+        operands.reference_strain.reshape(num_segments, 3),
+        operands.local_points,
+        jnp.asarray(
+            [operands.global_eps, operands.tangent_eps], dtype=jnp.float64
+        ),
         output_dims={
             "adjoint_inverse": (operator_rows, 3),
             "transported_tangent": (operator_rows, 3),
@@ -49,17 +46,17 @@ def _planar_dynamics_terms(
     state_rows = batch_size * 3
     outputs = planar_persistent_chain(
         *operators,
-        model.active_strain_indices,
-        model.active_strain_scales,
-        model.active_dof_ends,
+        operands.active_strain_indices,
+        operands.active_strain_scales,
+        operands.active_dof_ends,
         qd,
-        model.inertia_upper_rows,
-        model.inertia_upper_columns,
-        model.weighted_mass_diagonals.reshape(
-            num_segments * model.num_gauss_points, 3
+        operands.inertia_upper_rows,
+        operands.inertia_upper_columns,
+        operands.weighted_mass_diagonals.reshape(
+            num_segments * operands.num_gauss_points, 3
         ),
-        model.gravity_base,
-        block_dim,
+        operands.gravity_base,
+        operands.block_dim,
         output_dims={
             "jacobian_first": (state_rows, num_dofs),
             "derivative_first": (state_rows, 1),
@@ -75,31 +72,27 @@ def _planar_dynamics_terms(
     return outputs[-3], outputs[-2], outputs[-1]
 
 
-def dynamics_terms(
-    model: PlanarPCS | PCS,
+def execute_dynamics_terms(
+    operands: PCSOperands,
     q: Array,
     qd: Array,
-    *,
-    block_dim: int,
 ) -> tuple[Array, Array, Array]:
     """Dispatch to the planar or spatial constant-strain pipeline."""
 
-    if model.is_planar:
-        return _planar_dynamics_terms(
-            model, q, qd, block_dim=block_dim
-        )
+    if operands.is_planar:
+        return _planar_dynamics_terms(operands, q, qd)
     batch_size = q.shape[0]
-    num_segments = model.num_segments
-    num_dofs = model.num_dofs
-    points_per_segment = model.num_gauss_points + 1
+    num_segments = operands.num_segments
+    num_dofs = operands.num_dofs
+    points_per_segment = operands.num_gauss_points + 1
     operator_rows = batch_size * num_segments * points_per_segment * 6
     operators = spatial_local_operators(
         q,
         qd,
-        model.active_strain_indices,
-        model.active_strain_scales,
-        model.xi_ref.reshape(num_segments, 6),
-        model.dynamics_local_points,
+        operands.active_strain_indices,
+        operands.active_strain_scales,
+        operands.reference_strain.reshape(num_segments, 6),
+        operands.local_points,
         output_dims={
             "adjoint_inverse": (operator_rows, 6),
             "transported_tangent": (operator_rows, 6),
@@ -110,17 +103,17 @@ def dynamics_terms(
     state_rows = batch_size * 6
     outputs = spatial_persistent_chain(
         *operators,
-        model.active_strain_indices,
-        model.active_strain_scales,
-        model.active_dof_ends,
+        operands.active_strain_indices,
+        operands.active_strain_scales,
+        operands.active_dof_ends,
         qd,
-        model.inertia_upper_rows,
-        model.inertia_upper_columns,
-        model.weighted_mass_diagonals.reshape(
-            num_segments * model.num_gauss_points, 6
+        operands.inertia_upper_rows,
+        operands.inertia_upper_columns,
+        operands.weighted_mass_diagonals.reshape(
+            num_segments * operands.num_gauss_points, 6
         ),
-        model.gravity_base,
-        block_dim,
+        operands.gravity_base,
+        operands.block_dim,
         output_dims={
             "jacobian_first": (state_rows, num_dofs),
             "derivative_first": (state_rows, 1),
@@ -138,4 +131,4 @@ def dynamics_terms(
     return outputs[-3], outputs[-2], outputs[-1]
 
 
-__all__ = ["dynamics_terms"]
+__all__ = ["execute_dynamics_terms"]

@@ -3,7 +3,7 @@ from soromox.autodiff import (
     custom_jvp_mode,
     set_custom_jvp_enabled,
 )
-from soromox.systems._dynamics import ExecutionBackend
+from soromox.systems._execution import ExecutionBackend
 from soromox.systems.articulated.params import (
     ArticulatedSoftRobotParams,
     McKibbenActuatedUMArmParams,

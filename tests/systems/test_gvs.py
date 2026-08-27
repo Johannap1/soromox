@@ -1859,7 +1859,7 @@ def test_dynamics_terms_accepts_batched_inputs() -> None:
 def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems.gvs import _dynamics
+    from soromox.systems._execution.warp import loader
 
     model = _DynamicsDispatchProbe(
         scale=jnp.asarray(2.0, dtype=jnp.float64),
@@ -1878,14 +1878,15 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
             jnp.full((batch_size, model.num_dofs), value + 2.0),
         )
 
-    monkeypatch.setattr(_dynamics, "_execute_batch", fake_batch)
+    monkeypatch.setattr(loader, "_execute_gvs_batch", fake_batch)
+    evaluate_terms = loader.get_dynamics_evaluator("gvs")
 
-    primal = _dynamics.evaluate_terms(model, q, qd)
+    primal = evaluate_terms(model, q, qd)
     assert_allclose(primal[0], jnp.ones((3, 3)), rtol=0.0, atol=0.0)
 
     q_batch = jnp.stack((q, 2.0 * q, 3.0 * q))
     qd_batch = jnp.stack((qd, 2.0 * qd, 3.0 * qd))
-    batched = jax.vmap(_dynamics.evaluate_terms, in_axes=(None, 0, 0))(
+    batched = jax.vmap(evaluate_terms, in_axes=(None, 0, 0))(
         model, q_batch, qd_batch
     )
     assert_allclose(batched[0], jnp.full((3, 3, 3), 3.0), rtol=0.0, atol=0.0)
@@ -1897,7 +1898,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
         (tangent,),
     )
     actual_jvp = jax.jvp(
-        lambda q_: _dynamics.evaluate_terms(model, q_, qd),
+        lambda q_: evaluate_terms(model, q_, qd),
         (q,),
         (tangent,),
     )
@@ -1914,7 +1915,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
             q_,
         )
     )(q)
-    actual_gradient = jax.grad(lambda q_: objective(_dynamics.evaluate_terms, q_))(q)
+    actual_gradient = jax.grad(lambda q_: objective(evaluate_terms, q_))(q)
     assert_allclose(actual_gradient, expected_gradient, rtol=RTOL, atol=ATOL)
 
     def batched_objective(evaluate, q):
@@ -1928,7 +1929,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
         )
     )(q_batch)
     actual_batched_gradient = jax.grad(
-        lambda q_: batched_objective(_dynamics.evaluate_terms, q_)
+        lambda q_: batched_objective(evaluate_terms, q_)
     )(q_batch)
     assert_allclose(
         actual_batched_gradient,
@@ -1941,7 +1942,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
 def test_configured_warp_backend_routes_autodiff_to_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems.gvs import _dynamics
+    from soromox.systems._execution.warp import loader
 
     reference = build_constant_strain_gvs(
         num_segments=1,
@@ -1960,7 +1961,11 @@ def test_configured_warp_backend_routes_autodiff_to_jax(
         del args, kwargs
         raise AssertionError("autodiff staged the forward-only Warp backend")
 
-    monkeypatch.setattr(_dynamics, "_execute_batch", fail_if_warp_is_staged)
+    monkeypatch.setattr(
+        loader,
+        "_execute_gvs_batch",
+        fail_if_warp_is_staged,
+    )
 
     expected_jvp = jax.jvp(
         lambda q_: reference.dynamics_terms(q_, qd, backend="jax"),

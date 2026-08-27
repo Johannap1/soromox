@@ -7,8 +7,8 @@ import equinox as eqx
 from jax import Array, lax, vmap
 from jax import numpy as jnp
 
+from soromox.systems._execution import DEFAULT_PLANAR_PCS_BLOCK_DIM
 from soromox.systems.components import CrossSectionGeometry
-from soromox.systems.pcs._dynamics import DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM
 from soromox.systems.pcs.params import PlanarHSAParams
 from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.pcs.structures import PlanarHSAStructure
@@ -168,7 +168,7 @@ class PlanarHSA(PlanarPCS):
         )
         self.params = params
         self.backend = "jax"
-        self.warp_block_dim = DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM
+        self.warp_block_dim = DEFAULT_PLANAR_PCS_BLOCK_DIM
 
         n_segments = int(params.length.shape[0])
         n_rods = int(params.rod_offset.shape[1])

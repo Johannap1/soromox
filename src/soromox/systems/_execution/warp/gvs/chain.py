@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.systems.gvs._warp.lie import Vec6d, _ad_action
-from soromox.systems.gvs._warp.segment import (
-    _coadjoint_wrench,
+from soromox.systems._execution.warp.common.se3 import Vec6d, _ad_action
+from soromox.systems._execution.warp.common.spatial import _coadjoint_wrench
+from soromox.systems._execution.warp.common.storage import (
     _matrix_value,
     _vector_value,
     _write_matrix_value,

@@ -1,35 +1,28 @@
-"""Shared transform-aware execution for optional dynamics accelerators."""
+"""JAX transformation rules shared by optional dynamics executors."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, Protocol
+from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-ExecutionBackend = Literal["auto", "jax", "warp"]
-DynamicsTerms = tuple[Array, Array, Array]
-
-
-class DynamicsModel(Protocol):
-    """Structural interface required by accelerated dynamics dispatch."""
-
-    num_dofs: int
-
-    def _assemble_dynamics_terms(self, q: Array, qd: Array) -> DynamicsTerms: ...
-
+from soromox.systems._execution.types import (
+    DynamicsEvaluator,
+    DynamicsModel,
+    DynamicsTerms,
+)
 
 BatchExecutor = Callable[[DynamicsModel, Array, Array], DynamicsTerms]
-DynamicsEvaluator = Callable[[DynamicsModel, Array, Array], DynamicsTerms]
 
 
 def make_dynamics_evaluator(
     execute_batch: BatchExecutor, *, family_name: str
 ) -> DynamicsEvaluator:
-    """Build scalar semantics around one batch-shaped forward executor."""
+    """Give one batch-shaped primal executor scalar and derivative semantics."""
 
     @jax.custom_batching.custom_vmap
     def execute_primal(
@@ -77,10 +70,4 @@ def make_dynamics_evaluator(
     return evaluate_terms
 
 
-__all__ = [
-    "DynamicsEvaluator",
-    "DynamicsModel",
-    "DynamicsTerms",
-    "ExecutionBackend",
-    "make_dynamics_evaluator",
-]
+__all__ = ["BatchExecutor", "make_dynamics_evaluator"]

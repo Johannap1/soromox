@@ -12,18 +12,19 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
-from soromox.systems._dynamics import ExecutionBackend
+from soromox.systems._execution import (
+    DEFAULT_PLANAR_PCS_BLOCK_DIM,
+    PCS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+    validate_block_dim,
+)
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     CrossSectionParams,
     IsotropicMaterialParams,
     LinkSpec,
-)
-from soromox.systems.pcs._dynamics import (
-    DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM,
-    dispatch_terms,
-    validate_warp_block_dim,
 )
 from soromox.systems.pcs.params import PlanarPCSParams
 from soromox.systems.pcs.structures import PlanarPCSStructure
@@ -113,7 +114,7 @@ class PlanarPCS(SoftRobot):
     )  # Number of strains (3 * num_segments)
     backend: ExecutionBackend = eqx.field(static=True, default="auto")
     warp_block_dim: int = eqx.field(
-        static=True, default=DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM
+        static=True, default=DEFAULT_PLANAR_PCS_BLOCK_DIM
     )
     _segment_dof_ends: tuple[int, ...] = eqx.field(static=True, default=())
     scale_rotational_basis_by_length: bool = eqx.field(static=True, default=False)
@@ -294,7 +295,7 @@ class PlanarPCS(SoftRobot):
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
         backend: ExecutionBackend = "auto",
-        warp_block_dim: int = DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM,
+        warp_block_dim: int = DEFAULT_PLANAR_PCS_BLOCK_DIM,
         **kwargs: Any,
     ):
         """Initialize a planar PCS model from typed parameters.
@@ -332,7 +333,7 @@ class PlanarPCS(SoftRobot):
             structure = PlanarPCSStructure()
         self.params = params
         self.backend = backend
-        self.warp_block_dim = validate_warp_block_dim(warp_block_dim)
+        self.warp_block_dim = validate_block_dim(warp_block_dim)
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -3166,11 +3167,12 @@ class PlanarPCS(SoftRobot):
         rather than mapping independent batch-one launches.
         """
 
-        return dispatch_terms(
+        return dispatch_dynamics_terms(
             self,
             q,
             qd,
             backend=backend,
+            capabilities=PCS_DYNAMICS,
             warp_supported=type(self) is PlanarPCS,
         )
 

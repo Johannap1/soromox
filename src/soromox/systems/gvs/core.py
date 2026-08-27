@@ -11,14 +11,17 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
-from soromox.systems._dynamics import ExecutionBackend
+from soromox.systems._execution import (
+    GVS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+)
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     IsotropicMaterialParams,
 )
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
-from soromox.systems.gvs._dynamics import evaluate_terms
 from soromox.systems.gvs._runtime import SegmentRuntimeData
 from soromox.systems.gvs.construction import (
     _resolve_structure,
@@ -65,7 +68,7 @@ from soromox.utils.integration import gauss_quadrature
 from soromox.utils.lie_algebra import se3, so3
 from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
 
-__all__ = ["ExecutionBackend", "GVS"]
+__all__ = ["GVS"]
 
 _DEFAULT_NUM_DYNAMICS_PREFIX_BUCKETS = 4
 
@@ -4736,33 +4739,13 @@ class GVS(SoftRobot):
             TypeError: If Warp is requested for non-FP64 inputs.
             ImportError: If Warp is requested but not installed.
         """
-        q = jnp.asarray(q)
-        qd = jnp.asarray(qd)
-        if q.ndim not in (1, 2) or q.shape[-1:] != (self.num_dofs,):
-            raise ValueError(
-                "q must have shape (num_dofs,) or (batch_size, num_dofs); "
-                f"expected (..., {self.num_dofs}), got {q.shape}."
-            )
-        if qd.shape != q.shape:
-            raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
-        configured_backend = self.backend if backend is None else backend
-        if configured_backend not in ("auto", "jax", "warp"):
-            raise ValueError(
-                f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
-            )
-
-        selected_backend = configured_backend
-        if selected_backend == "auto":
-            selected_backend = "warp" if jax.default_backend() == "gpu" else "jax"
-
-        if selected_backend == "jax":
-            if q.ndim == 1:
-                return self._assemble_dynamics_terms(q, qd)
-            return jax.vmap(self._assemble_dynamics_terms)(q, qd)
-
-        if q.ndim == 1:
-            return evaluate_terms(self, q, qd)
-        return jax.vmap(evaluate_terms, in_axes=(None, 0, 0))(self, q, qd)
+        return dispatch_dynamics_terms(
+            self,
+            q,
+            qd,
+            backend=backend,
+            capabilities=GVS_DYNAMICS,
+        )
 
     @eqx.filter_jit
     def _assemble_dynamics_terms(

@@ -5,6 +5,13 @@ from __future__ import annotations
 
 import warp as wp
 
+from soromox.systems._execution.warp.common.storage import (
+    _matrix_value,
+    _vector_value,
+    _write_matrix_value,
+    _write_vector_value,
+)
+
 wp.set_module_options({"enable_backward": False})
 
 SPATIAL_DIM = 3
@@ -208,6 +215,8 @@ def _planar_operators(
     )
 
 
+
+
 @wp.kernel(enable_backward=False)
 def planar_local_operators_kernel(
     q: wp.array2d(dtype=wp.float64),
@@ -311,63 +320,6 @@ def _planar_local_operators(
 
 planar_local_operators = wp.jax_callable(_planar_local_operators, num_outputs=4)
 
-
-@wp.func
-def _matrix_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
-    use_first: bool,
-    base_row: int,
-    row: int,
-    column: int,
-) -> wp.float64:
-    if use_first:
-        return first[base_row + row, column]
-    return second[base_row + row, column]
-
-
-@wp.func
-def _vector_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
-    use_first: bool,
-    base_row: int,
-    row: int,
-) -> wp.float64:
-    if use_first:
-        return first[base_row + row, 0]
-    return second[base_row + row, 0]
-
-
-@wp.func
-def _write_matrix_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
-    use_first: bool,
-    base_row: int,
-    row: int,
-    column: int,
-    value: wp.float64,
-):
-    if use_first:
-        first[base_row + row, column] = value
-    else:
-        second[base_row + row, column] = value
-
-
-@wp.func
-def _write_vector_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
-    use_first: bool,
-    base_row: int,
-    row: int,
-    value: wp.float64,
-):
-    if use_first:
-        first[base_row + row, 0] = value
-    else:
-        second[base_row + row, 0] = value
 
 
 @wp.kernel(enable_backward=False)

@@ -12,18 +12,19 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
-from soromox.systems._dynamics import ExecutionBackend
+from soromox.systems._execution import (
+    DEFAULT_PCS_BLOCK_DIM,
+    PCS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+    validate_block_dim,
+)
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     CrossSectionParams,
     IsotropicMaterialParams,
     LinkSpec,
-)
-from soromox.systems.pcs._dynamics import (
-    DEFAULT_PCS_WARP_BLOCK_DIM,
-    dispatch_terms,
-    validate_warp_block_dim,
 )
 from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
@@ -304,7 +305,7 @@ class PCS(SoftRobot):
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
         backend: ExecutionBackend = "auto",
-        warp_block_dim: int = DEFAULT_PCS_WARP_BLOCK_DIM,
+        warp_block_dim: int = DEFAULT_PCS_BLOCK_DIM,
         **kwargs: Any,
     ):
         """Initialize a spatial PCS model from typed parameters.
@@ -342,7 +343,7 @@ class PCS(SoftRobot):
             structure = PCSStructure()
         self.params = params
         self.backend = backend
-        self.warp_block_dim = validate_warp_block_dim(warp_block_dim)
+        self.warp_block_dim = validate_block_dim(warp_block_dim)
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -3364,11 +3365,12 @@ class PCS(SoftRobot):
         rather than mapping independent batch-one launches.
         """
 
-        return dispatch_terms(
+        return dispatch_dynamics_terms(
             self,
             q,
             qd,
             backend=backend,
+            capabilities=PCS_DYNAMICS,
             warp_supported=type(self) is PCS,
         )
 
