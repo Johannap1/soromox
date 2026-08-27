@@ -37,6 +37,16 @@ def assert_backend_equivalence(
     for actual, expected in zip(actual_scalar, expected_batch, strict=True):
         assert_allclose(actual, expected[0], rtol=2e-8, atol=2e-10)
 
+    def terms_objective(model: Any, q_value: jnp.ndarray) -> jnp.ndarray:
+        """Reduce public dynamics terms to a scalar differentiation target."""
+
+        inertia, coriolis_qd, gravity = model.dynamics_terms(q_value, qd[0])
+        return jnp.sum(inertia) + 0.25 * jnp.sum(coriolis_qd) - 0.5 * jnp.sum(gravity)
+
+    expected_gradient = jax.grad(lambda q_: terms_objective(jax_model, q_))(q[0])
+    actual_gradient = jax.grad(lambda q_: terms_objective(warp_model, q_))(q[0])
+    assert_allclose(actual_gradient, expected_gradient, rtol=3e-8, atol=3e-10)
+
     t = jnp.asarray(0.125, dtype=jnp.float64)
     u = jnp.zeros((jax_model.num_actuators,), dtype=jnp.float64)
     tau_ext = jnp.linspace(-0.01, 0.015, jax_model.num_dofs, dtype=jnp.float64)
