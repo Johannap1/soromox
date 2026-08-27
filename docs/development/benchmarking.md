@@ -54,6 +54,9 @@ python tools/benchmarks/benchmark_system_methods.py \
   CPU frequency scaling and runtime worker threads before collecting samples.
 - `--execution-repeats`: number of synchronized calls whose median is reported
   after the cold run and optional warmup.
+- `--backend`: dynamics execution policy (`auto`, `jax`, or `warp`) for GVS,
+  PCS, and PlanarPCS. Use separate processes when comparing backends so their
+  compilation and allocator state remain isolated.
 - `--json` / `--csv`: export raw results for regression tracking.
 - `--plot` / `--show-plot`: render Matplotlib summaries (compile vs. exec time).
 
@@ -74,7 +77,7 @@ count for each tracked method.
 
 On machines with heterogeneous CPU cores, process migration between performance
 and efficiency cores can distort sub-millisecond measurements. Select the CPU
-backend with `--device cpu` and, where the operating system supports it, pin the
+device with `--device cpu` and, where the operating system supports it, pin the
 whole benchmark process to a known core. On Linux, first inspect the topology and
 maximum frequencies:
 
@@ -95,9 +98,11 @@ taskset -c 0 python tools/benchmarks/benchmark_system_methods.py \
 ```
 
 Affinity applies to the Python process and its JAX worker threads. JSON and CSV
-rows record the resolved `backend`, compact `cpu_affinity`, warmup duration, and
-sample count so the execution context remains auditable. When comparing
-revisions, use the same affinity and warmup settings for every run.
+rows record `device`, the requested and resolved execution backends, whether
+backend selection applies to the measured method, compact `cpu_affinity`,
+warmup duration, and sample count so the execution context remains auditable.
+When comparing revisions, use the same affinity and warmup settings for every
+run.
 
 For `articulated_soft_robot`, the method benchmark includes both the default
 articulated-body forward dynamics path and a dense Jacobian-energy forward

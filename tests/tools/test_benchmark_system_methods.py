@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 
 import jax.numpy as jnp
 import pytest
@@ -35,6 +36,42 @@ def test_active_cpu_affinity_is_compact(monkeypatch: pytest.MonkeyPatch) -> None
 def test_invalid_timing_options_are_rejected(option: str, value: str) -> None:
     with pytest.raises(SystemExit):
         benchmark.parse_args([option, value])
+
+
+@pytest.mark.parametrize("backend", ["auto", "jax", "warp"])
+def test_backend_option_is_parsed(backend: str) -> None:
+    args = benchmark.parse_args(["--backend", backend])
+
+    assert args.backend == backend
+
+
+def test_invalid_backend_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(["--backend", "cuda"])
+
+
+def test_backend_metadata_distinguishes_supported_methods() -> None:
+    registry = benchmark._build_system_registry()
+
+    assert benchmark._execution_backend_applies(registry["gvs"], "dynamics_terms")
+    assert benchmark._execution_backend_applies(registry["pcs"], "forward_dynamics")
+    assert benchmark._execution_backend_applies(registry["planar_pcs"], "rollout_to")
+    assert not benchmark._execution_backend_applies(registry["gvs"], "inertia_matrix")
+    assert not benchmark._execution_backend_applies(
+        registry["pendulum"], "forward_dynamics"
+    )
+
+
+def test_csv_records_execution_backend_metadata(tmp_path) -> None:
+    path = tmp_path / "results.csv"
+    benchmark._write_csv([defaultdict(str)], path)
+
+    header = path.read_text(encoding="utf-8").splitlines()[0].split(",")
+
+    assert "device" in header
+    assert "backend" in header
+    assert "resolved_backend" in header
+    assert "backend_applies" in header
 
 
 def test_measure_jitted_call_supports_warmup_duration() -> None:

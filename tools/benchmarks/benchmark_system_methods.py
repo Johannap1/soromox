@@ -55,6 +55,7 @@ import matplotlib.pyplot as plt
 
 from soromox.systems import SystemState
 from tools.benchmarks._benchmark_common import (
+    add_backend_arg,
     add_gauss_point_args,
     add_integration_args,
     add_system_selection_args,
@@ -65,11 +66,13 @@ from tools.benchmarks._benchmark_common import (
     get_system_registry,
     normalize_gauss_point_values,
     normalize_system_names,
+    resolve_execution_backend,
     system_gauss_point_metadata,
 )
 
 Array = jax.Array
 Tree = Any
+_BACKEND_AWARE_METHODS = frozenset({"dynamics_terms", "forward_dynamics", "rollout_to"})
 
 
 def _active_cpu_affinity() -> str | None:
@@ -122,17 +125,33 @@ class BenchmarkCase:
 class SystemBenchmark:
     """Groups benchmark cases and helpers for one system type."""
 
-    factory: Callable[[int], Any]
+    factory: Callable[..., Any]
     size_label: str
     build_context: Callable[[Any], MutableMapping[str, Array]]
     cases: Sequence[BenchmarkCase]
-    gauss_factory: Callable[[int, int], Any] | None = None
+    gauss_factory: Callable[..., Any] | None = None
     default_gauss_points: int | None = None
     min_gauss_points: int = 1
+    supports_backend: bool = False
 
     @property
     def supports_gauss_points(self) -> bool:
         return self.gauss_factory is not None
+
+
+def _execution_backend_applies(config: SystemBenchmark, method: str) -> bool:
+    """Return whether backend selection affects a benchmarked method.
+
+    Args:
+        config: System benchmark configuration.
+        method: Public system-method name recorded by the benchmark.
+
+    Returns:
+        ``True`` when the system supports alternate execution backends and the
+        method dispatches dynamics through that backend.
+    """
+
+    return config.supports_backend and method in _BACKEND_AWARE_METHODS
 
 
 def _dense_forward_dynamics(
@@ -580,12 +599,14 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             size_label=shared["pendulum"].size_label,
             build_context=shared["pendulum"].build_context,
             cases=pendulum_cases,
+            supports_backend=shared["pendulum"].supports_backend,
         ),
         "articulated_soft_robot": SystemBenchmark(
             factory=shared["articulated_soft_robot"].factory,
             size_label=shared["articulated_soft_robot"].size_label,
             build_context=shared["articulated_soft_robot"].build_context,
             cases=articulated_cases,
+            supports_backend=shared["articulated_soft_robot"].supports_backend,
         ),
         "planar_pcs": SystemBenchmark(
             factory=shared["planar_pcs"].factory,
@@ -595,6 +616,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             gauss_factory=shared["planar_pcs"].gauss_factory,
             default_gauss_points=shared["planar_pcs"].default_gauss_points,
             min_gauss_points=shared["planar_pcs"].min_gauss_points,
+            supports_backend=shared["planar_pcs"].supports_backend,
         ),
         "pcs": SystemBenchmark(
             factory=shared["pcs"].factory,
@@ -604,6 +626,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             gauss_factory=shared["pcs"].gauss_factory,
             default_gauss_points=shared["pcs"].default_gauss_points,
             min_gauss_points=shared["pcs"].min_gauss_points,
+            supports_backend=shared["pcs"].supports_backend,
         ),
         "gvs": SystemBenchmark(
             factory=shared["gvs"].factory,
@@ -613,6 +636,7 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             gauss_factory=shared["gvs"].gauss_factory,
             default_gauss_points=shared["gvs"].default_gauss_points,
             min_gauss_points=shared["gvs"].min_gauss_points,
+            supports_backend=shared["gvs"].supports_backend,
         ),
     }
 
@@ -716,7 +740,10 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "size_value",
         "gauss_points",
         "integration_points",
+        "device",
         "backend",
+        "resolved_backend",
+        "backend_applies",
         "timestamp_utc",
         "git_revision",
         "git_dirty",
@@ -751,6 +778,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         description="Benchmark Soromox system implementations"
     )
     add_system_selection_args(parser, registry, default_segment_counts=[1, 2, 4, 8])
+    add_backend_arg(parser)
     add_gauss_point_args(parser)
     add_integration_args(parser)
     # Collect all unique method names across all systems
@@ -834,12 +862,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             "The --device choice must be present on the process command line so it "
             "can be applied before JAX is imported."
         )
-    active_backend = jax.default_backend()
-    if args.device == "cpu" and active_backend != "cpu":
-        raise RuntimeError(f"Requested CPU but JAX selected {active_backend!r}.")
-    if args.device == "gpu" and active_backend == "cpu":
+    active_device = jax.default_backend()
+    if args.device == "cpu" and active_device != "cpu":
+        raise RuntimeError(f"Requested CPU but JAX selected {active_device!r}.")
+    if args.device == "gpu" and active_device == "cpu":
         raise RuntimeError("Requested GPU but JAX selected the CPU backend.")
-    print(f"JAX backend: {active_backend}")
+    print(f"JAX device: {active_device}")
     environment_metadata = benchmark_environment_metadata(jax.devices()[0])
     active_cpu_affinity = _active_cpu_affinity()
     if active_cpu_affinity is not None:
@@ -874,7 +902,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         for size in args.segment_counts:
             for requested_gauss_points in gauss_values:
                 system = build_system_with_gauss_points(
-                    system_cfg, size, requested_gauss_points
+                    system_cfg,
+                    size,
+                    requested_gauss_points,
+                    backend=args.backend,
+                )
+                resolved_backend = resolve_execution_backend(
+                    system, platform=active_device
                 )
                 gauss_points, integration_points = system_gauss_point_metadata(system)
                 gauss_note = ""
@@ -886,7 +920,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 print(
                     f"\n=== Benchmarking {system_name} with "
-                    f"{system_cfg.size_label}={size}{gauss_note} ==="
+                    f"{system_cfg.size_label}={size}{gauss_note}, "
+                    f"backend={resolved_backend} ==="
                 )
                 ctx = system_cfg.build_context(system)
                 for case in cases_to_run:
@@ -930,7 +965,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "size_value": size,
                             "gauss_points": gauss_points,
                             "integration_points": integration_points,
-                            "backend": active_backend,
+                            "device": active_device,
+                            "backend": args.backend,
+                            "resolved_backend": resolved_backend,
+                            "backend_applies": _execution_backend_applies(
+                                system_cfg, case.name
+                            ),
                             **environment_metadata,
                             "cpu_affinity": active_cpu_affinity,
                             "jit_compile_time_s": compile_time,
