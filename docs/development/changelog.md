@@ -75,6 +75,10 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Documentation
 
+- Added an [Execution Backends](../user-guide/execution-backends.md) guide, a
+  backend-selection example in the Quick Start, and API reference pages for
+  execution configuration and the reusable GVS and PCS Warp interfaces.
+
 ### Contributors
 
 ## [0.3.0] - 2026-08-25
