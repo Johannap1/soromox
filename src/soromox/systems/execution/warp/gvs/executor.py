@@ -5,12 +5,9 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import Array
 
+from soromox.systems.execution.warp.common.joint_terms import _evaluate_joint_terms
 from soromox.systems.execution.warp.gvs.cell import scalable_cell_terms
 from soromox.systems.execution.warp.gvs.chain import scalable_persistent_chain
-from soromox.systems.execution.warp.gvs.joint import scalable_joint_terms
-from soromox.systems.execution.warp.gvs.joint_cooperative import (
-    cooperative_joint_terms,
-)
 from soromox.systems.execution.warp.gvs.operands import (
     GVSOperands,
     GVSPipelineShapes,
@@ -35,59 +32,6 @@ def _gather_local(values: Array, local_to_global: Array) -> Array:
     safe_indices = jnp.maximum(local_to_global, 0)
     gathered = jnp.take(values, safe_indices, axis=1)
     return gathered * (local_to_global >= 0)[None, :, :]
-
-
-def _joint_terms(
-    operands: GVSOperands, q: Array, qd: Array, *, cooperative: bool
-) -> tuple[Array, Array, Array, Array, Array]:
-    """Evaluate all general-joint Lie terms in one runtime-shaped launch.
-
-    Args:
-        operands: Static dimensions, joint bases, references, and coordinate
-            maps prepared from the model.
-        q: Batched active generalized coordinates.
-        qd: Batched active generalized velocities.
-        cooperative: Whether each joint work item uses a cooperative CUDA block
-            rather than the one-lane CPU-compatible kernel.
-
-    Returns:
-        Joint adjoints, adjoint derivatives, active-coordinate tangents,
-        tangent-derivative actions, and joint velocities, each reshaped by
-        environment and segment.
-    """
-
-    batch_size = q.shape[0]
-    num_segments = operands.num_segments
-    max_dof = operands.max_dof
-    num_dofs = operands.num_dofs
-    output_dims = GVSPipelineShapes.from_operands(
-        operands, batch_size=batch_size
-    ).joint_outputs()
-    joint_terms = cooperative_joint_terms if cooperative else scalable_joint_terms
-    outputs = joint_terms(
-        q,
-        qd,
-        operands.joint_basis.reshape(num_segments * SPATIAL_DIM, max_dof),
-        operands.joint_reference,
-        operands.joint_local_to_global,
-        output_dims=output_dims,
-    )
-    leading = (batch_size, num_segments, SPATIAL_DIM)
-    tangent_local = outputs[2].reshape(*leading, max_dof)
-    local_columns = jnp.maximum(operands.joint_global_to_local, 0)
-    local_columns = jnp.broadcast_to(
-        local_columns[None, :, None, :],
-        (batch_size, num_segments, SPATIAL_DIM, num_dofs),
-    )
-    tangent_active = jnp.take_along_axis(tangent_local, local_columns, axis=-1)
-    tangent_active *= (operands.joint_global_to_local >= 0)[None, :, None, :]
-    return (
-        outputs[0].reshape(*leading, SPATIAL_DIM),
-        outputs[1].reshape(*leading, SPATIAL_DIM),
-        tangent_active,
-        outputs[3].reshape(*leading),
-        outputs[4].reshape(*leading),
-    )
 
 
 def _cell_terms(
@@ -166,7 +110,15 @@ def execute_dynamics_terms(
         joint_tangent,
         joint_tangent_dot_qd,
         joint_velocity,
-    ) = _joint_terms(operands, q, qd, cooperative=operands.block_dim > 1)
+    ) = _evaluate_joint_terms(
+        q,
+        qd,
+        operands.joint_basis,
+        operands.joint_reference,
+        operands.joint_local_to_global,
+        operands.joint_global_to_local,
+        cooperative=operands.block_dim > 1,
+    )
     q_link = _gather_local(q, operands.link_local_to_global)
     qd_link = _gather_local(qd, operands.link_local_to_global)
     (

@@ -24,6 +24,7 @@ class _TransformProbe(eqx.Module):
     scale: Array
     backend: ExecutionBackend = eqx.field(static=True, default="warp")
     num_dofs: int = eqx.field(static=True, default=3)
+    num_actuators: int = eqx.field(static=True, default=0)
 
     def _assemble_dynamics_terms(self, q: Array, qd: Array) -> DynamicsTerms:
         """Return nonlinear terms so both tangent paths are observable."""
@@ -33,20 +34,39 @@ class _TransformProbe(eqx.Module):
         gravity = jnp.sin(q) + self.scale
         return inertia, coriolis_qd, gravity
 
-    def _evaluate_forward_dynamics(
+    def dynamics_terms(
         self,
-        t: Array,
-        y: Array,
-        actuation_args: tuple | None,
+        q: Array,
+        qd: Array,
         *,
-        backend: ExecutionBackend | None,
-    ) -> Array:
+        backend: ExecutionBackend | None = None,
+    ) -> DynamicsTerms:
         """Expose which backend the outer differentiation boundary selected."""
 
-        del t, actuation_args
+        del qd
         factor = self.scale if backend == "jax" else 10.0 * self.scale
-        q, qd = jnp.split(y, 2)
-        return jnp.concatenate((qd, factor * jnp.sin(q) - qd**2))
+        return jnp.eye(self.num_dofs), factor * jnp.sin(q), jnp.zeros_like(q)
+
+    def elastic_force(self, q: Array) -> Array:
+        """Return zero elastic force for the execution probe."""
+
+        return jnp.zeros_like(q)
+
+    def damping_matrix(self, q: Array) -> Array:
+        """Return zero damping for the execution probe."""
+
+        return jnp.zeros((q.size, q.size), dtype=q.dtype)
+
+    def actuation_force(self, q: Array, u: Array, *, qd: Array) -> Array:
+        """Return zero actuation for the execution probe."""
+
+        del u, qd
+        return jnp.zeros_like(q)
+
+    def _solve_inertia(self, inertia: Array, rhs: Array) -> Array:
+        """Solve the probe's generalized inertia system."""
+
+        return jnp.linalg.solve(inertia, rhs)
 
 
 def _assert_terms_close(actual: DynamicsTerms, expected: DynamicsTerms) -> None:
@@ -102,17 +122,19 @@ def test_forward_dynamics_boundary_routes_derivatives_to_jax() -> None:
     y = jnp.linspace(-0.3, 0.4, 2 * model.num_dofs, dtype=jnp.float64)
     tangent = jnp.linspace(0.5, -0.2, y.size, dtype=jnp.float64)
 
-    primal = evaluate_forward_dynamics(model, time, y, None)
-    expected_primal = model._evaluate_forward_dynamics(time, y, None, backend=None)
+    primal = evaluate_forward_dynamics(model, time, y, None, None)
+    expected_primal = jnp.concatenate(
+        (y[model.num_dofs :], -10.0 * model.scale * jnp.sin(y[: model.num_dofs]))
+    )
     assert_allclose(primal, expected_primal, rtol=0.0, atol=0.0)
 
     expected_jvp = jax.jvp(
-        lambda y_: model._evaluate_forward_dynamics(time, y_, None, backend="jax"),
+        lambda y_: evaluate_forward_dynamics(model, time, y_, None, "jax"),
         (y,),
         (tangent,),
     )
     actual_jvp = jax.jvp(
-        lambda y_: evaluate_forward_dynamics(model, time, y_, None),
+        lambda y_: evaluate_forward_dynamics(model, time, y_, None, None),
         (y,),
         (tangent,),
     )
@@ -120,11 +142,9 @@ def test_forward_dynamics_boundary_routes_derivatives_to_jax() -> None:
         assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
 
     expected_gradient = jax.grad(
-        lambda y_: jnp.sum(
-            model._evaluate_forward_dynamics(time, y_, None, backend="jax")
-        )
+        lambda y_: jnp.sum(evaluate_forward_dynamics(model, time, y_, None, "jax"))
     )(y)
     actual_gradient = jax.grad(
-        lambda y_: jnp.sum(evaluate_forward_dynamics(model, time, y_, None))
+        lambda y_: jnp.sum(evaluate_forward_dynamics(model, time, y_, None, None))
     )(y)
     assert_allclose(actual_gradient, expected_gradient, rtol=1e-12, atol=1e-12)

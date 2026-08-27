@@ -70,6 +70,10 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    """Include lazily exported Warp symbols in interactive discovery."""
+    """Include lazily exported Warp symbols in interactive discovery.
+
+    Returns:
+        Sorted module globals and public lazy exports.
+    """
 
     return sorted((*globals(), *__all__))

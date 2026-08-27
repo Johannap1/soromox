@@ -29,7 +29,18 @@ class DynamicsModel(Protocol):
     backend: ExecutionBackend
     num_dofs: int
 
-    def _assemble_dynamics_terms(self, q: Array, qd: Array) -> DynamicsTerms: ...
+    def _assemble_dynamics_terms(self, q: Array, qd: Array) -> DynamicsTerms:
+        """Assemble differentiable dynamics terms with the JAX implementation.
+
+        Args:
+            q: Generalized coordinates for one environment.
+            qd: Generalized velocities for the same environment.
+
+        Returns:
+            Inertia, Coriolis/centrifugal, and gravity terms ``(B, Cqd, G)``.
+        """
+
+        ...
 
 
 class ForwardDynamicsModel(DynamicsModel, Protocol):
@@ -46,14 +57,78 @@ class ForwardDynamicsModel(DynamicsModel, Protocol):
     from the execution layer back to the system classes.
     """
 
-    def _evaluate_forward_dynamics(
+    num_actuators: int
+
+    def dynamics_terms(
         self,
-        t: Array,
-        y: Array,
-        actuation_args: tuple | None,
+        q: Array,
+        qd: Array,
         *,
-        backend: ExecutionBackend | None,
-    ) -> Array: ...
+        backend: ExecutionBackend | None = None,
+    ) -> DynamicsTerms:
+        """Assemble dynamics terms using the selected execution backend.
+
+        Args:
+            q: Generalized coordinates for one environment.
+            qd: Generalized velocities for the same environment.
+            backend: Optional per-call backend override.
+
+        Returns:
+            Inertia, Coriolis/centrifugal, and gravity terms ``(B, Cqd, G)``.
+        """
+
+        ...
+
+    def elastic_force(self, q: Array) -> Array:
+        """Return the generalized elastic force for ``q``.
+
+        Args:
+            q: Generalized coordinates for one environment.
+
+        Returns:
+            Generalized elastic force vector.
+        """
+
+        ...
+
+    def damping_matrix(self, q: Array) -> Array:
+        """Return the generalized damping matrix for ``q``.
+
+        Args:
+            q: Generalized coordinates for one environment.
+
+        Returns:
+            Generalized damping matrix.
+        """
+
+        ...
+
+    def actuation_force(self, q: Array, u: Array, *, qd: Array) -> Array:
+        """Return the generalized actuator force.
+
+        Args:
+            q: Generalized coordinates for one environment.
+            u: Actuator inputs.
+            qd: Generalized velocities for the same environment.
+
+        Returns:
+            Generalized actuator force vector.
+        """
+
+        ...
+
+    def _solve_inertia(self, inertia: Array, rhs: Array) -> Array:
+        """Solve the generalized inertia system.
+
+        Args:
+            inertia: Generalized inertia matrix.
+            rhs: Generalized force right-hand side.
+
+        Returns:
+            Generalized acceleration vector.
+        """
+
+        ...
 
 
 class DynamicsEvaluator(Protocol):
@@ -65,7 +140,19 @@ class DynamicsEvaluator(Protocol):
     the model's differentiable JAX assembly.
     """
 
-    def __call__(self, model: DynamicsModel, q: Array, qd: Array) -> DynamicsTerms: ...
+    def __call__(self, model: DynamicsModel, q: Array, qd: Array) -> DynamicsTerms:
+        """Evaluate dynamics terms for one environment.
+
+        Args:
+            model: System model satisfying :class:`DynamicsModel`.
+            q: Generalized coordinates for one environment.
+            qd: Generalized velocities for the same environment.
+
+        Returns:
+            Inertia, Coriolis/centrifugal, and gravity terms ``(B, Cqd, G)``.
+        """
+
+        ...
 
 
 @dataclass(frozen=True)

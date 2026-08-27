@@ -83,6 +83,13 @@ nav:
           - GVS Systems:
             - Overview: api/systems/gvs/index.md
             - GVS: api/systems/gvs/gvs.md
+      - Execution Backends:
+          - Overview: api/execution/index.md
+          - Configuration: api/execution/configuration.md
+          - Warp:
+            - Overview: api/execution/warp/index.md
+            - GVS API: api/execution/warp/gvs.md
+            - PCS API: api/execution/warp/pcs.md
       - Rendering:
           - Overview: api/rendering/index.md
           - Renderer API: api/rendering/renderers.md

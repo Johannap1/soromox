@@ -19,7 +19,7 @@ from soromox.systems.components import (
     shear_modulus_from_poisson_ratio,
 )
 from soromox.systems.dynamical_system import DynamicalSystem
-from soromox.systems.execution import ExecutionBackend
+from soromox.systems.execution import ExecutionBackend, PCSBackendParams
 from soromox.systems.gvs.params import GVSParams
 from soromox.systems.gvs.structures import (
     GVSJointStructure,
@@ -70,6 +70,8 @@ __all__ = [
     "DEFAULT_GRAVITY_MAGNITUDE",
     "DynamicalSystem",
     "EnvironmentState",
+    "ExecutionBackend",
+    "PCSBackendParams",
     "SoftRobot",
     "CrossSectionGeometry",
     "CrossSectionParams",
@@ -94,7 +96,6 @@ __all__ = [
     "McKibbenActuatedUMArm",
     "McKibbenActuatedUMArmParams",
     # gvs systems
-    "ExecutionBackend",
     "GVS",
     "GVSParams",
     "GVSStructure",

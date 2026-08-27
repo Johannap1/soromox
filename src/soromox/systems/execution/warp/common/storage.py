@@ -18,6 +18,19 @@ def _matrix_value(
     row: int,
     column: int,
 ) -> wp.float64:
+    """Read one entry from the active matrix buffer.
+
+    Args:
+        first: First flattened matrix buffer.
+        second: Second flattened matrix buffer.
+        use_first: Whether ``first`` is currently active.
+        base_row: First flattened row of the logical matrix.
+        row: Logical matrix row.
+        column: Logical matrix column.
+
+    Returns:
+        The selected matrix entry.
+    """
     if use_first:
         return first[base_row + row, column]
     return second[base_row + row, column]
@@ -31,6 +44,18 @@ def _vector_value(
     base_row: int,
     row: int,
 ) -> wp.float64:
+    """Read one entry from the active column-vector buffer.
+
+    Args:
+        first: First flattened column-vector buffer.
+        second: Second flattened column-vector buffer.
+        use_first: Whether ``first`` is currently active.
+        base_row: First flattened row of the logical vector.
+        row: Logical vector row.
+
+    Returns:
+        The selected vector entry.
+    """
     if use_first:
         return first[base_row + row, 0]
     return second[base_row + row, 0]
@@ -46,6 +71,20 @@ def _write_matrix_value(
     column: int,
     value: wp.float64,
 ):
+    """Write one entry to the active matrix buffer.
+
+    Args:
+        first: First flattened matrix buffer.
+        second: Second flattened matrix buffer.
+        use_first: Whether ``first`` is currently active.
+        base_row: First flattened row of the logical matrix.
+        row: Logical matrix row.
+        column: Logical matrix column.
+        value: Value to store.
+
+    Returns:
+        None. The selected buffer is updated in place.
+    """
     if use_first:
         first[base_row + row, column] = value
     else:
@@ -61,6 +100,19 @@ def _write_vector_value(
     row: int,
     value: wp.float64,
 ):
+    """Write one entry to the active column-vector buffer.
+
+    Args:
+        first: First flattened column-vector buffer.
+        second: Second flattened column-vector buffer.
+        use_first: Whether ``first`` is currently active.
+        base_row: First flattened row of the logical vector.
+        row: Logical vector row.
+        value: Value to store.
+
+    Returns:
+        None. The selected buffer is updated in place.
+    """
     if use_first:
         first[base_row + row, 0] = value
     else:

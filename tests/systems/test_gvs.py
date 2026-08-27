@@ -34,21 +34,6 @@ ATOL = Tolerance.atol()
 NUM_RANDOM_SAMPLES = 5
 
 
-class _DynamicsDispatchProbe(eqx.Module):
-    """Small differentiable model used to test transform routing in isolation."""
-
-    scale: Array
-    num_dofs: int = eqx.field(static=True)
-
-    def _assemble_dynamics_terms(
-        self, q: Array, qd: Array
-    ) -> tuple[Array, Array, Array]:
-        inertia = self.scale * jnp.eye(self.num_dofs, dtype=q.dtype) + jnp.outer(q, q)
-        coriolis_qd = self.scale * q * qd
-        gravity = q + self.scale
-        return inertia, coriolis_qd, gravity
-
-
 def _updated_gvs_params(robot: GVS):
     params = robot.params
     return params.replace(
@@ -1856,164 +1841,7 @@ def test_dynamics_terms_accepts_batched_inputs() -> None:
         assert_allclose(actual_term, expected_term, rtol=RTOL, atol=ATOL)
 
 
-def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from soromox.systems.execution.warp import loader
-
-    model = _DynamicsDispatchProbe(
-        scale=jnp.asarray(2.0, dtype=jnp.float64),
-        num_dofs=3,
-    )
-    q = jnp.asarray([0.1, -0.2, 0.3], dtype=jnp.float64)
-    qd = jnp.asarray([-0.4, 0.5, 0.6], dtype=jnp.float64)
-
-    def fake_batch(model, q, qd):
-        del qd
-        batch_size = q.shape[0]
-        value = jnp.asarray(batch_size, dtype=q.dtype)
-        return (
-            jnp.full((batch_size, model.num_dofs, model.num_dofs), value),
-            jnp.full((batch_size, model.num_dofs), value + 1.0),
-            jnp.full((batch_size, model.num_dofs), value + 2.0),
-        )
-
-    monkeypatch.setattr(loader, "_execute_gvs_batch", fake_batch)
-    evaluate_terms = loader.get_dynamics_evaluator("gvs")
-
-    primal = evaluate_terms(model, q, qd)
-    assert_allclose(primal[0], jnp.ones((3, 3)), rtol=0.0, atol=0.0)
-
-    q_batch = jnp.stack((q, 2.0 * q, 3.0 * q))
-    qd_batch = jnp.stack((qd, 2.0 * qd, 3.0 * qd))
-    batched = jax.vmap(evaluate_terms, in_axes=(None, 0, 0))(
-        model, q_batch, qd_batch
-    )
-    assert_allclose(batched[0], jnp.full((3, 3, 3), 3.0), rtol=0.0, atol=0.0)
-
-    tangent = jnp.asarray([0.7, -0.8, 0.9], dtype=jnp.float64)
-    expected_jvp = jax.jvp(
-        lambda q_: model._assemble_dynamics_terms(q_, qd),
-        (q,),
-        (tangent,),
-    )
-    actual_jvp = jax.jvp(
-        lambda q_: evaluate_terms(model, q_, qd),
-        (q,),
-        (tangent,),
-    )
-    for actual_tree, expected_tree in zip(actual_jvp, expected_jvp, strict=True):
-        for actual, expected in zip(actual_tree, expected_tree, strict=True):
-            assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
-
-    def objective(evaluate, q):
-        return sum(jnp.sum(term) for term in evaluate(model, q, qd))
-
-    expected_gradient = jax.grad(
-        lambda q_: objective(
-            lambda model_, q__, qd_: model_._assemble_dynamics_terms(q__, qd_),
-            q_,
-        )
-    )(q)
-    actual_gradient = jax.grad(lambda q_: objective(evaluate_terms, q_))(q)
-    assert_allclose(actual_gradient, expected_gradient, rtol=RTOL, atol=ATOL)
-
-    def batched_objective(evaluate, q):
-        terms = jax.vmap(evaluate, in_axes=(None, 0, 0))(model, q, qd_batch)
-        return sum(jnp.sum(term) for term in terms)
-
-    expected_batched_gradient = jax.grad(
-        lambda q_: batched_objective(
-            lambda model_, q__, qd_: model_._assemble_dynamics_terms(q__, qd_),
-            q_,
-        )
-    )(q_batch)
-    actual_batched_gradient = jax.grad(
-        lambda q_: batched_objective(evaluate_terms, q_)
-    )(q_batch)
-    assert_allclose(
-        actual_batched_gradient,
-        expected_batched_gradient,
-        rtol=RTOL,
-        atol=ATOL,
-    )
-
-
-def test_configured_warp_backend_routes_autodiff_to_jax(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from soromox.systems.execution.warp import loader
-
-    reference = build_constant_strain_gvs(
-        num_segments=1,
-        selector_per_segment=(True, True, False, False, False, False),
-    )
-    robot = GVS(
-        params=reference.params,
-        structure=reference.structure,
-        backend="warp",
-    )
-    q = jnp.asarray([0.01, -0.02], dtype=jnp.float64)
-    qd = jnp.asarray([0.03, -0.04], dtype=jnp.float64)
-    tangent = jnp.asarray([0.2, -0.3], dtype=jnp.float64)
-
-    def fail_if_warp_is_staged(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("autodiff staged the forward-only Warp backend")
-
-    monkeypatch.setattr(
-        loader,
-        "_execute_gvs_batch",
-        fail_if_warp_is_staged,
-    )
-
-    expected_jvp = jax.jvp(
-        lambda q_: reference.dynamics_terms(q_, qd, backend="jax"),
-        (q,),
-        (tangent,),
-    )
-    actual_jvp = jax.jvp(lambda q_: robot.dynamics_terms(q_, qd), (q,), (tangent,))
-    for actual_tree, expected_tree in zip(actual_jvp, expected_jvp, strict=True):
-        for actual, expected in zip(actual_tree, expected_tree, strict=True):
-            assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
-
-    def objective(model, q):
-        return sum(jnp.sum(term) for term in model.dynamics_terms(q, qd))
-
-    expected_gradient = jax.grad(lambda q_: objective(reference, q_))(q)
-    actual_gradient = jax.grad(lambda q_: objective(robot, q_))(q)
-    assert_allclose(actual_gradient, expected_gradient, rtol=RTOL, atol=ATOL)
-
-    y = jnp.concatenate((q, qd))
-    y_tangent = jnp.concatenate((tangent, -tangent))
-    expected_forward_jvp = jax.jvp(
-        lambda y_: reference.forward_dynamics(jnp.asarray(0.0), y_),
-        (y,),
-        (y_tangent,),
-    )
-    actual_forward_jvp = jax.jvp(
-        lambda y_: robot.forward_dynamics(jnp.asarray(0.0), y_),
-        (y,),
-        (y_tangent,),
-    )
-    for actual, expected in zip(actual_forward_jvp, expected_forward_jvp, strict=True):
-        assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
-
-    expected_forward_gradient = jax.grad(
-        lambda y_: jnp.sum(reference.forward_dynamics(jnp.asarray(0.0), y_))
-    )(y)
-    actual_forward_gradient = jax.grad(
-        lambda y_: jnp.sum(robot.forward_dynamics(jnp.asarray(0.0), y_))
-    )(y)
-    assert_allclose(
-        actual_forward_gradient,
-        expected_forward_gradient,
-        rtol=RTOL,
-        atol=ATOL,
-    )
-
-
-def test_warp_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
+def test_execution_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
     robot = build_varied_basis_gvs(num_segments=3)
     expected_prefixes = jnp.cumsum(jnp.sum(robot.dofs_per_segment, axis=1))
 
@@ -2035,7 +1863,7 @@ def test_warp_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
                     assert global_column == -1
 
 
-def test_warp_cached_operands_reconstruct_dense_model_data() -> None:
+def test_cached_dynamics_operands_reconstruct_dense_model_data() -> None:
     robots = (
         build_varied_basis_gvs(num_segments=3),
         build_constant_strain_gvs(
@@ -2109,60 +1937,6 @@ def test_warp_cached_operands_reconstruct_dense_model_data() -> None:
             rtol=RTOL,
             atol=ATOL,
         )
-
-
-def test_dynamics_terms_batched_warp_matches_heterogeneous_jax(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "warp-cache"))
-    pytest.importorskip("warp")
-    robot = build_varied_basis_gvs(num_segments=3)
-    q = jnp.stack(
-        (
-            jnp.linspace(-0.02, 0.03, robot.num_dofs, dtype=jnp.float64),
-            jnp.linspace(0.01, -0.015, robot.num_dofs, dtype=jnp.float64),
-        )
-    )
-    qd = 0.5 * q
-
-    expected = robot.dynamics_terms(q, qd, backend="jax")
-    actual = robot.dynamics_terms(q, qd, backend="warp")
-    automatic = robot.dynamics_terms(q, qd, backend="auto")
-    mapped = jax.vmap(
-        lambda q_i, qd_i: robot.dynamics_terms(q_i, qd_i, backend="warp")
-    )(q, qd)
-    scalar = robot.dynamics_terms(q[0], qd[0], backend="warp")
-
-    for result in (actual, automatic, mapped):
-        for actual_term, expected_term in zip(result, expected, strict=True):
-            assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
-    for actual_term, expected_term in zip(scalar, expected, strict=True):
-        assert_allclose(actual_term, expected_term[0], rtol=2e-8, atol=2e-10)
-
-
-def test_dynamics_terms_batched_warp_matches_length_scaled_basis(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "warp-cache-scaled"))
-    pytest.importorskip("warp")
-    robot = build_constant_strain_gvs(
-        num_segments=2,
-        max_dof=8,
-        scale_rotational_basis_by_length=True,
-    )
-    q = jnp.stack(
-        (
-            jnp.linspace(-0.025, 0.02, robot.num_dofs, dtype=jnp.float64),
-            jnp.linspace(0.015, -0.01, robot.num_dofs, dtype=jnp.float64),
-        )
-    )
-    qd = -0.4 * q
-
-    expected = robot.dynamics_terms(q, qd, backend="jax")
-    actual = robot.dynamics_terms(q, qd, backend="warp")
-
-    for actual_term, expected_term in zip(actual, expected, strict=True):
-        assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
 
 
 def test_cached_constant_matrices_refresh_after_update_params() -> None:

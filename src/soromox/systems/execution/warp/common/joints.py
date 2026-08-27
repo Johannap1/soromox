@@ -1,7 +1,7 @@
 # ruff: noqa: I001, UP018
-"""Shape-generic forward-only GVS joint kernels.
+"""Shape-generic forward-only spatial-joint kernels.
 
-The GVS joint basis already encodes the concrete joint type.  This module
+The joint basis already encodes the concrete joint type. This module
 therefore evaluates every supported joint through the same runtime-sized
 SE(3) path instead of generating a kernel for each joint type or model shape.
 """
@@ -38,6 +38,19 @@ def _joint_strain(
     environment: int,
     segment: int,
 ) -> Vec6d:
+    """Assemble one joint exponential coordinate from active coordinates.
+
+    Args:
+        basis: Flattened padded joint bases.
+        reference: Reference joint strains for every segment.
+        coordinates: Batched active generalized coordinates.
+        local_to_global: Padded local-to-active coordinate map.
+        environment: Environment row in ``coordinates``.
+        segment: Segment whose joint is evaluated.
+
+    Returns:
+        Six-dimensional joint exponential coordinate.
+    """
     value = Vec6d(
         reference[segment, 0],
         reference[segment, 1],
@@ -68,6 +81,18 @@ def _joint_strain_rate(
     environment: int,
     segment: int,
 ) -> Vec6d:
+    """Assemble one joint exponential-coordinate rate.
+
+    Args:
+        basis: Flattened padded joint bases.
+        velocities: Batched active generalized velocities.
+        local_to_global: Padded local-to-active coordinate map.
+        environment: Environment row in ``velocities``.
+        segment: Segment whose joint is evaluated.
+
+    Returns:
+        Six-dimensional joint exponential-coordinate rate.
+    """
     value = Vec6d()
     base_row = segment * SPATIAL_DIM
     local_column = int(0)
@@ -87,6 +112,16 @@ def _joint_strain_rate(
 def _joint_basis_column(
     basis: wp.array2d(dtype=wp.float64), segment: int, column: int
 ) -> Vec6d:
+    """Load one six-dimensional local joint-basis column.
+
+    Args:
+        basis: Flattened joint bases with six rows per segment.
+        segment: Segment whose basis is read.
+        column: Padded local basis-column index.
+
+    Returns:
+        Selected spatial basis column.
+    """
     base_row = segment * SPATIAL_DIM
     return Vec6d(
         basis[base_row + 0, column],
@@ -111,7 +146,23 @@ def joint_terms_kernel(
     tangent_dot_qd: wp.array2d(dtype=wp.float64),
     joint_velocity: wp.array2d(dtype=wp.float64),
 ):
-    """Evaluate one joint per ``(environment, segment)`` work item."""
+    """Evaluate one joint per ``(environment, segment)`` work item.
+
+    Args:
+        q: Batched active generalized coordinates.
+        qd: Batched active generalized velocities.
+        basis: Flattened padded joint bases.
+        reference: Reference joint strains.
+        local_to_global: Padded local-to-active coordinate map.
+        adjoint: Caller-owned inverse-adjoint output.
+        adjoint_dot: Caller-owned inverse-adjoint derivative output.
+        tangent_local: Caller-owned local-tangent output.
+        tangent_dot_qd: Caller-owned tangent-derivative action output.
+        joint_velocity: Caller-owned joint-velocity output.
+
+    Returns:
+        None. All results are written to the caller-owned output arrays.
+    """
 
     work_item = wp.tid()
     num_segments = reference.shape[0]
@@ -119,27 +170,19 @@ def joint_terms_kernel(
     segment = work_item - environment * num_segments
     output_base_row = work_item * SPATIAL_DIM
 
-    xi = _joint_strain(
-        basis, reference, q, local_to_global, environment, segment
-    )
-    xid = _joint_strain_rate(
-        basis, qd, local_to_global, environment, segment
-    )
+    xi = _joint_strain(basis, reference, q, local_to_global, environment, segment)
+    xid = _joint_strain_rate(basis, qd, local_to_global, environment, segment)
     angle_sq = xi[0] * xi[0] + xi[1] * xi[1] + xi[2] * xi[2]
     coefficients = _left_coefficients(angle_sq)
     coefficient_derivatives = _left_coefficient_x_derivatives(angle_sq)
-    angle_sq_dot = wp.float64(2.0) * (
-        xi[0] * xid[0] + xi[1] * xid[1] + xi[2] * xid[2]
-    )
+    angle_sq_dot = wp.float64(2.0) * (xi[0] * xid[0] + xi[1] * xid[1] + xi[2] * xid[2])
     omega = wp.vec3d(xi[0], xi[1], xi[2])
     linear = wp.vec3d(xi[3], xi[4], xi[5])
     forward = _forward_coefficients(angle_sq)
     translation = _translation(omega, linear, forward)
 
     velocity = _left_action(xi, xid, coefficients)
-    eta = _adjoint_inverse_action(
-        omega, translation, angle_sq, forward, velocity
-    )
+    eta = _adjoint_inverse_action(omega, translation, angle_sq, forward, velocity)
     derivative_velocity = _left_total_derivative_action(
         xi,
         xid,
@@ -209,7 +252,7 @@ def launch_joint_terms(
     tangent_dot_qd: wp.array2d(dtype=wp.float64),
     joint_velocity: wp.array2d(dtype=wp.float64),
 ):
-    """Launch one shape-generic GVS joint work item per segment and environment.
+    """Launch one shape-generic joint work item per segment and environment.
 
     This direct Warp entry point is intended for CPU execution and diagnostic
     use. GPU integrations should normally use
@@ -233,6 +276,9 @@ def launch_joint_terms(
             ``batch_size * num_segments * 6`` rows.
         joint_velocity: Preallocated column output matching
             ``tangent_dot_qd``.
+
+    Returns:
+        None. Outputs are written in place.
     """
 
     wp.launch(

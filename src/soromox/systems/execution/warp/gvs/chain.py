@@ -55,7 +55,44 @@ def persistent_chain_kernel(
     coriolis_qd: wp.array2d(dtype=wp.float64),
     gravity_force: wp.array2d(dtype=wp.float64),
 ):
-    """Traverse one full serial GVS chain per cooperative block."""
+    """Traverse one full serial GVS chain per cooperative block.
+
+    Args:
+        joint_adjoint: Flattened joint inverse adjoints.
+        joint_adjoint_dot: Flattened joint-adjoint derivatives.
+        joint_tangent: Joint tangents in active coordinates.
+        joint_tangent_dot_qd: Joint tangent-derivative actions.
+        joint_velocity: Joint spatial velocities.
+        cell_adjoint: Flattened cell inverse adjoints.
+        cell_tangent_local: Cell tangents in padded local coordinates.
+        cell_link_velocity: Cell link velocities.
+        cell_step_velocity: Cell Magnus-step velocities.
+        cell_tangent_velocity_dot: Cell tangent-derivative actions.
+        global_to_local: Active-to-local link-coordinate map.
+        active_dofs: Cumulative active coordinate count by segment.
+        qd: Batched generalized velocities.
+        inertia_upper_rows: Packed upper-inertia row indices.
+        inertia_upper_columns: Packed upper-inertia column indices.
+        weighted_masses: Quadrature-weighted diagonal spatial inertias.
+        gravity_base: Base-frame gravity.
+        num_cells_array: One-entry array containing cells per segment.
+        num_quadrature_array: One-entry array containing quadrature count.
+        lanes_per_block: One-entry array containing active cooperative lanes.
+        jacobian_first: First caller-owned Jacobian workspace.
+        jacobian_dot_qd_first: First derivative-action workspace.
+        velocity_first: First spatial-velocity workspace.
+        gravity_first: First local-gravity workspace.
+        jacobian_second: Second Jacobian workspace.
+        jacobian_dot_qd_second: Second derivative-action workspace.
+        velocity_second: Second spatial-velocity workspace.
+        gravity_second: Second local-gravity workspace.
+        inertia: Batched inertia output.
+        coriolis_qd: Batched convective-force output.
+        gravity_force: Batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
+    """
 
     environment, lane = wp.tid()
     num_dofs = qd.shape[1]
@@ -604,6 +641,9 @@ def launch_persistent_chain(
         inertia: Preallocated batched inertia output.
         coriolis_qd: Preallocated batched convective-force output.
         gravity_force: Preallocated batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
     """
 
     wp.launch_tiled(
@@ -648,9 +688,7 @@ def launch_persistent_chain(
     )
 
 
-scalable_persistent_chain = wp.jax_callable(
-    launch_persistent_chain, num_outputs=11
-)
+scalable_persistent_chain = wp.jax_callable(launch_persistent_chain, num_outputs=11)
 
 
 __all__ = ["launch_persistent_chain", "persistent_chain_kernel"]

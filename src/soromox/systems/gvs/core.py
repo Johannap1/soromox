@@ -5584,15 +5584,14 @@ class GVS(SoftRobot):
         )
 
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: tuple | None = None
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
     ) -> Array:
-        """Compute the first-order state derivative from the GVS equations.
-
-        The configured execution backend applies to the primal assembly of the
-        inertia, Coriolis, and gravity terms. Differentiating this method remains
-        supported because :meth:`dynamics_terms` routes derivative evaluation
-        through its JAX implementation; the actuation, passive-force, damping,
-        and linear-solve operations are already expressed in JAX.
+        """Compute the time derivative of a GVS state.
 
         Args:
             t: Current integration time. GVS dynamics are autonomous, so the
@@ -5603,6 +5602,8 @@ class GVS(SoftRobot):
                 and, optionally, an external generalized force ``tau_ext``. A
                 one-element tuple is interpreted as ``(u,)`` and a two-element
                 tuple as ``(u, tau_ext)``. Missing values default to zero.
+            backend: Optional execution-backend override for the inertia,
+                Coriolis, and gravity terms. ``None`` uses :attr:`backend`.
 
         Returns:
             State derivative ``[qd, qdd]`` with the same shape as ``y``.
@@ -5611,64 +5612,4 @@ class GVS(SoftRobot):
             ValueError: If ``actuation_args`` does not contain one or two
                 elements.
         """
-        return evaluate_forward_dynamics(self, t, y, actuation_args)
-
-    @eqx.filter_jit
-    def _evaluate_forward_dynamics(
-        self,
-        t: Array,
-        y: Array,
-        actuation_args: tuple | None,
-        *,
-        backend: ExecutionBackend | None,
-    ) -> Array:
-        """Assemble and solve forward dynamics with an explicit terms backend.
-
-        Args:
-            t: Current integration time. The autonomous GVS equations ignore
-                its value.
-            y: State vector ``[q, qd]`` with shape
-                ``(2 * self.num_dofs,)``.
-            actuation_args: Optional actuation input and external generalized
-                force, using the same convention as :meth:`forward_dynamics`.
-            backend: Per-call dynamics-term backend. ``None`` uses the model's
-                configured backend; ``"jax"`` is used by derivative transforms.
-
-        Returns:
-            State derivative ``[qd, qdd]`` with the same shape as ``y``.
-
-        Raises:
-            ValueError: If ``actuation_args`` does not contain one or two
-                elements.
-        """
-
-        del t
-        # Split the state vector into configuration and velocity
-        q, qd = jnp.split(y, 2)
-
-        # split the actuation arguments if provided
-        if actuation_args is None:
-            u, tau_ext = None, None
-        elif len(actuation_args) == 1:
-            u = actuation_args[0]
-            tau_ext = None
-        elif len(actuation_args) == 2:
-            u, tau_ext = actuation_args
-        else:
-            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
-
-        if u is None:
-            u = jnp.zeros((self.num_actuators,))
-        if tau_ext is None:
-            tau_ext = jnp.zeros((q.shape[-1],))
-
-        B, Cqd, G = self.dynamics_terms(q, qd, backend=backend)
-        tau_el = self.elastic_force(q)
-        tau_u = self.actuation_force(q, u, qd=qd)
-
-        rhs = tau_u + tau_ext - Cqd - G - tau_el - self.damping_matrix(q) @ qd
-        qdd = self._solve_inertia(B, rhs)
-
-        yd = jnp.concatenate([qd, qdd])
-
-        return yd
+        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)

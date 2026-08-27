@@ -37,11 +37,11 @@ _PUBLIC_MODULES = {
     "GVSOperands": "operands",
     "GVSPipelineShapes": "operands",
     "cell_terms_kernel": "cell",
-    "cooperative_joint_terms_kernel": "joint_cooperative",
-    "joint_terms_kernel": "joint",
+    "cooperative_joint_terms_kernel": "common.joints_cooperative",
+    "joint_terms_kernel": "common.joints",
     "launch_cell_terms": "cell",
-    "launch_cooperative_joint_terms": "joint_cooperative",
-    "launch_joint_terms": "joint",
+    "launch_cooperative_joint_terms": "common.joints_cooperative",
+    "launch_joint_terms": "common.joints",
     "launch_persistent_chain": "chain",
     "persistent_chain_kernel": "chain",
 }
@@ -65,13 +65,20 @@ def __getattr__(name: str) -> Any:
         module_name = _PUBLIC_MODULES[name]
     except KeyError as error:
         raise AttributeError(name) from error
-    module = import_module(f"{__name__}.{module_name}")
+    if module_name.startswith("common."):
+        module = import_module(f"soromox.systems.execution.warp.{module_name}")
+    else:
+        module = import_module(f"{__name__}.{module_name}")
     value = getattr(module, name)
     globals()[name] = value
     return value
 
 
 def __dir__() -> list[str]:
-    """Include lazily exported Warp symbols in interactive discovery."""
+    """Include lazily exported Warp symbols in interactive discovery.
+
+    Returns:
+        Sorted module globals and public lazy exports.
+    """
 
     return sorted((*globals(), *__all__))

@@ -172,13 +172,14 @@ robot = ArticulatedSoftRobot(params=ArticulatedSoftRobotParams(...))
 robot = PCS.from_links([LinkSpec.circular(...)], backend="auto")
 ```
 
-The optional `backend="auto"` argument is the default for supported continuum
-systems. It keeps dynamics on JAX/XLA on CPU and selects the accelerated Warp
-implementation for supported GPU dynamics. The setting follows normal calls to
-`dynamics_terms()`, `forward_dynamics()`, and the rollout helpers; kinematics
-and other methods remain on JAX. See [Execution Backends](execution-backends.md)
-for the supported systems, automatic-selection rules, differentiation behavior,
-and performance settings.
+`backend="auto"` is already the default, so it can normally be omitted. It
+keeps dynamics on JAX/XLA on CPU and selects Warp for supported GPU dynamics.
+The choice follows normal calls to `dynamics_terms()`, `forward_dynamics()`, and
+the rollout helpers; kinematics and other methods remain on JAX. A direct query
+can be compared with `robot.dynamics_terms(q, qd, backend="jax")` without
+rebuilding the model. See [Execution Backends](execution-backends.md) for the
+supported systems, automatic-selection rules, differentiation behavior, and
+performance settings.
 
 **Key Benefits:**
 

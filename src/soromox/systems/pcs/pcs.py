@@ -23,9 +23,9 @@ from soromox.systems.execution import (
     DEFAULT_PCS_BLOCK_DIM,
     PCS_DYNAMICS,
     ExecutionBackend,
+    PCSBackendParams,
     dispatch_dynamics_terms,
     evaluate_forward_dynamics,
-    validate_block_dim,
 )
 from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
@@ -68,8 +68,8 @@ class PCS(SoftRobot):
         num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
         num_integration_points: Stored integration nodes, including zero-weight endpoints.
         integration_points, integration_weights: Quadrature nodes and weights.
-        warp_block_dim: Threads per block for the persistent Warp dynamics
-            kernel. Defaults to 192.
+        backend_params: Optional tuning parameters for the PCS execution
+            backend. The default uses 192 threads per spatial Warp block.
 
     Notes:
     -----
@@ -114,7 +114,7 @@ class PCS(SoftRobot):
     _segment_dof_ends: tuple[int, ...] = eqx.field(static=True)
     scale_rotational_basis_by_length: bool = eqx.field(static=True)
     backend: ExecutionBackend = eqx.field(static=True)
-    warp_block_dim: int = eqx.field(static=True)
+    backend_params: PCSBackendParams = eqx.field(static=True)
 
     xi_ref: Array  # Reference configuration strain
     B_xi_unscaled: Array  # Unscaled strain basis matrix
@@ -306,7 +306,7 @@ class PCS(SoftRobot):
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
         backend: ExecutionBackend = "auto",
-        warp_block_dim: int = DEFAULT_PCS_BLOCK_DIM,
+        backend_params: PCSBackendParams | None = None,
         **kwargs: Any,
     ):
         """Initialize a spatial PCS model from typed parameters.
@@ -320,8 +320,8 @@ class PCS(SoftRobot):
             passive_elements: Optional passive element or tuple of passive
                 elements. Pass ``None`` or an empty tuple to disable them.
             backend: Preferred execution backend for accelerated methods.
-            warp_block_dim: CUDA threads per block for the persistent Warp
-                dynamics kernel. Must be a multiple of 32 from 32 to 1024.
+            backend_params: Optional tuning parameters for accelerated PCS
+                execution. Defaults to a 192-thread persistent Warp block.
             **kwargs: Additional keyword arguments forwarded to
                 :class:`BaseContinuumSoftRobot`.
 
@@ -343,7 +343,11 @@ class PCS(SoftRobot):
             structure = PCSStructure()
         self.params = params
         self.backend = backend
-        self.warp_block_dim = validate_block_dim(warp_block_dim)
+        if backend_params is None:
+            backend_params = PCSBackendParams(warp_block_dim=DEFAULT_PCS_BLOCK_DIM)
+        if not isinstance(backend_params, PCSBackendParams):
+            raise TypeError("backend_params must be a PCSBackendParams instance.")
+        self.backend_params = backend_params
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -739,7 +743,32 @@ class PCS(SoftRobot):
     def _dynamics_runtime_arrays(
         self, M_segments: Array
     ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
-        """Build compact, state-independent operands for dynamics backends."""
+        """Build compact state-independent spatial dynamics operands.
+
+        The arrays encode the active strain selection, the five-point
+        quadrature grid, diagonal mass action, packed inertia layout, and base-
+        frame gravity. They are cached on the model and shared by the JAX and
+        Warp dynamics implementations, so backend execution does not repeat
+        this structural preprocessing.
+
+        Args:
+            M_segments: Local spatial-inertia matrices with shape
+                ``(num_segments, 6, 6)``.
+
+        Returns:
+            A tuple containing, in order:
+
+            - active strain indices, shape ``(num_segments, 6)``;
+            - active strain scales, shape ``(num_segments, 6)``;
+            - cumulative active-DOF ends, shape ``(num_segments,)``;
+            - segment-local operator points, shape
+              ``(num_segments, num_gauss_points + 1)``;
+            - quadrature-weighted mass diagonals, shape
+              ``(num_segments, num_gauss_points, 6)``;
+            - packed upper-inertia row indices;
+            - matching packed upper-inertia column indices; and
+            - gravity expressed in the base frame, shape ``(6,)``.
+        """
 
         if self.num_dofs == 0:
             active_indices = -jnp.ones((self.num_segments, 6), dtype=jnp.int32)
@@ -3461,15 +3490,14 @@ class PCS(SoftRobot):
         return inertia, coriolis_qd, gravity_force
 
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: tuple | None = None
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
     ) -> Array:
-        """Compute the first-order state derivative for spatial PCS dynamics.
-
-        The model's configured backend selects the primal implementation of
-        :meth:`dynamics_terms`. JAX transformations remain valid because the
-        terms dispatcher substitutes the differentiable JAX assembly whenever
-        a derivative is requested. All force calculations and the inertia solve
-        are expressed directly in JAX.
+        """Compute the time derivative of a spatial PCS state.
 
         Args:
             t: Current integration time. PCS dynamics are autonomous, so the
@@ -3480,6 +3508,8 @@ class PCS(SoftRobot):
                 and, optionally, an external generalized force ``tau_ext``. A
                 one-element tuple is interpreted as ``(u,)`` and a two-element
                 tuple as ``(u, tau_ext)``. Missing values default to zero.
+            backend: Optional execution-backend override for the inertia,
+                Coriolis, and gravity terms. ``None`` uses :attr:`backend`.
 
         Returns:
             State derivative ``[qd, qdd]`` with the same shape as ``y``.
@@ -3488,63 +3518,4 @@ class PCS(SoftRobot):
             ValueError: If ``actuation_args`` does not contain one or two
                 elements.
         """
-        return evaluate_forward_dynamics(self, t, y, actuation_args)
-
-    @eqx.filter_jit
-    def _evaluate_forward_dynamics(
-        self,
-        t: Array,
-        y: Array,
-        actuation_args: tuple | None,
-        *,
-        backend: ExecutionBackend | None,
-    ) -> Array:
-        """Assemble and solve forward dynamics with an explicit terms backend.
-
-        Args:
-            t: Current integration time. The autonomous PCS equations ignore
-                its value.
-            y: State vector ``[q, qd]`` with shape
-                ``(2 * self.num_dofs,)``.
-            actuation_args: Optional actuation input and external generalized
-                force, using the same convention as :meth:`forward_dynamics`.
-            backend: Per-call dynamics-term backend. ``None`` uses the model's
-                configured backend; ``"jax"`` is used by derivative transforms.
-
-        Returns:
-            State derivative ``[qd, qdd]`` with the same shape as ``y``.
-
-        Raises:
-            ValueError: If ``actuation_args`` does not contain one or two
-                elements.
-        """
-
-        del t
-        q, qd = jnp.split(y, 2)
-
-        # split the actuation arguments if provided
-        if actuation_args is None:
-            u, tau_ext = None, None
-        elif len(actuation_args) == 1:
-            u = actuation_args[0]
-            tau_ext = None
-        elif len(actuation_args) == 2:
-            u, tau_ext = actuation_args
-        else:
-            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
-
-        if u is None:
-            u = jnp.zeros((self.num_actuators,))
-        if tau_ext is None:
-            tau_ext = jnp.zeros((q.shape[-1],))
-
-        B, Cqd, G = self.dynamics_terms(q, qd, backend=backend)
-        tau_el = self.elastic_force(q)
-        tau_u = self.actuation_force(q, u, qd=qd)
-
-        rhs = tau_u + tau_ext - Cqd - G - tau_el - self.damping_matrix(q) @ qd
-        qdd = self._solve_inertia(B, rhs)
-
-        yd = jnp.concatenate([qd, qdd])
-
-        return yd
+        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)

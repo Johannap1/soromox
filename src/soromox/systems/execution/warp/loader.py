@@ -97,6 +97,9 @@ def _validate_batch(q: Array, qd: Array, family_name: str) -> None:
     Raises:
         ValueError: If the leading batch dimension is empty.
         TypeError: If either input is not FP64.
+
+    Returns:
+        None.
     """
 
     if q.shape[0] == 0:

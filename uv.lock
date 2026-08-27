@@ -4072,6 +4072,7 @@ dev = [
 docs = [
     { name = "mkdocstrings" },
     { name = "mkdocstrings-python" },
+    { name = "warp-lang" },
     { name = "zensical" },
 ]
 examples = [
@@ -4136,6 +4137,7 @@ test = [
     { name = "tox" },
     { name = "trimesh" },
     { name = "viser" },
+    { name = "warp-lang" },
 ]
 warp = [
     { name = "warp-lang" },
@@ -4249,6 +4251,8 @@ requires-dist = [
     { name = "viser", marker = "extra == 'test'" },
     { name = "warp-lang", marker = "sys_platform == 'linux' and extra == 'cuda13'", specifier = ">=1.16.0" },
     { name = "warp-lang", marker = "extra == 'all'", specifier = ">=1.16.0" },
+    { name = "warp-lang", marker = "extra == 'docs'", specifier = ">=1.16.0" },
+    { name = "warp-lang", marker = "extra == 'test'", specifier = ">=1.16.0" },
     { name = "warp-lang", marker = "extra == 'warp'", specifier = ">=1.16.0" },
     { name = "zensical", marker = "extra == 'all'" },
     { name = "zensical", marker = "extra == 'docs'" },

@@ -1,5 +1,5 @@
 # ruff: noqa: I001, UP018
-"""Cooperative shape-generic preparation kernels for GVS dynamics."""
+"""Cooperative shape-generic preparation kernels for spatial joints."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from soromox.systems.execution.warp.common.se3 import (
     _left_total_derivative_action,
     _translation,
 )
-from soromox.systems.execution.warp.gvs.joint import _joint_basis_column
+from soromox.systems.execution.warp.common.joints import _joint_basis_column
 
 wp.set_module_options({"enable_backward": False})
 
@@ -39,7 +39,23 @@ def cooperative_joint_terms_kernel(
     tangent_dot_qd: wp.array2d(dtype=wp.float64),
     joint_velocity: wp.array2d(dtype=wp.float64),
 ):
-    """Evaluate one general joint cooperatively per warp-sized block."""
+    """Evaluate one general joint cooperatively per warp-sized block.
+
+    Args:
+        q: Batched active generalized coordinates.
+        qd: Batched active generalized velocities.
+        basis: Flattened padded joint bases.
+        reference: Reference joint strains.
+        local_to_global: Padded local-to-active coordinate map.
+        adjoint: Caller-owned inverse-adjoint output.
+        adjoint_dot: Caller-owned inverse-adjoint derivative output.
+        tangent_local: Caller-owned local-tangent output.
+        tangent_dot_qd: Caller-owned tangent-derivative action output.
+        joint_velocity: Caller-owned joint-velocity output.
+
+    Returns:
+        None. All results are written to the caller-owned output arrays.
+    """
 
     work_item, lane = wp.tid()
     num_segments = reference.shape[0]
@@ -267,7 +283,7 @@ def launch_cooperative_joint_terms(
     tangent_dot_qd: wp.array2d(dtype=wp.float64),
     joint_velocity: wp.array2d(dtype=wp.float64),
 ):
-    """Launch cooperative GVS joint evaluation on a CUDA device.
+    """Launch cooperative spatial-joint evaluation on a CUDA device.
 
     One CUDA block processes each ``(environment, segment)`` pair. Threads
     cooperatively evaluate active local basis columns while sharing the joint
@@ -285,6 +301,9 @@ def launch_cooperative_joint_terms(
         tangent_local: Preallocated flattened local tangent output.
         tangent_dot_qd: Preallocated flattened tangent-derivative action.
         joint_velocity: Preallocated flattened joint-velocity output.
+
+    Returns:
+        None. Outputs are written in place.
     """
 
     wp.launch_tiled(
@@ -302,9 +321,7 @@ def launch_cooperative_joint_terms(
     )
 
 
-cooperative_joint_terms = wp.jax_callable(
-    launch_cooperative_joint_terms, num_outputs=5
-)
+cooperative_joint_terms = wp.jax_callable(launch_cooperative_joint_terms, num_outputs=5)
 
 
 __all__ = [

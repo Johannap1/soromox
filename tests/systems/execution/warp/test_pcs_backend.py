@@ -28,7 +28,7 @@ def test_pcs_operands_are_views_over_precomputed_model_data(
     assert operands.num_segments == model.num_segments
     assert operands.num_dofs == model.num_dofs
     assert operands.num_gauss_points == 5
-    assert operands.block_dim == model.warp_block_dim
+    assert operands.block_dim == model.backend_params.warp_block_dim
     assert operands.active_strain_indices is model.active_strain_indices
     assert operands.reference_strain is model.xi_ref
     assert operands.weighted_mass_diagonals is model.weighted_mass_diagonals

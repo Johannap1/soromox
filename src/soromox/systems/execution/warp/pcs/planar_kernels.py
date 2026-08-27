@@ -19,6 +19,15 @@ SPATIAL_DIM = 3
 
 @wp.func
 def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
+    """Evaluate stable scalar coefficients for planar exponential operators.
+
+    Args:
+        z: Integrated planar rotation.
+        cutoff: Magnitude below which a polynomial expansion is used.
+
+    Returns:
+        Stable ``(sinc, cosc, tanc)`` coefficients.
+    """
     x = z * z
     if wp.abs(z) <= cutoff:
         return wp.vec3d(
@@ -29,11 +38,7 @@ def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
                 + x
                 * (
                     wp.float64(1.0 / 120.0)
-                    + x
-                    * (
-                        -wp.float64(1.0 / 5040.0)
-                        + x * wp.float64(1.0 / 362880.0)
-                    )
+                    + x * (-wp.float64(1.0 / 5040.0) + x * wp.float64(1.0 / 362880.0))
                 )
             ),
             wp.float64(0.5)
@@ -43,11 +48,7 @@ def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
                 + x
                 * (
                     wp.float64(1.0 / 720.0)
-                    + x
-                    * (
-                        -wp.float64(1.0 / 40320.0)
-                        + x * wp.float64(1.0 / 3628800.0)
-                    )
+                    + x * (-wp.float64(1.0 / 40320.0) + x * wp.float64(1.0 / 3628800.0))
                 )
             ),
             wp.float64(1.0 / 6.0)
@@ -58,10 +59,7 @@ def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
                 * (
                     wp.float64(1.0 / 5040.0)
                     + x
-                    * (
-                        -wp.float64(1.0 / 362880.0)
-                        + x * wp.float64(1.0 / 39916800.0)
-                    )
+                    * (-wp.float64(1.0 / 362880.0) + x * wp.float64(1.0 / 39916800.0))
                 )
             ),
         )
@@ -76,6 +74,15 @@ def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
 
 @wp.func
 def _forward_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
+    """Evaluate derivatives of planar exponential coefficients.
+
+    Args:
+        z: Integrated planar rotation.
+        cutoff: Magnitude below which a polynomial expansion is used.
+
+    Returns:
+        Derivatives of ``(sinc, cosc, tanc)`` with respect to ``z**2``.
+    """
     x = z * z
     if wp.abs(z) <= cutoff:
         return wp.vec3d(
@@ -83,31 +90,19 @@ def _forward_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
             + x
             * (
                 wp.float64(1.0 / 60.0)
-                + x
-                * (
-                    -wp.float64(1.0 / 1680.0)
-                    + x * wp.float64(1.0 / 90720.0)
-                )
+                + x * (-wp.float64(1.0 / 1680.0) + x * wp.float64(1.0 / 90720.0))
             ),
             -wp.float64(1.0 / 24.0)
             + x
             * (
                 wp.float64(1.0 / 360.0)
-                + x
-                * (
-                    -wp.float64(1.0 / 13440.0)
-                    + x * wp.float64(1.0 / 907200.0)
-                )
+                + x * (-wp.float64(1.0 / 13440.0) + x * wp.float64(1.0 / 907200.0))
             ),
             -wp.float64(1.0 / 120.0)
             + x
             * (
                 wp.float64(1.0 / 2520.0)
-                + x
-                * (
-                    -wp.float64(1.0 / 120960.0)
-                    + x * wp.float64(1.0 / 9979200.0)
-                )
+                + x * (-wp.float64(1.0 / 120960.0) + x * wp.float64(1.0 / 9979200.0))
             ),
         )
     sine = wp.sin(z)
@@ -116,11 +111,7 @@ def _forward_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
         (z * cosine - sine) / (wp.float64(2.0) * x * z),
         (z * sine + wp.float64(2.0) * cosine - wp.float64(2.0))
         / (wp.float64(2.0) * x * x),
-        (
-            wp.float64(3.0) * sine
-            - wp.float64(2.0) * z
-            - z * cosine
-        )
+        (wp.float64(3.0) * sine - wp.float64(2.0) * z - z * cosine)
         / (wp.float64(2.0) * x * x * z),
     )
 
@@ -133,10 +124,21 @@ def _planar_operators(
     global_eps: wp.float64,
     tangent_eps: wp.float64,
 ) -> tuple[wp.mat33d, wp.mat33d, wp.vec3d, wp.vec3d]:
+    """Evaluate planar adjoint, tangent, and velocity recurrence operators.
+
+    Args:
+        xi: Constant planar strain of the current segment.
+        xid: Constant planar strain rate of the current segment.
+        s: Segment-local integration coordinate.
+        global_eps: Small-angle tolerance for the exponential adjoint.
+        tangent_eps: Small-angle tolerance for tangent derivatives.
+
+    Returns:
+        Inverse adjoint, left tangent, local velocity, and the tangent time-
+        derivative action on strain rate.
+    """
     z = s * xi[0]
-    adjoint_cutoff = wp.max(
-        wp.abs(s * global_eps), wp.float64(0.04964607461902946)
-    )
+    adjoint_cutoff = wp.max(wp.abs(s * global_eps), wp.float64(0.04964607461902946))
     adjoint_coefficients = _forward_coefficients(z, adjoint_cutoff)
     sinc_a = adjoint_coefficients[0]
     cosc_a = adjoint_coefficients[1]
@@ -154,9 +156,7 @@ def _planar_operators(
     adjoint_inverse[2, 1] = -sine
     adjoint_inverse[2, 2] = cosine
 
-    tangent_cutoff = wp.max(
-        wp.abs(s * tangent_eps), wp.float64(0.07618835359095202)
-    )
+    tangent_cutoff = wp.max(wp.abs(s * tangent_eps), wp.float64(0.07618835359095202))
     coefficients = _forward_coefficients(z, tangent_cutoff)
     derivatives = _forward_derivatives(z, tangent_cutoff)
     sinc = coefficients[0]
@@ -215,8 +215,6 @@ def _planar_operators(
     )
 
 
-
-
 @wp.kernel(enable_backward=False)
 def planar_local_operators_kernel(
     q: wp.array2d(dtype=wp.float64),
@@ -231,6 +229,24 @@ def planar_local_operators_kernel(
     local_velocity: wp.array2d(dtype=wp.float64),
     transported_tangent_dot_velocity: wp.array2d(dtype=wp.float64),
 ):
+    """Evaluate planar local operators for one environment-segment point.
+
+    Args:
+        q: Batched active generalized coordinates.
+        qd: Batched active generalized velocities.
+        active_indices: Active-coordinate index of each strain component.
+        active_scales: Scale applied to each active strain component.
+        reference_strain: Segment reference strains.
+        operator_points: Segment-local evaluation coordinates.
+        epsilons: Exponential and tangent small-angle tolerances.
+        adjoint_inverse: Caller-owned flattened inverse-adjoint output.
+        transported_tangent: Caller-owned flattened tangent output.
+        local_velocity: Caller-owned flattened local-velocity output.
+        transported_tangent_dot_velocity: Caller-owned derivative-action output.
+
+    Returns:
+        None. All results are written to caller-owned output arrays.
+    """
     item = wp.tid()
     points_per_segment = operator_points.shape[1]
     points_per_environment = active_indices.shape[0] * points_per_segment
@@ -272,14 +288,14 @@ def planar_local_operators_kernel(
             adjoint_inverse[output_base_row + row, column] = adjoint_inverse_value[
                 row, column
             ]
-            transported_tangent[
-                output_base_row + row, column
-            ] = transported_tangent_value[row, column]
+            transported_tangent[output_base_row + row, column] = (
+                transported_tangent_value[row, column]
+            )
             column += 1
         local_velocity[output_base_row + row, 0] = local_velocity_value[row]
-        transported_tangent_dot_velocity[
-            output_base_row + row, 0
-        ] = transported_tangent_dot_velocity_value[row]
+        transported_tangent_dot_velocity[output_base_row + row, 0] = (
+            transported_tangent_dot_velocity_value[row]
+        )
         row += 1
 
 
@@ -316,6 +332,9 @@ def launch_planar_local_operators(
         local_velocity: Preallocated flattened local-velocity output.
         transported_tangent_dot_velocity: Preallocated flattened tangent
             derivative action.
+
+    Returns:
+        None. Outputs are written in place.
     """
 
     wp.launch(
@@ -340,10 +359,7 @@ def launch_planar_local_operators(
     )
 
 
-planar_local_operators = wp.jax_callable(
-    launch_planar_local_operators, num_outputs=4
-)
-
+planar_local_operators = wp.jax_callable(launch_planar_local_operators, num_outputs=4)
 
 
 @wp.kernel(enable_backward=False)
@@ -371,6 +387,35 @@ def planar_persistent_chain_kernel(
     coriolis_qd: wp.array2d(dtype=wp.float64),
     gravity_force: wp.array2d(dtype=wp.float64),
 ):
+    """Traverse one planar PCS chain per persistent cooperative block.
+
+    Args:
+        adjoint_inverse: Flattened inverse-adjoint operators.
+        transported_tangent: Flattened transported local tangents.
+        local_velocity: Flattened local velocities.
+        transported_tangent_dot_velocity: Flattened derivative actions.
+        active_indices: Active-coordinate index of each strain component.
+        active_scales: Scale applied to each active strain component.
+        active_dof_ends: Cumulative active coordinate count by segment.
+        qd: Batched generalized velocities.
+        inertia_upper_rows: Packed upper-inertia row indices.
+        inertia_upper_columns: Packed upper-inertia column indices.
+        weighted_masses: Quadrature-weighted diagonal planar inertias.
+        gravity_base: Base-frame planar gravity.
+        block_dim: Number of active cooperative lanes.
+        jacobian_first: First caller-owned Jacobian workspace.
+        derivative_first: First derivative-action workspace.
+        gravity_first: First local-gravity workspace.
+        jacobian_second: Second Jacobian workspace.
+        derivative_second: Second derivative-action workspace.
+        gravity_second: Second local-gravity workspace.
+        inertia: Batched inertia output.
+        coriolis_qd: Batched convective-force output.
+        gravity_force: Batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
+    """
     environment, lane = wp.tid()
     num_dofs = qd.shape[1]
     num_segments = active_indices.shape[0]
@@ -448,9 +493,8 @@ def planar_persistent_chain_kernel(
         while quadrature < num_quadrature:
             destination_is_first = not current_is_first
             operator_item = (
-                (environment * num_segments + segment) * points_per_segment
-                + quadrature
-            )
+                environment * num_segments + segment
+            ) * points_per_segment + quadrature
             operator_base_row = operator_item * SPATIAL_DIM
 
             entry = lane
@@ -475,9 +519,7 @@ def planar_persistent_chain_kernel(
                 while local < SPATIAL_DIM:
                     if active_indices[segment, local] == output_column:
                         value += (
-                            transported_tangent[
-                                operator_base_row + output_row, local
-                            ]
+                            transported_tangent[operator_base_row + output_row, local]
                             * active_scales[segment, local]
                         )
                     local += 1
@@ -698,9 +740,8 @@ def planar_persistent_chain_kernel(
 
         destination_is_first = not current_is_first
         operator_item = (
-            (environment * num_segments + segment) * points_per_segment
-            + num_quadrature
-        )
+            environment * num_segments + segment
+        ) * points_per_segment + num_quadrature
         operator_base_row = operator_item * SPATIAL_DIM
         entry = lane
         while entry < SPATIAL_DIM * active_end:
@@ -882,6 +923,9 @@ def launch_planar_persistent_chain(
         inertia: Preallocated batched inertia output.
         coriolis_qd: Preallocated batched convective-force output.
         gravity_force: Preallocated batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
     """
 
     wp.launch_tiled(
@@ -917,9 +961,7 @@ def launch_planar_persistent_chain(
     )
 
 
-planar_persistent_chain = wp.jax_callable(
-    launch_planar_persistent_chain, num_outputs=9
-)
+planar_persistent_chain = wp.jax_callable(launch_planar_persistent_chain, num_outputs=9)
 
 
 __all__ = [

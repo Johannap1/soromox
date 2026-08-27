@@ -1,11 +1,10 @@
 # Execution Backends
 
-SoRoMoX can use different numerical implementations for selected system
-operations while preserving the same model API. Backend selection currently
-applies to continuum-system dynamics, but the setting is intentionally named
-`backend` so additional accelerated operations can adopt it in the future.
-
-For most applications, construct the model with the default `backend="auto"`:
+For most applications, leave `backend="auto"` unchanged. A supported model then
+uses the accelerated Warp dynamics implementation on a GPU and the JAX/XLA
+implementation on CPU, while retaining the same system methods and numerical
+outputs. Set the option explicitly only when comparing implementations,
+reproducing a benchmark, or requiring a particular execution path.
 
 ```python
 from soromox.systems import LinkSpec, PlanarPCS
@@ -26,8 +25,7 @@ robot = PlanarPCS.from_links(
 )
 ```
 
-The system methods do not otherwise change. The configured backend is used by
-direct dynamics queries and by simulations that call forward dynamics.
+The setting currently affects selected continuum-system dynamics operations.
 
 ## Choosing a backend
 
@@ -81,9 +79,12 @@ The selected dynamics backend is used by:
 - `rollout_to(...)` and `rollout_closed_loop_to(...)`, through their calls to
   `forward_dynamics`.
 
-Kinematics, Jacobians, energy functions, constitutive forces, actuation, and
-rendering remain JAX operations unless their individual API documentation says
-otherwise.
+The setting does **not** change direct calls to `inertia_matrix`,
+`coriolis_matrix`, `gravitational_force`, kinematics, Jacobians, energy
+functions, constitutive forces, actuation, or rendering. Those methods remain
+JAX operations unless their own API documentation says otherwise. To evaluate
+backend-accelerated inertia, Coriolis/centrifugal, and gravity terms together,
+call `dynamics_terms`.
 
 ## Model-level and per-call selection
 
@@ -96,16 +97,19 @@ yd = robot.forward_dynamics(t, y)
 trajectory = robot.rollout_to(initial_state, t1=1.0)
 ```
 
-`dynamics_terms` additionally accepts a per-call override. This is useful for
-validation and benchmarking without constructing another model:
+`dynamics_terms` and `forward_dynamics` additionally accept per-call overrides.
+This is useful for validation and benchmarking without constructing another
+model:
 
 ```python
 B_jax, Cqd_jax, G_jax = robot.dynamics_terms(q, qd, backend="jax")
 B_warp, Cqd_warp, G_warp = robot.dynamics_terms(q, qd, backend="warp")
+yd_jax = robot.forward_dynamics(t, y, backend="jax")
+yd_warp = robot.forward_dynamics(t, y, backend="warp")
 ```
 
-`forward_dynamics` and the rollout helpers intentionally use the model-level
-setting so every evaluation in an integration follows one consistent policy.
+The rollout helpers use the model-level setting so every evaluation in an
+integration follows one consistent policy.
 
 ## Batches and `vmap`
 
@@ -154,17 +158,19 @@ forward-only Warp kernels.
 The default block sizes are portable choices rather than GPU-specific tuning
 heuristics:
 
-- `PlanarPCS`: `warp_block_dim=128`;
-- `PCS`: `warp_block_dim=192`.
+- `PlanarPCS`: `PCSBackendParams(warp_block_dim=128)`;
+- `PCS`: `PCSBackendParams(warp_block_dim=192)`.
 
 Advanced users can provide a multiple of 32 from 32 through 1024 when the model
 is constructed:
 
 ```python
+from soromox.systems import PCSBackendParams
+
 robot = PCS.from_links(
     links,
     backend="auto",
-    warp_block_dim=256,
+    backend_params=PCSBackendParams(warp_block_dim=256),
 )
 ```
 

@@ -112,4 +112,7 @@ def test_forward_dynamics_uses_one_shared_transform_boundary() -> None:
     )
     for source in model_sources:
         assert "_forward_dynamics_custom_jvp" not in source
-        assert "evaluate_forward_dynamics(self, t, y, actuation_args)" in source
+        assert (
+            "evaluate_forward_dynamics(self, t, y, actuation_args, backend)" in source
+        )
+        assert "def _evaluate_forward_dynamics" not in source

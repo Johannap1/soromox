@@ -43,6 +43,23 @@ def spatial_local_operators_kernel(
     local_velocity: wp.array2d(dtype=wp.float64),
     transported_tangent_dot_velocity: wp.array2d(dtype=wp.float64),
 ):
+    """Evaluate spatial local operators for one environment-segment point.
+
+    Args:
+        q: Batched active generalized coordinates.
+        qd: Batched active generalized velocities.
+        active_indices: Active-coordinate index of each strain component.
+        active_scales: Scale applied to each active strain component.
+        reference_strain: Segment reference strains.
+        operator_points: Segment-local evaluation coordinates.
+        adjoint_inverse: Caller-owned flattened inverse-adjoint output.
+        transported_tangent: Caller-owned flattened tangent output.
+        local_velocity: Caller-owned flattened local-velocity output.
+        transported_tangent_dot_velocity: Caller-owned derivative-action output.
+
+    Returns:
+        None. All results are written to caller-owned output arrays.
+    """
     item = wp.tid()
     points_per_segment = operator_points.shape[1]
     points_per_environment = active_indices.shape[0] * points_per_segment
@@ -88,15 +105,13 @@ def spatial_local_operators_kernel(
     while row < SPATIAL_DIM:
         column = int(0)
         while column < SPATIAL_DIM:
-            adjoint_inverse[output_base_row + row, column] = (
-                _adjoint_inverse_entry(
-                    omega,
-                    translation,
-                    angle_sq,
-                    forward,
-                    row,
-                    column,
-                )
+            adjoint_inverse[output_base_row + row, column] = _adjoint_inverse_entry(
+                omega,
+                translation,
+                angle_sq,
+                forward,
+                row,
+                column,
             )
             column += 1
         row += 1
@@ -115,15 +130,11 @@ def spatial_local_operators_kernel(
         )
         row = int(0)
         while row < SPATIAL_DIM:
-            transported_tangent[output_base_row + row, local] = (
-                transported_column[row]
-            )
+            transported_tangent[output_base_row + row, local] = transported_column[row]
             row += 1
         local += 1
 
-    tangent_velocity = _left_action(
-        accumulated, accumulated_dot, coefficients
-    )
+    tangent_velocity = _left_action(accumulated, accumulated_dot, coefficients)
     transported_velocity = _adjoint_inverse_action(
         omega,
         translation,
@@ -187,6 +198,9 @@ def launch_spatial_local_operators(
         local_velocity: Preallocated flattened local-velocity output.
         transported_tangent_dot_velocity: Preallocated flattened tangent
             derivative action.
+
+    Returns:
+        None. Outputs are written in place.
     """
 
     wp.launch(
@@ -210,11 +224,7 @@ def launch_spatial_local_operators(
     )
 
 
-spatial_local_operators = wp.jax_callable(
-    launch_spatial_local_operators, num_outputs=4
-)
-
-
+spatial_local_operators = wp.jax_callable(launch_spatial_local_operators, num_outputs=4)
 
 
 @wp.kernel(enable_backward=False)
@@ -244,6 +254,37 @@ def spatial_persistent_chain_kernel(
     coriolis_qd: wp.array2d(dtype=wp.float64),
     gravity_force: wp.array2d(dtype=wp.float64),
 ):
+    """Traverse one spatial PCS chain per persistent cooperative block.
+
+    Args:
+        adjoint_inverse: Flattened inverse-adjoint operators.
+        transported_tangent: Flattened transported local tangents.
+        local_velocity: Flattened local spatial velocities.
+        transported_tangent_dot_velocity: Flattened derivative actions.
+        active_indices: Active-coordinate index of each strain component.
+        active_scales: Scale applied to each active strain component.
+        active_dof_ends: Cumulative active coordinate count by segment.
+        qd: Batched generalized velocities.
+        inertia_upper_rows: Packed upper-inertia row indices.
+        inertia_upper_columns: Packed upper-inertia column indices.
+        weighted_masses: Quadrature-weighted diagonal spatial inertias.
+        gravity_base: Base-frame spatial gravity.
+        block_dim: Number of active cooperative lanes.
+        jacobian_first: First caller-owned Jacobian workspace.
+        derivative_first: First derivative-action workspace.
+        velocity_first: First spatial-velocity workspace.
+        gravity_first: First local-gravity workspace.
+        jacobian_second: Second Jacobian workspace.
+        derivative_second: Second derivative-action workspace.
+        velocity_second: Second spatial-velocity workspace.
+        gravity_second: Second local-gravity workspace.
+        inertia: Batched inertia output.
+        coriolis_qd: Batched convective-force output.
+        gravity_force: Batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
+    """
     environment, lane = wp.tid()
     num_dofs = qd.shape[1]
     num_segments = active_indices.shape[0]
@@ -293,8 +334,8 @@ def spatial_persistent_chain_kernel(
         while point < points_per_segment:
             destination_is_first = not current_is_first
             operator_item = (
-                (environment * num_segments + segment) * points_per_segment + point
-            )
+                environment * num_segments + segment
+            ) * points_per_segment + point
             operator_base_row = operator_item * SPATIAL_DIM
 
             entry = lane
@@ -319,9 +360,7 @@ def spatial_persistent_chain_kernel(
                 while local < SPATIAL_DIM:
                     if active_indices[segment, local] == output_column:
                         value += (
-                            transported_tangent[
-                                operator_base_row + output_row, local
-                            ]
+                            transported_tangent[operator_base_row + output_row, local]
                             * active_scales[segment, local]
                         )
                     local += 1
@@ -386,15 +425,14 @@ def spatial_persistent_chain_kernel(
                 derivative_value = wp.float64(0.0)
                 k = int(0)
                 while k < SPATIAL_DIM:
-                    derivative_value += (
-                        adjoint_inverse[operator_base_row + row, k]
-                        * _vector_value(
-                            derivative_first,
-                            derivative_second,
-                            current_is_first,
-                            state_base_row,
-                            k,
-                        )
+                    derivative_value += adjoint_inverse[
+                        operator_base_row + row, k
+                    ] * _vector_value(
+                        derivative_first,
+                        derivative_second,
+                        current_is_first,
+                        state_base_row,
+                        k,
                     )
                     k += 1
                 local_eta = Vec6d(
@@ -565,6 +603,9 @@ def launch_spatial_persistent_chain(
         inertia: Preallocated batched inertia output.
         coriolis_qd: Preallocated batched convective-force output.
         gravity_force: Preallocated batched generalized-gravity output.
+
+    Returns:
+        None. Workspaces and outputs are updated in place.
     """
 
     wp.launch_tiled(

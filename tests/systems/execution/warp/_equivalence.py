@@ -69,5 +69,18 @@ def assert_backend_equivalence(
         atol=3e-10,
     )
 
+    expected_forward_gradient = jax.grad(
+        lambda y_: jnp.sum(jax_model.forward_dynamics(t, y_, actuation_args))
+    )(y[0])
+    actual_forward_gradient = jax.grad(
+        lambda y_: jnp.sum(warp_model.forward_dynamics(t, y_, actuation_args))
+    )(y[0])
+    assert_allclose(
+        actual_forward_gradient,
+        expected_forward_gradient,
+        rtol=3e-8,
+        atol=3e-10,
+    )
+
 
 __all__ = ["assert_backend_equivalence"]

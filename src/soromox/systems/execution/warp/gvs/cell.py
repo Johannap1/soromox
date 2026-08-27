@@ -38,6 +38,18 @@ def _load_sparse_column(
     segment: int,
     column: int,
 ) -> Vec6d:
+    """Load one sparse spatial basis column.
+
+    Args:
+        values: Nonzero basis values for every cell and local column.
+        rows: Spatial row occupied by each segment-local column.
+        cell_item: Flattened segment-cell row in ``values``.
+        segment: Segment row in ``rows``.
+        column: Padded local basis-column index.
+
+    Returns:
+        Six-dimensional column with at most one nonzero entry.
+    """
     result = Vec6d()
     row = rows[segment, column]
     if row >= 0:
@@ -55,6 +67,20 @@ def _dynamic_strain(
     segment: int,
     coordinate_item: int,
 ) -> Vec6d:
+    """Assemble spatially varying strain at one integration cell endpoint.
+
+    Args:
+        basis_values: Nonzero strain-basis values for every cell.
+        basis_rows: Spatial row occupied by each segment-local coordinate.
+        reference: Reference strains for every flattened cell.
+        coordinates: Batched padded segment-local coordinates.
+        cell_item: Flattened segment-cell index.
+        segment: Segment containing the cell.
+        coordinate_item: Flattened environment-segment coordinate row.
+
+    Returns:
+        Six-dimensional strain at the selected cell endpoint.
+    """
     value = Vec6d(
         reference[cell_item, 0],
         reference[cell_item, 1],
@@ -82,6 +108,19 @@ def _dynamic_strain_rate(
     segment: int,
     coordinate_item: int,
 ) -> Vec6d:
+    """Assemble spatially varying strain rate at one cell endpoint.
+
+    Args:
+        basis_values: Nonzero strain-basis values for every cell.
+        basis_rows: Spatial row occupied by each segment-local coordinate.
+        velocities: Batched padded segment-local velocities.
+        cell_item: Flattened segment-cell index.
+        segment: Segment containing the cell.
+        coordinate_item: Flattened environment-segment velocity row.
+
+    Returns:
+        Six-dimensional strain rate at the selected cell endpoint.
+    """
     value = Vec6d()
     column = int(0)
     while column < velocities.shape[1]:
@@ -112,7 +151,29 @@ def cell_terms_kernel(
     step_velocity: wp.array2d(dtype=wp.float64),
     tangent_velocity_dot: wp.array2d(dtype=wp.float64),
 ):
-    """Compute general cell-local Lie data with an optional order-zero branch."""
+    """Compute general cell-local Lie data for one batched cell work item.
+
+    Args:
+        q_link: Batched padded segment-local coordinates.
+        qd_link: Batched padded segment-local velocities.
+        basis_z1: Sparse basis values at the first Magnus node.
+        basis_z2: Sparse basis values at the second Magnus node.
+        basis_rows: Spatial row occupied by each sparse basis column.
+        reference_z1: Reference strains at first Magnus nodes.
+        reference_z2: Reference strains at second Magnus nodes.
+        segment_lengths: Physical segment lengths.
+        cell_widths: Normalized integration-cell widths.
+        num_cells: One-entry array containing cells per segment.
+        order_zero: One-entry flag selecting the constant-strain shortcut.
+        adjoint: Caller-owned flattened cell-adjoint output.
+        tangent_local: Caller-owned flattened local-tangent output.
+        link_velocity: Caller-owned flattened link-velocity output.
+        step_velocity: Caller-owned flattened step-velocity output.
+        tangent_velocity_dot: Caller-owned tangent-derivative action output.
+
+    Returns:
+        None. All results are written to the caller-owned output arrays.
+    """
 
     work_item = wp.tid()
     cells_per_segment = num_cells[0]
@@ -141,12 +202,7 @@ def cell_terms_kernel(
     width = cell_widths[cell_item]
     alpha = length * width * wp.float64(0.5)
     commutator_coefficient = (
-        wp.sqrt(wp.float64(3.0))
-        * length
-        * length
-        * width
-        * width
-        / wp.float64(12.0)
+        wp.sqrt(wp.float64(3.0)) * length * length * width * width / wp.float64(12.0)
     )
 
     xi2 = xi1
@@ -166,18 +222,12 @@ def cell_terms_kernel(
         xid2 = _dynamic_strain_rate(
             basis_z2, basis_rows, qd_link, cell_item, segment, coordinate_item
         )
-        magnus = alpha * (xi1 + xi2) + commutator_coefficient * _ad_action(
-            xi1, xi2
-        )
+        magnus = alpha * (xi1 + xi2) + commutator_coefficient * _ad_action(xi1, xi2)
         magnus_dot = alpha * (xid1 + xid2) + commutator_coefficient * (
             _ad_action(xid1, xi2) + _ad_action(xi1, xid2)
         )
 
-    angle_sq = (
-        magnus[0] * magnus[0]
-        + magnus[1] * magnus[1]
-        + magnus[2] * magnus[2]
-    )
+    angle_sq = magnus[0] * magnus[0] + magnus[1] * magnus[1] + magnus[2] * magnus[2]
     coefficients = _left_coefficients(angle_sq)
     omega = wp.vec3d(magnus[0], magnus[1], magnus[2])
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
@@ -209,9 +259,7 @@ def cell_terms_kernel(
             basis2 = _load_sparse_column(
                 basis_z2, basis_rows, cell_item, segment, local_column
             )
-            magnus_basis = alpha * (
-                basis1 + basis2
-            ) + commutator_coefficient * (
+            magnus_basis = alpha * (basis1 + basis2) + commutator_coefficient * (
                 _ad_action(xi1, basis2) - _ad_action(xi2, basis1)
             )
         local_tangent = _left_action(magnus, magnus_basis, coefficients)
@@ -222,15 +270,11 @@ def cell_terms_kernel(
         local_column += 1
 
     link = _left_action(magnus, magnus_dot, coefficients)
-    step = _adjoint_inverse_action(
-        omega, translation, angle_sq, forward, link
-    )
+    step = _adjoint_inverse_action(omega, translation, angle_sq, forward, link)
     magnus_basis_dot_qd = Vec6d()
     if order_zero[0] == 0:
         magnus_basis_dot_qd = (
-            wp.float64(2.0)
-            * commutator_coefficient
-            * _ad_action(xid1, xid2)
+            wp.float64(2.0) * commutator_coefficient * _ad_action(xid1, xid2)
         )
     coefficient_derivatives = _left_coefficient_x_derivatives(angle_sq)
     angle_sq_dot = wp.float64(2.0) * (
@@ -250,9 +294,7 @@ def cell_terms_kernel(
     while row < SPATIAL_DIM:
         link_velocity[output_base_row + row, 0] = link[row]
         step_velocity[output_base_row + row, 0] = step[row]
-        tangent_velocity_dot[output_base_row + row, 0] = (
-            tangent_dot_velocity_value[row]
-        )
+        tangent_velocity_dot[output_base_row + row, 0] = tangent_dot_velocity_value[row]
         row += 1
 
 
@@ -295,6 +337,9 @@ def launch_cell_terms(
         link_velocity: Preallocated flattened link-velocity output.
         step_velocity: Preallocated flattened cell-step velocity output.
         tangent_velocity_dot: Preallocated flattened tangent derivative action.
+
+    Returns:
+        None. Outputs are written in place.
     """
 
     # ``num_cells`` has one entry whose value is not available to Python here.

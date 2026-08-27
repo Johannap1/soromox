@@ -209,7 +209,12 @@ class GVSPipelineShapes:
 
     @property
     def local_state(self) -> tuple[int, int]:
-        """Shape of padded ``q_link`` and ``qd_link`` workspace arrays."""
+        """Return the shape of padded link-state workspace arrays.
+
+        Returns:
+            Shape ``(batch_size * num_segments, max_dof)`` used by ``q_link``
+            and ``qd_link``.
+        """
 
         return self.batch_size * self.num_segments, self.max_dof
 

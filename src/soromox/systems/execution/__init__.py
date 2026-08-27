@@ -1,9 +1,9 @@
 """Execution backends for accelerated system operations.
 
 This public package defines backend selection and transformation semantics used
-by supported Soromox system classes. Most users only need
-:class:`ExecutionBackend` and the ``backend`` constructor argument on a system
-model.
+by supported Soromox system classes. Most users only need the ``backend``
+constructor argument; :class:`ExecutionBackend` names its accepted values and
+:class:`PCSBackendParams` provides optional advanced PCS tuning.
 
 Integrations that need direct Warp execution can import stable family-specific
 building blocks from :mod:`soromox.systems.execution.warp`. Importing this
@@ -13,6 +13,11 @@ executor.
 """
 
 from soromox.systems.execution.catalog import GVS_DYNAMICS, PCS_DYNAMICS
+from soromox.systems.execution.config import (
+    DEFAULT_PCS_BLOCK_DIM,
+    DEFAULT_PLANAR_PCS_BLOCK_DIM,
+    PCSBackendParams,
+)
 from soromox.systems.execution.dispatch import dispatch_dynamics_terms
 from soromox.systems.execution.transforms import (
     evaluate_forward_dynamics,
@@ -27,11 +32,6 @@ from soromox.systems.execution.types import (
     ForwardDynamicsModel,
     WarpExecutorKey,
 )
-from soromox.systems.execution.warp.config import (
-    DEFAULT_PCS_BLOCK_DIM,
-    DEFAULT_PLANAR_PCS_BLOCK_DIM,
-    validate_block_dim,
-)
 
 __all__ = [
     "DynamicsCapabilities",
@@ -42,11 +42,11 @@ __all__ = [
     "ForwardDynamicsModel",
     "GVS_DYNAMICS",
     "PCS_DYNAMICS",
+    "PCSBackendParams",
     "DEFAULT_PCS_BLOCK_DIM",
     "DEFAULT_PLANAR_PCS_BLOCK_DIM",
     "WarpExecutorKey",
     "dispatch_dynamics_terms",
     "evaluate_forward_dynamics",
     "make_dynamics_evaluator",
-    "validate_block_dim",
 ]
