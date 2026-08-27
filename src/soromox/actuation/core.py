@@ -9,7 +9,7 @@ those coordinates, and generalized actuation forces are ``A(q) @ effort``.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Literal, final
+from typing import TYPE_CHECKING, ClassVar, Literal, final
 
 import equinox as eqx
 from jax import Array, ensure_compile_time_eval
@@ -94,8 +94,16 @@ class Transmission(eqx.Module):
 class EffortModel(eqx.Module):
     """Map controls to efforts work-conjugate to transmission coordinates."""
 
+    requires_coordinate: ClassVar[bool] = True
+    requires_velocity: ClassVar[bool] = True
+
     @abstractmethod
-    def effort(self, control: Array, coordinate: Array, velocity: Array) -> Array:
+    def effort(
+        self,
+        control: Array,
+        coordinate: Array | None,
+        velocity: Array | None,
+    ) -> Array:
         """Return actuator effort for the current control and transmission state."""
         ...
 
@@ -103,7 +111,15 @@ class EffortModel(eqx.Module):
 class DirectEffort(EffortModel):
     """Stateless effort model for which effort is exactly the user control."""
 
-    def effort(self, control: Array, coordinate: Array, velocity: Array) -> Array:
+    requires_coordinate: ClassVar[bool] = False
+    requires_velocity: ClassVar[bool] = False
+
+    def effort(
+        self,
+        control: Array,
+        coordinate: Array | None,
+        velocity: Array | None,
+    ) -> Array:
         del coordinate, velocity
         return control
 
@@ -182,20 +198,62 @@ class Actuator(eqx.Module):
     def velocities(self, robot: SoftRobot, q: Array, qd: Array) -> Array:
         return self.transmission.velocities(robot, q, qd)
 
-    def moment_matrix(self, robot: SoftRobot, q: Array) -> Array:
-        return self.transmission.moment_matrix(robot, q)
-
     def efforts(
         self,
         robot: SoftRobot,
         q: Array,
         control: Array,
         qd: Array | None = None,
+        *,
+        transmission_matrix: Array | None = None,
     ) -> Array:
-        if qd is None:
-            qd = jnp.zeros_like(q)
-        coordinate = self.coordinates(robot, q)
-        velocity = self.velocities(robot, q, qd)
+        """Map controls to work-conjugate efforts for this actuator.
+
+        Only transmission coordinates and velocities required by the installed
+        effort model are evaluated. A precomputed transmission matrix may be
+        supplied to reuse it when evaluating actuator-coordinate velocities.
+
+        Args:
+            robot: Soft robot on which the actuator is installed.
+            q: Generalized coordinates of shape ``(robot.num_dofs,)``.
+            control: Controls for this actuator with shape
+                ``(self.num_channels,)``.
+            qd: Optional generalized velocities of shape
+                ``(robot.num_dofs,)``. If omitted for a velocity-dependent
+                effort model, zero generalized velocity is used.
+            transmission_matrix: Optional precomputed transmission matrix with
+                shape ``(robot.num_dofs, self.num_channels)``.
+
+        Returns:
+            e: Work-conjugate actuator efforts with shape
+                ``(self.num_channels,)``.
+
+        Raises:
+            ValueError: If ``transmission_matrix`` has an incompatible shape.
+        """
+        if transmission_matrix is not None and transmission_matrix.shape != (
+            robot.num_dofs,
+            self.num_channels,
+        ):
+            raise ValueError(
+                "transmission_matrix must have shape "
+                f"({robot.num_dofs}, {self.num_channels}), got "
+                f"{transmission_matrix.shape}."
+            )
+
+        coordinate = None
+        if self.effort_model.requires_coordinate:
+            coordinate = self.coordinates(robot, q)
+
+        velocity = None
+        if self.effort_model.requires_velocity:
+            if qd is None:
+                qd = jnp.zeros_like(q)
+            if transmission_matrix is None:
+                velocity = self.velocities(robot, q, qd)
+            else:
+                velocity = transmission_matrix.T @ qd
+
         return self.effort_model.effort(control, coordinate, velocity)
 
     def validate_structure_for_robot(self, robot: SoftRobot) -> None:
