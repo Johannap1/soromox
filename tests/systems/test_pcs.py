@@ -1495,7 +1495,7 @@ def test_dynamics_terms_match_public_matrices(
 def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems._execution.warp import loader
+    from soromox.systems.execution.warp import loader
 
     model = _DynamicsDispatchProbe(
         scale=jnp.asarray(2.0, dtype=jnp.float64),
@@ -1558,7 +1558,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
 def test_configured_warp_backend_routes_autodiff_to_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems._execution.warp import loader
+    from soromox.systems.execution.warp import loader
 
     reference, params = make_pcs(num_segments=1, num_gauss_points=5)
     robot = PCS(

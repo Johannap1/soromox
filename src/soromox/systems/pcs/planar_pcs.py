@@ -12,19 +12,20 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
-from soromox.systems._execution import (
-    DEFAULT_PLANAR_PCS_BLOCK_DIM,
-    PCS_DYNAMICS,
-    ExecutionBackend,
-    dispatch_dynamics_terms,
-    validate_block_dim,
-)
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     CrossSectionParams,
     IsotropicMaterialParams,
     LinkSpec,
+)
+from soromox.systems.execution import (
+    DEFAULT_PLANAR_PCS_BLOCK_DIM,
+    PCS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+    evaluate_forward_dynamics,
+    validate_block_dim,
 )
 from soromox.systems.pcs.params import PlanarPCSParams
 from soromox.systems.pcs.structures import PlanarPCSStructure
@@ -113,9 +114,7 @@ class PlanarPCS(SoftRobot):
         static=True, default=0
     )  # Number of strains (3 * num_segments)
     backend: ExecutionBackend = eqx.field(static=True, default="auto")
-    warp_block_dim: int = eqx.field(
-        static=True, default=DEFAULT_PLANAR_PCS_BLOCK_DIM
-    )
+    warp_block_dim: int = eqx.field(static=True, default=DEFAULT_PLANAR_PCS_BLOCK_DIM)
     _segment_dof_ends: tuple[int, ...] = eqx.field(static=True, default=())
     scale_rotational_basis_by_length: bool = eqx.field(static=True, default=False)
 
@@ -325,8 +324,7 @@ class PlanarPCS(SoftRobot):
         params.validate()
         if backend not in ("auto", "jax", "warp"):
             raise ValueError(
-                "backend must be one of 'auto', 'jax', or 'warp', "
-                f"got {backend!r}."
+                f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
             )
         super().__init__(base_pose=params.base_pose, **kwargs)
         if structure is None:
@@ -717,9 +715,7 @@ class PlanarPCS(SoftRobot):
         """Build compact, state-independent operands for dynamics backends."""
 
         if self.num_dofs == 0:
-            active_indices = -jnp.ones(
-                (self.num_segments, 3), dtype=jnp.int32
-            )
+            active_indices = -jnp.ones((self.num_segments, 3), dtype=jnp.int32)
             active_scales = jnp.zeros((self.num_segments, 3), dtype=self.B_xi.dtype)
         else:
             basis = self.B_xi.reshape(self.num_segments, 3, self.num_dofs)
@@ -740,9 +736,10 @@ class PlanarPCS(SoftRobot):
         )
         local_points = points - self.L_cum[:-1, None]
         operator_points = jnp.concatenate([local_points, self.L[:, None]], axis=1)
-        weighted_masses = weights[..., None] * jnp.diagonal(
-            M_segments, axis1=-2, axis2=-1
-        )[:, None, :]
+        weighted_masses = (
+            weights[..., None]
+            * jnp.diagonal(M_segments, axis1=-2, axis2=-1)[:, None, :]
+        )
         upper_rows = jnp.asarray(
             [row for column in range(self.num_dofs) for row in range(column + 1)],
             dtype=jnp.int32,
@@ -3157,7 +3154,7 @@ class PlanarPCS(SoftRobot):
         *,
         backend: ExecutionBackend | None = None,
     ) -> tuple[Array, Array, Array]:
-        """Assemble scalar or batched dynamics terms with backend dispatch.
+        """Assemble planar PCS dynamics terms for one or many environments.
 
         ``backend=None`` uses the model's configured :attr:`backend`. Warp is
         selected only for forward-only GPU execution with exactly five Gauss
@@ -3165,6 +3162,32 @@ class PlanarPCS(SoftRobot):
         reverse-mode differentiation use the JAX implementation. Applying
         :func:`jax.vmap` to scalar calls invokes one batch-shaped Warp pipeline
         rather than mapping independent batch-one launches.
+
+        The Warp implementation uses FP64 SE(2) constant-strain operators and
+        one persistent cooperative chain block per environment. Its generated
+        source is independent of the batch size and segment count. Install the
+        optional dependency with ``pip install soromox[warp]`` before explicitly
+        requesting it.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)`` or
+                ``(batch_size, num_dofs)``.
+            qd: Active generalized velocities with the same shape as ``q``.
+            backend: Optional per-call override: ``"auto"``, ``"jax"``, or
+                ``"warp"``. ``None`` uses :attr:`backend`.
+
+        Returns:
+            Tuple ``(B, Cqd, G)`` with the same optional leading batch dimension
+            as the inputs. ``B`` is the active inertia matrix, ``Cqd`` is the
+            Coriolis/centrifugal force action, and ``G`` is generalized gravity.
+
+        Raises:
+            ValueError: If the backend or input shapes are invalid, or a Warp
+                batch is empty.
+            NotImplementedError: If Warp is explicitly requested with a
+                quadrature rule other than five Gauss points.
+            TypeError: If Warp is selected for non-FP64 states.
+            ImportError: If Warp is selected but ``warp-lang`` is unavailable.
         """
 
         return dispatch_dynamics_terms(
@@ -3240,44 +3263,32 @@ class PlanarPCS(SoftRobot):
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
-        """
-        Forward dynamics function.
+        """Compute the first-order state derivative for planar PCS dynamics.
+
+        The model's configured backend selects the primal implementation of
+        :meth:`dynamics_terms`. JAX transformations remain valid because the
+        terms dispatcher substitutes the differentiable JAX assembly whenever
+        a derivative is requested. All force calculations and the inertia solve
+        are expressed directly in JAX.
 
         Args:
-            t (Array): Current time.
-            y (Array): State vector containing configuration and velocity.
-                Shape is (2 * num_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function.
-                Default is None.
+            t: Current integration time. Planar PCS dynamics are autonomous, so
+                the value is accepted for solver compatibility but is not
+                otherwise used.
+            y: State vector ``[q, qd]`` with shape ``(2 * self.num_dofs,)``.
+            actuation_args: Optional tuple containing the actuation input ``u``
+                and, optionally, an external generalized force ``tau_ext``. A
+                one-element tuple is interpreted as ``(u,)`` and a two-element
+                tuple as ``(u, tau_ext)``. Missing values default to zero.
 
         Returns:
-            yd (Array): Time derivative of the state vector.
+            State derivative ``[qd, qdd]`` with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` does not contain one or two
+                elements.
         """
-        return PlanarPCS._forward_dynamics_custom_jvp(self, t, y, actuation_args)
-
-    @eqx.filter_custom_jvp
-    @staticmethod
-    def _forward_dynamics_custom_jvp(
-        model: "PlanarPCS", t: Array, y: Array, actuation_args: tuple | None
-    ) -> Array:
-        """Transform-aware entry point for public forward dynamics."""
-
-        return model._evaluate_forward_dynamics(t, y, actuation_args, backend=None)
-
-    @_forward_dynamics_custom_jvp.def_jvp
-    def _forward_dynamics_custom_jvp_jvp(
-        primals: tuple["PlanarPCS", Array, Array, tuple | None],
-        tangents: tuple[Any, Any, Any, Any],
-    ) -> tuple[Array, Array]:
-        """Differentiate the complete forward calculation through JAX."""
-
-        return eqx.filter_jvp(
-            lambda model, t, y, actuation_args: model._evaluate_forward_dynamics(
-                t, y, actuation_args, backend="jax"
-            ),
-            primals,
-            tangents,
-        )
+        return evaluate_forward_dynamics(self, t, y, actuation_args)
 
     @eqx.filter_jit
     def _evaluate_forward_dynamics(
@@ -3288,7 +3299,25 @@ class PlanarPCS(SoftRobot):
         *,
         backend: ExecutionBackend | None,
     ) -> Array:
-        """Evaluate forward dynamics with an explicit terms backend."""
+        """Assemble and solve forward dynamics with an explicit terms backend.
+
+        Args:
+            t: Current integration time. The autonomous planar PCS equations
+                ignore its value.
+            y: State vector ``[q, qd]`` with shape
+                ``(2 * self.num_dofs,)``.
+            actuation_args: Optional actuation input and external generalized
+                force, using the same convention as :meth:`forward_dynamics`.
+            backend: Per-call dynamics-term backend. ``None`` uses the model's
+                configured backend; ``"jax"`` is used by derivative transforms.
+
+        Returns:
+            State derivative ``[qd, qdd]`` with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` does not contain one or two
+                elements.
+        """
 
         del t
         q, qd = jnp.split(y, 2)

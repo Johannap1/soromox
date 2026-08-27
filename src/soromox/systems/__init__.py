@@ -3,7 +3,6 @@ from soromox.autodiff import (
     custom_jvp_mode,
     set_custom_jvp_enabled,
 )
-from soromox.systems._execution import ExecutionBackend
 from soromox.systems.articulated.params import (
     ArticulatedSoftRobotParams,
     McKibbenActuatedUMArmParams,
@@ -20,6 +19,7 @@ from soromox.systems.components import (
     shear_modulus_from_poisson_ratio,
 )
 from soromox.systems.dynamical_system import DynamicalSystem
+from soromox.systems.execution import ExecutionBackend
 from soromox.systems.gvs.params import GVSParams
 from soromox.systems.gvs.structures import (
     GVSJointStructure,

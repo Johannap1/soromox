@@ -1859,7 +1859,7 @@ def test_dynamics_terms_accepts_batched_inputs() -> None:
 def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems._execution.warp import loader
+    from soromox.systems.execution.warp import loader
 
     model = _DynamicsDispatchProbe(
         scale=jnp.asarray(2.0, dtype=jnp.float64),
@@ -1942,7 +1942,7 @@ def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
 def test_configured_warp_backend_routes_autodiff_to_jax(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from soromox.systems._execution.warp import loader
+    from soromox.systems.execution.warp import loader
 
     reference = build_constant_strain_gvs(
         num_segments=1,

@@ -11,15 +11,16 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
-from soromox.systems._execution import (
-    GVS_DYNAMICS,
-    ExecutionBackend,
-    dispatch_dynamics_terms,
-)
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     IsotropicMaterialParams,
+)
+from soromox.systems.execution import (
+    GVS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+    evaluate_forward_dynamics,
 )
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
 from soromox.systems.gvs._runtime import SegmentRuntimeData
@@ -325,8 +326,7 @@ class GVS(SoftRobot):
             raise ValueError("num_dynamics_prefix_buckets must be positive.")
         if backend not in ("auto", "jax", "warp"):
             raise ValueError(
-                "backend must be one of 'auto', 'jax', or 'warp', "
-                f"got {backend!r}."
+                f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
             )
         structure = _resolve_structure(params, structure)
         super().__init__(base_pose=params.base_pose, **kwargs)
@@ -5583,49 +5583,35 @@ class GVS(SoftRobot):
             params.end_segment_index_array,
         )
 
-    # As with ``dynamics_terms``, the compiled implementation lives behind the
-    # transform-aware wrapper so differentiation can select JAX before staging.
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
-        """
-        Forward dynamics function.
+        """Compute the first-order state derivative from the GVS equations.
+
+        The configured execution backend applies to the primal assembly of the
+        inertia, Coriolis, and gravity terms. Differentiating this method remains
+        supported because :meth:`dynamics_terms` routes derivative evaluation
+        through its JAX implementation; the actuation, passive-force, damping,
+        and linear-solve operations are already expressed in JAX.
 
         Args:
-            t (Array): Current time.
-            y (Array): State vector containing configuration and velocity.
-                Shape is (2 * num_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function.
-                Default is None.
+            t: Current integration time. GVS dynamics are autonomous, so the
+                value is accepted for solver compatibility but is not otherwise
+                used.
+            y: State vector ``[q, qd]`` with shape ``(2 * self.num_dofs,)``.
+            actuation_args: Optional tuple containing the actuation input ``u``
+                and, optionally, an external generalized force ``tau_ext``. A
+                one-element tuple is interpreted as ``(u,)`` and a two-element
+                tuple as ``(u, tau_ext)``. Missing values default to zero.
 
         Returns:
-            yd (Array): Time derivative of the state vector.
+            State derivative ``[qd, qdd]`` with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` does not contain one or two
+                elements.
         """
-        return GVS._forward_dynamics_custom_jvp(self, t, y, actuation_args)
-
-    @eqx.filter_custom_jvp
-    @staticmethod
-    def _forward_dynamics_custom_jvp(
-        model: "GVS", t: Array, y: Array, actuation_args: tuple | None
-    ) -> Array:
-        """Custom-JVP entry point for the public forward-dynamics wrapper."""
-
-        return model._evaluate_forward_dynamics(t, y, actuation_args, backend=None)
-
-    @_forward_dynamics_custom_jvp.def_jvp
-    def _forward_dynamics_custom_jvp_jvp(
-        primals: tuple["GVS", Array, Array, tuple | None],
-        tangents: tuple[Any, Any, Any, Any],
-    ) -> tuple[Array, Array]:
-        """Differentiate the complete forward-dynamics calculation with JAX."""
-
-        return eqx.filter_jvp(
-            lambda model, t, y, actuation_args: model._evaluate_forward_dynamics(
-                t, y, actuation_args, backend="jax"
-            ),
-            primals,
-            tangents,
-        )
+        return evaluate_forward_dynamics(self, t, y, actuation_args)
 
     @eqx.filter_jit
     def _evaluate_forward_dynamics(
@@ -5636,7 +5622,25 @@ class GVS(SoftRobot):
         *,
         backend: ExecutionBackend | None,
     ) -> Array:
-        """Evaluate forward dynamics with an explicitly selected terms backend."""
+        """Assemble and solve forward dynamics with an explicit terms backend.
+
+        Args:
+            t: Current integration time. The autonomous GVS equations ignore
+                its value.
+            y: State vector ``[q, qd]`` with shape
+                ``(2 * self.num_dofs,)``.
+            actuation_args: Optional actuation input and external generalized
+                force, using the same convention as :meth:`forward_dynamics`.
+            backend: Per-call dynamics-term backend. ``None`` uses the model's
+                configured backend; ``"jax"`` is used by derivative transforms.
+
+        Returns:
+            State derivative ``[qd, qdd]`` with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` does not contain one or two
+                elements.
+        """
 
         del t
         # Split the state vector into configuration and velocity
