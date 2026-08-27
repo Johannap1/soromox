@@ -72,7 +72,7 @@ from tools.benchmarks._benchmark_common import (
 
 Array = jax.Array
 Tree = Any
-_BACKEND_AWARE_METHODS = frozenset({"dynamics_terms", "forward_dynamics", "rollout_to"})
+_DIRECT_BACKEND_AWARE_METHODS = frozenset({"dynamics_terms", "forward_dynamics"})
 
 
 def _active_cpu_affinity() -> str | None:
@@ -151,7 +151,9 @@ def _execution_backend_applies(config: SystemBenchmark, method: str) -> bool:
         method dispatches dynamics through that backend.
     """
 
-    return config.supports_backend and method in _BACKEND_AWARE_METHODS
+    return config.supports_backend and (
+        method in _DIRECT_BACKEND_AWARE_METHODS or method.startswith("rollout")
+    )
 
 
 def _dense_forward_dynamics(

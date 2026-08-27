@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from collections import defaultdict
 
@@ -50,12 +51,25 @@ def test_invalid_backend_is_rejected() -> None:
         benchmark.parse_args(["--backend", "cuda"])
 
 
-def test_backend_metadata_distinguishes_supported_methods() -> None:
+@pytest.mark.parametrize(
+    "method",
+    [
+        "dynamics_terms",
+        "forward_dynamics",
+        "rollout_to",
+        "rollout_closed_loop_to",
+        "rollout_discrete_closed_loop_to",
+    ],
+)
+def test_backend_metadata_includes_dynamics_and_rollout_methods(method: str) -> None:
     registry = benchmark._build_system_registry()
 
-    assert benchmark._execution_backend_applies(registry["gvs"], "dynamics_terms")
-    assert benchmark._execution_backend_applies(registry["pcs"], "forward_dynamics")
-    assert benchmark._execution_backend_applies(registry["planar_pcs"], "rollout_to")
+    assert benchmark._execution_backend_applies(registry["gvs"], method)
+
+
+def test_backend_metadata_excludes_jax_only_methods_and_systems() -> None:
+    registry = benchmark._build_system_registry()
+
     assert not benchmark._execution_backend_applies(registry["gvs"], "inertia_matrix")
     assert not benchmark._execution_backend_applies(
         registry["pendulum"], "forward_dynamics"
@@ -72,6 +86,18 @@ def test_csv_records_execution_backend_metadata(tmp_path) -> None:
     assert "backend" in header
     assert "resolved_backend" in header
     assert "backend_applies" in header
+
+
+def test_json_records_resolved_backend(tmp_path) -> None:
+    path = tmp_path / "results.json"
+    benchmark._write_json(
+        [{"device": "gpu", "backend": "auto", "resolved_backend": "warp"}],
+        path,
+    )
+
+    rows = json.loads(path.read_text(encoding="utf-8"))
+
+    assert rows[0]["resolved_backend"] == "warp"
 
 
 def test_measure_jitted_call_supports_warmup_duration() -> None:
