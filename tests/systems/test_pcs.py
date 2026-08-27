@@ -24,6 +24,21 @@ NUM_RANDOM_SAMPLES = 5
 NUM_IK_SAMPLES = 10
 
 
+class _DynamicsDispatchProbe(eqx.Module):
+    """Small differentiable model for transform-routing tests."""
+
+    scale: Array
+    num_dofs: int = eqx.field(static=True)
+
+    def _assemble_dynamics_terms(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
+        inertia = self.scale * jnp.eye(self.num_dofs, dtype=q.dtype) + jnp.outer(q, q)
+        coriolis_qd = self.scale * q * qd
+        gravity = q + self.scale
+        return inertia, coriolis_qd, gravity
+
+
 def make_pcs(
     num_segments: int = 2,
     xi_ref: Array | None = None,
@@ -31,6 +46,7 @@ def make_pcs(
     num_gauss_points: int = 3,
     strain_selector: Array | None = None,
     scale_rotational_basis_by_length: bool = False,
+    warp_block_dim: int | None = None,
 ):
     segment_length = total_length / num_segments
     L = segment_length * jnp.ones((num_segments,))
@@ -51,6 +67,9 @@ def make_pcs(
         reference_strain=xi_ref,
     )
 
+    model_kwargs = {}
+    if warp_block_dim is not None:
+        model_kwargs["warp_block_dim"] = warp_block_dim
     model = PCS(
         params=params,
         structure=PCSStructure(
@@ -58,6 +77,7 @@ def make_pcs(
             strain_selector=strain_selector,
             scale_rotational_basis_by_length=scale_rotational_basis_by_length,
         ),
+        **model_kwargs,
     )
 
     return model, params
@@ -374,6 +394,7 @@ def test_public_pcs_accessors_and_geometry_helpers() -> None:
     q = jnp.zeros((int(model.num_active_strains.item()),), dtype=jnp.float64)
 
     assert model.is_planar is False
+    assert model.warp_block_dim == 192
     assert_allclose(model.length, jnp.sum(params.link.length), rtol=RTOL, atol=ATOL)
     assert_allclose(model.segment_length, params.link.length, rtol=RTOL, atol=ATOL)
 
@@ -390,6 +411,22 @@ def test_public_pcs_accessors_and_geometry_helpers() -> None:
         rtol=RTOL,
         atol=ATOL,
     )
+
+
+def test_pcs_warp_block_dim_override_and_validation() -> None:
+    _, params = make_pcs(num_segments=1)
+    configured = PCS(params=params, warp_block_dim=128)
+
+    assert configured.warp_block_dim == 128
+    for invalid, error_type in (
+        (True, TypeError),
+        (128.0, TypeError),
+        (0, ValueError),
+        (33, ValueError),
+        (1056, ValueError),
+    ):
+        with pytest.raises(error_type, match="warp_block_dim"):
+            PCS(params=params, warp_block_dim=invalid)
 
 
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
@@ -1455,6 +1492,158 @@ def test_dynamics_terms_match_public_matrices(
         assert_allclose(yd, jnp.concatenate([qd, qdd_expected]), rtol=RTOL, atol=ATOL)
 
 
+def test_warp_dispatch_batches_primals_and_differentiates_with_jax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from soromox.systems.pcs import _dynamics
+
+    model = _DynamicsDispatchProbe(
+        scale=jnp.asarray(2.0, dtype=jnp.float64),
+        num_dofs=3,
+    )
+    q = jnp.asarray([0.1, -0.2, 0.3], dtype=jnp.float64)
+    qd = jnp.asarray([-0.4, 0.5, 0.6], dtype=jnp.float64)
+
+    def fake_batch(model, q, qd):
+        del qd
+        batch_size = q.shape[0]
+        value = jnp.asarray(batch_size, dtype=q.dtype)
+        return (
+            jnp.full((batch_size, model.num_dofs, model.num_dofs), value),
+            jnp.full((batch_size, model.num_dofs), value + 1.0),
+            jnp.full((batch_size, model.num_dofs), value + 2.0),
+        )
+
+    monkeypatch.setattr(_dynamics, "_execute_batch", fake_batch)
+
+    primal = _dynamics.evaluate_terms(model, q, qd)
+    assert_allclose(primal[0], jnp.ones((3, 3)), rtol=0.0, atol=0.0)
+
+    q_batch = jnp.stack((q, 2.0 * q, 3.0 * q))
+    qd_batch = jnp.stack((qd, 2.0 * qd, 3.0 * qd))
+    batched = jax.vmap(_dynamics.evaluate_terms, in_axes=(None, 0, 0))(
+        model, q_batch, qd_batch
+    )
+    assert_allclose(batched[0], jnp.full((3, 3, 3), 3.0), rtol=0.0, atol=0.0)
+
+    tangent = jnp.asarray([0.7, -0.8, 0.9], dtype=jnp.float64)
+    expected_jvp = jax.jvp(
+        lambda q_: model._assemble_dynamics_terms(q_, qd),
+        (q,),
+        (tangent,),
+    )
+    actual_jvp = jax.jvp(
+        lambda q_: _dynamics.evaluate_terms(model, q_, qd),
+        (q,),
+        (tangent,),
+    )
+    for actual_tree, expected_tree in zip(actual_jvp, expected_jvp, strict=True):
+        for actual, expected in zip(actual_tree, expected_tree, strict=True):
+            assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+
+    def objective(evaluate, q):
+        return sum(jnp.sum(term) for term in evaluate(model, q, qd))
+
+    expected_gradient = jax.grad(
+        lambda q_: objective(
+            lambda model_, q__, qd_: model_._assemble_dynamics_terms(q__, qd_),
+            q_,
+        )
+    )(q)
+    actual_gradient = jax.grad(lambda q_: objective(_dynamics.evaluate_terms, q_))(q)
+    assert_allclose(actual_gradient, expected_gradient, rtol=RTOL, atol=ATOL)
+
+
+def test_configured_warp_backend_routes_autodiff_to_jax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from soromox.systems.pcs import _dynamics
+
+    reference, params = make_pcs(num_segments=1, num_gauss_points=5)
+    robot = PCS(
+        params=params,
+        structure=PCSStructure(num_gauss_points=5),
+        backend="warp",
+    )
+    q = jnp.linspace(0.01, -0.02, robot.num_dofs, dtype=jnp.float64)
+    qd = jnp.linspace(0.03, -0.04, robot.num_dofs, dtype=jnp.float64)
+    tangent = jnp.linspace(0.2, -0.3, robot.num_dofs, dtype=jnp.float64)
+
+    def fail_if_warp_is_staged(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("autodiff staged the forward-only Warp backend")
+
+    monkeypatch.setattr(_dynamics, "_execute_batch", fail_if_warp_is_staged)
+
+    expected_jvp = jax.jvp(
+        lambda q_: reference.dynamics_terms(q_, qd, backend="jax"),
+        (q,),
+        (tangent,),
+    )
+    actual_jvp = jax.jvp(lambda q_: robot.dynamics_terms(q_, qd), (q,), (tangent,))
+    for actual_tree, expected_tree in zip(actual_jvp, expected_jvp, strict=True):
+        for actual, expected in zip(actual_tree, expected_tree, strict=True):
+            assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+
+    y = jnp.concatenate((q, qd))
+    y_tangent = jnp.concatenate((tangent, -tangent))
+    expected_forward_jvp = jax.jvp(
+        lambda y_: reference.forward_dynamics(jnp.asarray(0.0), y_),
+        (y,),
+        (y_tangent,),
+    )
+    actual_forward_jvp = jax.jvp(
+        lambda y_: robot.forward_dynamics(jnp.asarray(0.0), y_),
+        (y,),
+        (y_tangent,),
+    )
+    for actual, expected in zip(actual_forward_jvp, expected_forward_jvp, strict=True):
+        assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.parametrize("scale_rotational_basis_by_length", [False, True])
+@pytest.mark.parametrize("warp_block_dim", [None, 128])
+def test_five_point_warp_terms_match_jax_on_gpu(
+    scale_rotational_basis_by_length: bool,
+    warp_block_dim: int | None,
+) -> None:
+    if jax.default_backend() != "gpu":
+        pytest.skip("PCS Warp kernels require a JAX GPU backend.")
+    pytest.importorskip("warp")
+    selector = jnp.tile(
+        jnp.asarray([True, False, True, True, False, True], dtype=bool),
+        2,
+    )
+    robot, _ = make_pcs(
+        num_segments=2,
+        num_gauss_points=5,
+        strain_selector=selector,
+        scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        warp_block_dim=warp_block_dim,
+    )
+    q = jnp.stack(
+        (
+            jnp.linspace(-0.02, 0.03, robot.num_dofs, dtype=jnp.float64),
+            jnp.linspace(0.01, -0.015, robot.num_dofs, dtype=jnp.float64),
+        )
+    )
+    qd = -0.4 * q
+
+    expected = robot.dynamics_terms(q, qd, backend="jax")
+    actual = robot.dynamics_terms(q, qd, backend="warp")
+    automatic = robot.dynamics_terms(q, qd, backend="auto")
+    mapped = jax.vmap(
+        lambda q_i, qd_i: robot.dynamics_terms(q_i, qd_i, backend="warp")
+    )(q, qd)
+    scalar = robot.dynamics_terms(q[0], qd[0], backend="warp")
+
+    for result in (actual, automatic, mapped):
+        for actual_term, expected_term in zip(result, expected, strict=True):
+            assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
+    for actual_term, expected_term in zip(scalar, expected, strict=True):
+        assert_allclose(actual_term, expected_term[0], rtol=2e-8, atol=2e-10)
+
+
 def test_dynamics_terms_support_leading_inactive_segment():
     strain_selector = jnp.array(
         [
@@ -1529,6 +1718,7 @@ def test_cached_constant_matrices_refresh_after_update_params():
     expected_K = updated.B_xi.T @ expected_K_full @ updated.B_xi
     expected_D_full = updated.D_full
     expected_D = updated.B_xi.T @ expected_D_full @ updated.B_xi
+    expected_runtime_arrays = updated._dynamics_runtime_arrays(expected_M)
 
     assert_allclose(updated.M_segments, expected_M, rtol=RTOL, atol=ATOL)
     assert_allclose(updated.K_full, expected_K_full, rtol=RTOL, atol=ATOL)
@@ -1539,6 +1729,27 @@ def test_cached_constant_matrices_refresh_after_update_params():
     assert_allclose(
         updated.damping_matrix(jnp.zeros(updated.num_dofs)),
         expected_D,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    for actual, expected in zip(
+        (
+            updated.active_strain_indices,
+            updated.active_strain_scales,
+            updated.active_dof_ends,
+            updated.dynamics_local_points,
+            updated.weighted_mass_diagonals,
+            updated.inertia_upper_rows,
+            updated.inertia_upper_columns,
+            updated.gravity_base,
+        ),
+        expected_runtime_arrays,
+        strict=True,
+    ):
+        assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+    assert not jnp.allclose(
+        model.weighted_mass_diagonals,
+        updated.weighted_mass_diagonals,
         rtol=RTOL,
         atol=ATOL,
     )

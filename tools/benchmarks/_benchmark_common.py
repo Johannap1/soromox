@@ -211,7 +211,9 @@ def _articulated_soft_robot_context(
     return ctx
 
 
-def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
+def _planar_pcs_factory(
+    num_segments: int, gauss_points: int = 5, *, backend: str = "auto"
+) -> PlanarPCS:
     return PlanarPCS.from_links(
         [
             LinkSpec.circular(
@@ -228,6 +230,7 @@ def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
         base_pose=jnp.array([jnp.pi / 2, 0.0, 0.0]),
         gravity=jnp.array([0.0, 9.81]),
         structure=PlanarPCSStructure(num_gauss_points=gauss_points),
+        backend=backend,
     )
 
 
@@ -254,7 +257,9 @@ def _planar_pcs_context(system: PlanarPCS) -> MutableMapping[str, Array]:
     return ctx
 
 
-def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
+def _pcs_factory(
+    num_segments: int, gauss_points: int = 5, *, backend: str = "auto"
+) -> PCS:
     return PCS.from_links(
         [
             LinkSpec.circular(
@@ -271,6 +276,7 @@ def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
         base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         gravity=jnp.array([0.0, 0.0, -9.81]),
         structure=PCSStructure(num_gauss_points=gauss_points),
+        backend=backend,
     )
 
 

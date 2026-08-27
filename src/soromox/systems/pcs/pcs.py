@@ -12,12 +12,18 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
+from soromox.systems._dynamics import ExecutionBackend
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
     CrossSectionParams,
     IsotropicMaterialParams,
     LinkSpec,
+)
+from soromox.systems.pcs._dynamics import (
+    DEFAULT_PCS_WARP_BLOCK_DIM,
+    dispatch_terms,
+    validate_warp_block_dim,
 )
 from soromox.systems.pcs.params import PCSParams
 from soromox.systems.pcs.structures import PCSStructure
@@ -60,6 +66,8 @@ class PCS(SoftRobot):
         num_gauss_points: Requested nonzero Gauss-Legendre quadrature nodes.
         num_integration_points: Stored integration nodes, including zero-weight endpoints.
         integration_points, integration_weights: Quadrature nodes and weights.
+        warp_block_dim: Threads per block for the persistent Warp dynamics
+            kernel. Defaults to 192.
 
     Notes:
     -----
@@ -103,6 +111,8 @@ class PCS(SoftRobot):
     num_strains: int = eqx.field(static=True)  # Number of strains (6 * num_segments)
     _segment_dof_ends: tuple[int, ...] = eqx.field(static=True)
     scale_rotational_basis_by_length: bool = eqx.field(static=True)
+    backend: ExecutionBackend = eqx.field(static=True)
+    warp_block_dim: int = eqx.field(static=True)
 
     xi_ref: Array  # Reference configuration strain
     B_xi_unscaled: Array  # Unscaled strain basis matrix
@@ -119,6 +129,14 @@ class PCS(SoftRobot):
     young_stiffness_operator: Array
     shear_stiffness_operator: Array
     material_damping_operator: Array
+    active_strain_indices: Array
+    active_strain_scales: Array
+    active_dof_ends: Array
+    dynamics_local_points: Array
+    weighted_mass_diagonals: Array
+    inertia_upper_rows: Array
+    inertia_upper_columns: Array
+    gravity_base: Array
 
     @staticmethod
     def params_from_links(
@@ -285,6 +303,8 @@ class PCS(SoftRobot):
         structure: PCSStructure | None = None,
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
+        backend: ExecutionBackend = "auto",
+        warp_block_dim: int = DEFAULT_PCS_WARP_BLOCK_DIM,
         **kwargs: Any,
     ):
         """Initialize a spatial PCS model from typed parameters.
@@ -297,6 +317,9 @@ class PCS(SoftRobot):
                 model.
             passive_elements: Optional passive element or tuple of passive
                 elements. Pass ``None`` or an empty tuple to disable them.
+            backend: Preferred execution backend for accelerated methods.
+            warp_block_dim: CUDA threads per block for the persistent Warp
+                dynamics kernel. Must be a multiple of 32 from 32 to 1024.
             **kwargs: Additional keyword arguments forwarded to
                 :class:`BaseContinuumSoftRobot`.
 
@@ -309,10 +332,17 @@ class PCS(SoftRobot):
         if not isinstance(params, PCSParams):
             raise TypeError("params must be a PCSParams instance.")
         params.validate()
+        if backend not in ("auto", "jax", "warp"):
+            raise ValueError(
+                "backend must be one of 'auto', 'jax', or 'warp', "
+                f"got {backend!r}."
+            )
         super().__init__(base_pose=params.base_pose, **kwargs)
         if structure is None:
             structure = PCSStructure()
         self.params = params
+        self.backend = backend
+        self.warp_block_dim = validate_warp_block_dim(warp_block_dim)
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -705,6 +735,58 @@ class PCS(SoftRobot):
         D_active = self.B_xi.T @ D_full @ self.B_xi
         return M_segments, K_full, K_active, D_full, D_active
 
+    def _dynamics_runtime_arrays(
+        self, M_segments: Array
+    ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
+        """Build compact, state-independent operands for dynamics backends."""
+
+        if self.num_dofs == 0:
+            active_indices = -jnp.ones(
+                (self.num_segments, 6), dtype=jnp.int32
+            )
+            active_scales = jnp.zeros((self.num_segments, 6), dtype=self.B_xi.dtype)
+        else:
+            basis = self.B_xi.reshape(self.num_segments, 6, self.num_dofs)
+            active_mask = jnp.any(basis != 0.0, axis=-1)
+            active_indices = jnp.argmax(jnp.abs(basis), axis=-1).astype(jnp.int32)
+            active_indices = jnp.where(active_mask, active_indices, -1)
+            safe_indices = jnp.maximum(active_indices, 0)[..., None]
+            active_scales = jnp.take_along_axis(basis, safe_indices, axis=-1)[..., 0]
+            active_scales = jnp.where(active_mask, active_scales, 0.0)
+
+        points, weights = vmap(
+            scale_interior_gaussian_quadrature, in_axes=(None, None, 0, 0)
+        )(
+            self.integration_points,
+            self.integration_weights,
+            self.L_cum[:-1],
+            self.L_cum[1:],
+        )
+        local_points = points - self.L_cum[:-1, None]
+        operator_points = jnp.concatenate([local_points, self.L[:, None]], axis=1)
+        weighted_masses = weights[..., None] * jnp.diagonal(
+            M_segments, axis1=-2, axis2=-1
+        )[:, None, :]
+        upper_rows = jnp.asarray(
+            [row for column in range(self.num_dofs) for row in range(column + 1)],
+            dtype=jnp.int32,
+        )
+        upper_columns = jnp.asarray(
+            [column for column in range(self.num_dofs) for _ in range(column + 1)],
+            dtype=jnp.int32,
+        )
+        gravity_base = se3.adjoint_inverse(self.g0) @ self.g
+        return (
+            active_indices,
+            active_scales,
+            jnp.asarray(self._segment_dof_ends, dtype=jnp.int32),
+            operator_points,
+            weighted_masses,
+            upper_rows,
+            upper_columns,
+            gravity_base,
+        )
+
     def precompute(self) -> None:
         """Refresh state-independent matrices cached by the model.
 
@@ -729,6 +811,22 @@ class PCS(SoftRobot):
         object.__setattr__(self, "K_active", K_active)
         object.__setattr__(self, "D_full", D_full)
         object.__setattr__(self, "D_active", D_active)
+        runtime_arrays = self._dynamics_runtime_arrays(M_segments)
+        for name, value in zip(
+            (
+                "active_strain_indices",
+                "active_strain_scales",
+                "active_dof_ends",
+                "dynamics_local_points",
+                "weighted_mass_diagonals",
+                "inertia_upper_rows",
+                "inertia_upper_columns",
+                "gravity_base",
+            ),
+            runtime_arrays,
+            strict=True,
+        ):
+            object.__setattr__(self, name, value)
 
     def _with_refreshed_precomputed_matrices(self) -> "PCS":
         """Return a copy with cached state-independent matrices refreshed."""
@@ -753,10 +851,25 @@ class PCS(SoftRobot):
             D_full,
             D_active,
         ) = updated_self._precomputed_matrices()
-        return eqx.tree_at(
+        updated_self = eqx.tree_at(
             lambda m: (m.M_segments, m.K_full, m.K_active, m.D_full, m.D_active),
             updated_self,
             (M_segments, K_full, K_active, D_full, D_active),
+        )
+        runtime_arrays = updated_self._dynamics_runtime_arrays(M_segments)
+        return eqx.tree_at(
+            lambda m: (
+                m.active_strain_indices,
+                m.active_strain_scales,
+                m.active_dof_ends,
+                m.dynamics_local_points,
+                m.weighted_mass_diagonals,
+                m.inertia_upper_rows,
+                m.inertia_upper_columns,
+                m.gravity_base,
+            ),
+            updated_self,
+            runtime_arrays,
         )
 
     @eqx.filter_jit
@@ -3234,8 +3347,35 @@ class PCS(SoftRobot):
         )
         return Ws_inner, gravity_ps, J_ps, Jd_qd_ps
 
+    def dynamics_terms(
+        self,
+        q: Array,
+        qd: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array, Array]:
+        """Assemble scalar or batched dynamics terms with backend dispatch.
+
+        ``backend=None`` uses the model's configured :attr:`backend`. Warp is
+        selected only for forward-only GPU execution with exactly five Gauss
+        points; CPU execution, other quadrature counts, and all forward- or
+        reverse-mode differentiation use the JAX implementation. Applying
+        :func:`jax.vmap` to scalar calls invokes one batch-shaped Warp pipeline
+        rather than mapping independent batch-one launches.
+        """
+
+        return dispatch_terms(
+            self,
+            q,
+            qd,
+            backend=backend,
+            warp_supported=type(self) is PCS,
+        )
+
     @eqx.filter_jit
-    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+    def _assemble_dynamics_terms(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms in active generalized coordinates.
 
@@ -3293,7 +3433,6 @@ class PCS(SoftRobot):
 
         return inertia, coriolis_qd, gravity_force
 
-    @eqx.filter_jit
     def forward_dynamics(
         self, t: Array, y: Array, actuation_args: tuple | None = None
     ) -> Array:
@@ -3310,7 +3449,44 @@ class PCS(SoftRobot):
         Returns:
             yd (Array): Time derivative of the state vector.
         """
-        # Split the state vector into configuration and velocity
+        return PCS._forward_dynamics_custom_jvp(self, t, y, actuation_args)
+
+    @eqx.filter_custom_jvp
+    @staticmethod
+    def _forward_dynamics_custom_jvp(
+        model: "PCS", t: Array, y: Array, actuation_args: tuple | None
+    ) -> Array:
+        """Transform-aware entry point for public forward dynamics."""
+
+        return model._evaluate_forward_dynamics(t, y, actuation_args, backend=None)
+
+    @_forward_dynamics_custom_jvp.def_jvp
+    def _forward_dynamics_custom_jvp_jvp(
+        primals: tuple["PCS", Array, Array, tuple | None],
+        tangents: tuple[Any, Any, Any, Any],
+    ) -> tuple[Array, Array]:
+        """Differentiate the complete forward calculation through JAX."""
+
+        return eqx.filter_jvp(
+            lambda model, t, y, actuation_args: model._evaluate_forward_dynamics(
+                t, y, actuation_args, backend="jax"
+            ),
+            primals,
+            tangents,
+        )
+
+    @eqx.filter_jit
+    def _evaluate_forward_dynamics(
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None,
+        *,
+        backend: ExecutionBackend | None,
+    ) -> Array:
+        """Evaluate forward dynamics with an explicit terms backend."""
+
+        del t
         q, qd = jnp.split(y, 2)
 
         # split the actuation arguments if provided
@@ -3329,7 +3505,7 @@ class PCS(SoftRobot):
         if tau_ext is None:
             tau_ext = jnp.zeros((q.shape[-1],))
 
-        B, Cqd, G = self.dynamics_terms(q, qd)
+        B, Cqd, G = self.dynamics_terms(q, qd, backend=backend)
         tau_el = self.elastic_force(q)
         tau_u = self.actuation_force(q, u, qd=qd)
 

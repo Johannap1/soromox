@@ -1,5 +1,5 @@
 import math
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 import equinox as eqx
 import jax
@@ -11,6 +11,7 @@ from soromox.actuation.threadlike import (
     BaseThreadlikeRoutingParams,
     ThreadlikeRouting,
 )
+from soromox.systems._dynamics import ExecutionBackend
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
@@ -63,8 +64,6 @@ from soromox.utils.geometry import poses
 from soromox.utils.integration import gauss_quadrature
 from soromox.utils.lie_algebra import se3, so3
 from soromox.utils.numerics import safe_divide, safe_norm, safe_normalize
-
-ExecutionBackend = Literal["auto", "jax", "warp"]
 
 __all__ = ["ExecutionBackend", "GVS"]
 

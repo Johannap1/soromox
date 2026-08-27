@@ -3,6 +3,7 @@ from soromox.autodiff import (
     custom_jvp_mode,
     set_custom_jvp_enabled,
 )
+from soromox.systems._dynamics import ExecutionBackend
 from soromox.systems.articulated.params import (
     ArticulatedSoftRobotParams,
     McKibbenActuatedUMArmParams,
@@ -53,7 +54,6 @@ from soromox.systems.system_state import EnvironmentState, SystemState
 from .articulated import ArticulatedSoftRobot, McKibbenActuatedUMArm
 from .gvs import (
     GVS,
-    ExecutionBackend,
     GVSSegment,
     StrainBasisSpec,
 )

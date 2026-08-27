@@ -32,6 +32,7 @@ def make_planar_pcs(
     num_gauss_points: int = 5,
     strain_selector: Array | None = None,
     scale_rotational_basis_by_length: bool = False,
+    warp_block_dim: int | None = None,
 ):
     """
     Create a planar constant strain model.
@@ -59,6 +60,9 @@ def make_planar_pcs(
         reference_strain=xi_ref,
     )
 
+    model_kwargs = {}
+    if warp_block_dim is not None:
+        model_kwargs["warp_block_dim"] = warp_block_dim
     model = PlanarPCS(
         params=params,
         structure=PlanarPCSStructure(
@@ -66,6 +70,7 @@ def make_planar_pcs(
             strain_selector=strain_selector,
             scale_rotational_basis_by_length=scale_rotational_basis_by_length,
         ),
+        **model_kwargs,
     )
 
     return model, params
@@ -396,6 +401,7 @@ def test_public_planar_pcs_accessors_geometry() -> None:
     q = jnp.zeros((int(model.num_active_strains.item()),), dtype=jnp.float64)
 
     assert model.is_planar is True
+    assert model.warp_block_dim == 128
     assert_allclose(model.length, jnp.sum(params.link.length), rtol=RTOL, atol=ATOL)
     assert_allclose(model.segment_length, params.link.length, rtol=RTOL, atol=ATOL)
 
@@ -412,6 +418,22 @@ def test_public_planar_pcs_accessors_geometry() -> None:
         rtol=RTOL,
         atol=ATOL,
     )
+
+
+def test_planar_pcs_warp_block_dim_override_and_validation() -> None:
+    _, params = make_planar_pcs(num_segments=1)
+    configured = PlanarPCS(params=params, warp_block_dim=64)
+
+    assert configured.warp_block_dim == 64
+    for invalid, error_type in (
+        (True, TypeError),
+        (64.0, TypeError),
+        (0, ValueError),
+        (33, ValueError),
+        (1056, ValueError),
+    ):
+        with pytest.raises(error_type, match="warp_block_dim"):
+            PlanarPCS(params=params, warp_block_dim=invalid)
 
 
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
@@ -1641,6 +1663,49 @@ def test_dynamics_terms_match_public_matrices_planar(
         assert_allclose(yd, jnp.concatenate([qd, qdd_expected]), rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.parametrize("scale_rotational_basis_by_length", [False, True])
+@pytest.mark.parametrize("warp_block_dim", [None, 64])
+def test_five_point_warp_terms_match_jax_on_gpu_planar(
+    scale_rotational_basis_by_length: bool,
+    warp_block_dim: int | None,
+) -> None:
+    if jax.default_backend() != "gpu":
+        pytest.skip("PlanarPCS Warp kernels require a JAX GPU backend.")
+    pytest.importorskip("warp")
+    selector = jnp.tile(
+        jnp.asarray([True, False, True], dtype=bool),
+        2,
+    )
+    robot, _ = make_planar_pcs(
+        num_segments=2,
+        num_gauss_points=5,
+        strain_selector=selector,
+        scale_rotational_basis_by_length=scale_rotational_basis_by_length,
+        warp_block_dim=warp_block_dim,
+    )
+    q = jnp.stack(
+        (
+            jnp.linspace(-0.02, 0.03, robot.num_dofs, dtype=jnp.float64),
+            jnp.linspace(0.01, -0.015, robot.num_dofs, dtype=jnp.float64),
+        )
+    )
+    qd = -0.4 * q
+
+    expected = robot.dynamics_terms(q, qd, backend="jax")
+    actual = robot.dynamics_terms(q, qd, backend="warp")
+    automatic = robot.dynamics_terms(q, qd, backend="auto")
+    mapped = jax.vmap(
+        lambda q_i, qd_i: robot.dynamics_terms(q_i, qd_i, backend="warp")
+    )(q, qd)
+    scalar = robot.dynamics_terms(q[0], qd[0], backend="warp")
+
+    for result in (actual, automatic, mapped):
+        for actual_term, expected_term in zip(result, expected, strict=True):
+            assert_allclose(actual_term, expected_term, rtol=2e-8, atol=2e-10)
+    for actual_term, expected_term in zip(scalar, expected, strict=True):
+        assert_allclose(actual_term, expected_term[0], rtol=2e-8, atol=2e-10)
+
+
 def test_cached_constant_matrices_refresh_after_update_params_planar():
     selector_per_segment = jnp.array([True, True, False], dtype=bool)
     base_model, params = make_planar_pcs(num_segments=2)
@@ -1663,6 +1728,7 @@ def test_cached_constant_matrices_refresh_after_update_params_planar():
     expected_K = updated.B_xi.T @ expected_K_full @ updated.B_xi
     expected_D_full = updated.D_full
     expected_D = updated.B_xi.T @ expected_D_full @ updated.B_xi
+    expected_runtime_arrays = updated._dynamics_runtime_arrays(expected_M)
 
     assert_allclose(updated.M_segments, expected_M, rtol=RTOL, atol=ATOL)
     assert_allclose(updated.K_full, expected_K_full, rtol=RTOL, atol=ATOL)
@@ -1673,6 +1739,27 @@ def test_cached_constant_matrices_refresh_after_update_params_planar():
     assert_allclose(
         updated.damping_matrix(jnp.zeros(updated.num_dofs)),
         expected_D,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    for actual, expected in zip(
+        (
+            updated.active_strain_indices,
+            updated.active_strain_scales,
+            updated.active_dof_ends,
+            updated.dynamics_local_points,
+            updated.weighted_mass_diagonals,
+            updated.inertia_upper_rows,
+            updated.inertia_upper_columns,
+            updated.gravity_base,
+        ),
+        expected_runtime_arrays,
+        strict=True,
+    ):
+        assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+    assert not jnp.allclose(
+        model.weighted_mass_diagonals,
+        updated.weighted_mass_diagonals,
         rtol=RTOL,
         atol=ATOL,
     )

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array
+
+from soromox.systems._dynamics import make_dynamics_evaluator
 
 DynamicsTerms = tuple[Array, Array, Array]
 
@@ -49,50 +51,12 @@ def _execute_batch(model: DynamicsModel, q: Array, qd: Array) -> DynamicsTerms:
     return dynamics_terms(model, q, qd, lanes_per_block=lanes_per_block)
 
 
-@jax.custom_batching.custom_vmap
-def _execute_primal(model: DynamicsModel, q: Array, qd: Array) -> DynamicsTerms:
-    """Give the batched Warp implementation scalar-call semantics."""
+def _call_execute_batch(
+    model: DynamicsModel, q: Array, qd: Array
+) -> DynamicsTerms:
+    """Resolve the executor dynamically so tests can replace it safely."""
 
-    batched = _execute_batch(model, q[None, :], qd[None, :])
-    return jax.tree.map(lambda value: value[0], batched)
-
-
-@_execute_primal.def_vmap
-def _vmap_rule(
-    axis_size: int,
-    in_batched: tuple[Any, bool, bool],
-    model: DynamicsModel,
-    q: Array,
-    qd: Array,
-) -> tuple[DynamicsTerms, tuple[bool, bool, bool]]:
-    """Map independent environments to one batched Warp execution."""
-
-    model_batched, q_batched, qd_batched = in_batched
-    if any(jax.tree.leaves(model_batched)):
-        raise ValueError("Batching over GVS model parameters is not supported.")
-    if not q_batched:
-        q = jnp.broadcast_to(q, (axis_size, *q.shape))
-    if not qd_batched:
-        qd = jnp.broadcast_to(qd, (axis_size, *qd.shape))
-    return _execute_batch(model, q, qd), (True, True, True)
+    return _execute_batch(model, q, qd)
 
 
-@eqx.filter_custom_jvp
-def evaluate_terms(model: DynamicsModel, q: Array, qd: Array) -> DynamicsTerms:
-    """Evaluate Warp dynamics while retaining differentiable JAX semantics."""
-
-    return _execute_primal(model, q, qd)
-
-
-@evaluate_terms.def_jvp
-def _jvp_rule(
-    primals: tuple[DynamicsModel, Array, Array],
-    tangents: tuple[Any, Array | None, Array | None],
-) -> tuple[DynamicsTerms, DynamicsTerms]:
-    """Use the JAX assembly for both forward- and reverse-mode derivatives."""
-
-    return eqx.filter_jvp(
-        lambda model, q, qd: model._assemble_dynamics_terms(q, qd),
-        primals,
-        tangents,
-    )
+evaluate_terms = make_dynamics_evaluator(_call_execute_batch, family_name="GVS")

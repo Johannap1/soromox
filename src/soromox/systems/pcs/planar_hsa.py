@@ -8,6 +8,7 @@ from jax import Array, lax, vmap
 from jax import numpy as jnp
 
 from soromox.systems.components import CrossSectionGeometry
+from soromox.systems.pcs._dynamics import DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM
 from soromox.systems.pcs.params import PlanarHSAParams
 from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.pcs.structures import PlanarHSAStructure
@@ -166,6 +167,8 @@ class PlanarHSA(PlanarPCS):
             self, eps=structure.eps, base_pose=params.base_pose, **kwargs
         )
         self.params = params
+        self.backend = "jax"
+        self.warp_block_dim = DEFAULT_PLANAR_PCS_WARP_BLOCK_DIM
 
         n_segments = int(params.length.shape[0])
         n_rods = int(params.rod_offset.shape[1])
@@ -198,6 +201,14 @@ class PlanarHSA(PlanarPCS):
         self.young_stiffness_operator = None
         self.shear_stiffness_operator = None
         self.material_damping_operator = None
+        self.active_strain_indices = None
+        self.active_strain_scales = None
+        self.active_dof_ends = None
+        self.dynamics_local_points = None
+        self.weighted_mass_diagonals = None
+        self.inertia_upper_rows = None
+        self.inertia_upper_columns = None
+        self.gravity_base = None
         self.scale_rotational_basis_by_length = False
 
         num_gauss_points = structure.num_gauss_points
