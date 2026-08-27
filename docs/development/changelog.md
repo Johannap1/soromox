@@ -13,6 +13,12 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added optional Warp dynamics backends for `GVS`, `PCS`, and `PlanarPCS`,
+  including automatic GPU selection, JAX-routed differentiation, and reusable
+  Warp-native execution APIs; see
+  [Execution Backends](../user-guide/execution-backends.md) and
+  [PR #177](https://github.com/tud-phi/soromox/pull/177).
+
 ### Changed
 
 - Made effort laws declare their transmission-state dependencies so
@@ -26,6 +32,14 @@ and include benchmark baseline and measurement context for performance claims.
   compatible GPU is available, and supports opt-in CPU measurements.
 
 ### Performance
+
+- Accelerated batched FP64 continuum dynamics on an RTX 5090 with Warp. For
+  four-segment models at batch 256, order-1 GVS dynamics terms improved 3.02×
+  (2.224 to 0.735 ms) and forward dynamics 2.40× (2.482 to 1.034 ms), while
+  five-point PlanarPCS and PCS forward dynamics improved 2.21× and 1.66×.
+  Warp is not a CPU optimization: single-environment order-5/9-point GVS terms
+  were 2.46× slower (0.587 to 1.445 ms), so `backend="auto"` selects JAX on CPU;
+  see [PR #177](https://github.com/tud-phi/soromox/pull/177).
 
 - Accelerated JAX GVS dynamics-term assembly with compact strain bases,
   velocity reuse, and four bounded active-DOF prefix buckets. Against the
