@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -69,6 +70,16 @@ def test_warp_execution_does_not_import_system_implementations() -> None:
     )
     for module_name in forbidden:
         assert module_name not in sources
+
+
+def test_warp_array_annotations_use_bracket_syntax() -> None:
+    """Keep Warp array annotations aligned with the Newton code style."""
+
+    warp_root = SOURCE_ROOT / "execution" / "warp"
+    legacy_annotation = re.compile(r"(?::|->)\s*wp\.array(?:[1-4]d)?\s*\(\s*dtype\s*=")
+    for path in warp_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        assert legacy_annotation.search(source) is None, path
 
 
 def test_system_models_only_import_the_neutral_execution_api() -> None:

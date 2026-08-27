@@ -13,13 +13,13 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _coadjoint_wrench(
-    velocity_first: wp.array2d(dtype=wp.float64),
-    velocity_second: wp.array2d(dtype=wp.float64),
-    derivative_first: wp.array2d(dtype=wp.float64),
-    derivative_second: wp.array2d(dtype=wp.float64),
+    velocity_first: wp.array2d[wp.float64],
+    velocity_second: wp.array2d[wp.float64],
+    derivative_first: wp.array2d[wp.float64],
+    derivative_second: wp.array2d[wp.float64],
     use_first: bool,
     base_row: int,
-    masses: wp.array2d(dtype=wp.float64),
+    masses: wp.array2d[wp.float64],
     quadrature: int,
 ) -> Vec6d:
     """Combine inertial acceleration and coadjoint momentum terms.

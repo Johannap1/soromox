@@ -32,8 +32,8 @@ SPATIAL_DIM = 6
 
 @wp.func
 def _load_sparse_column(
-    values: wp.array2d(dtype=wp.float64),
-    rows: wp.array2d(dtype=wp.int32),
+    values: wp.array2d[wp.float64],
+    rows: wp.array2d[wp.int32],
     cell_item: int,
     segment: int,
     column: int,
@@ -59,10 +59,10 @@ def _load_sparse_column(
 
 @wp.func
 def _dynamic_strain(
-    basis_values: wp.array2d(dtype=wp.float64),
-    basis_rows: wp.array2d(dtype=wp.int32),
-    reference: wp.array2d(dtype=wp.float64),
-    coordinates: wp.array2d(dtype=wp.float64),
+    basis_values: wp.array2d[wp.float64],
+    basis_rows: wp.array2d[wp.int32],
+    reference: wp.array2d[wp.float64],
+    coordinates: wp.array2d[wp.float64],
     cell_item: int,
     segment: int,
     coordinate_item: int,
@@ -101,9 +101,9 @@ def _dynamic_strain(
 
 @wp.func
 def _dynamic_strain_rate(
-    basis_values: wp.array2d(dtype=wp.float64),
-    basis_rows: wp.array2d(dtype=wp.int32),
-    velocities: wp.array2d(dtype=wp.float64),
+    basis_values: wp.array2d[wp.float64],
+    basis_rows: wp.array2d[wp.int32],
+    velocities: wp.array2d[wp.float64],
     cell_item: int,
     segment: int,
     coordinate_item: int,
@@ -134,22 +134,22 @@ def _dynamic_strain_rate(
 
 @wp.kernel(enable_backward=False)
 def cell_terms_kernel(
-    q_link: wp.array2d(dtype=wp.float64),
-    qd_link: wp.array2d(dtype=wp.float64),
-    basis_z1: wp.array2d(dtype=wp.float64),
-    basis_z2: wp.array2d(dtype=wp.float64),
-    basis_rows: wp.array2d(dtype=wp.int32),
-    reference_z1: wp.array2d(dtype=wp.float64),
-    reference_z2: wp.array2d(dtype=wp.float64),
-    segment_lengths: wp.array(dtype=wp.float64),
-    cell_widths: wp.array(dtype=wp.float64),
-    num_cells: wp.array(dtype=wp.int32),
-    order_zero: wp.array(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    link_velocity: wp.array2d(dtype=wp.float64),
-    step_velocity: wp.array2d(dtype=wp.float64),
-    tangent_velocity_dot: wp.array2d(dtype=wp.float64),
+    q_link: wp.array2d[wp.float64],
+    qd_link: wp.array2d[wp.float64],
+    basis_z1: wp.array2d[wp.float64],
+    basis_z2: wp.array2d[wp.float64],
+    basis_rows: wp.array2d[wp.int32],
+    reference_z1: wp.array2d[wp.float64],
+    reference_z2: wp.array2d[wp.float64],
+    segment_lengths: wp.array[wp.float64],
+    cell_widths: wp.array[wp.float64],
+    num_cells: wp.array[wp.int32],
+    order_zero: wp.array[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    link_velocity: wp.array2d[wp.float64],
+    step_velocity: wp.array2d[wp.float64],
+    tangent_velocity_dot: wp.array2d[wp.float64],
 ):
     """Compute general cell-local Lie data for one batched cell work item.
 
@@ -299,22 +299,22 @@ def cell_terms_kernel(
 
 
 def launch_cell_terms(
-    q_link: wp.array2d(dtype=wp.float64),
-    qd_link: wp.array2d(dtype=wp.float64),
-    basis_z1: wp.array2d(dtype=wp.float64),
-    basis_z2: wp.array2d(dtype=wp.float64),
-    basis_rows: wp.array2d(dtype=wp.int32),
-    reference_z1: wp.array2d(dtype=wp.float64),
-    reference_z2: wp.array2d(dtype=wp.float64),
-    segment_lengths: wp.array(dtype=wp.float64),
-    cell_widths: wp.array(dtype=wp.float64),
-    num_cells: wp.array(dtype=wp.int32),
-    order_zero: wp.array(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    link_velocity: wp.array2d(dtype=wp.float64),
-    step_velocity: wp.array2d(dtype=wp.float64),
-    tangent_velocity_dot: wp.array2d(dtype=wp.float64),
+    q_link: wp.array2d[wp.float64],
+    qd_link: wp.array2d[wp.float64],
+    basis_z1: wp.array2d[wp.float64],
+    basis_z2: wp.array2d[wp.float64],
+    basis_rows: wp.array2d[wp.int32],
+    reference_z1: wp.array2d[wp.float64],
+    reference_z2: wp.array2d[wp.float64],
+    segment_lengths: wp.array[wp.float64],
+    cell_widths: wp.array[wp.float64],
+    num_cells: wp.array[wp.int32],
+    order_zero: wp.array[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    link_velocity: wp.array2d[wp.float64],
+    step_velocity: wp.array2d[wp.float64],
+    tangent_velocity_dot: wp.array2d[wp.float64],
 ):
     """Launch parallel GVS link-cell Lie-operator evaluation.
 

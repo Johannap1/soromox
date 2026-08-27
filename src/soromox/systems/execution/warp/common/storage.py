@@ -11,8 +11,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _matrix_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
+    first: wp.array2d[wp.float64],
+    second: wp.array2d[wp.float64],
     use_first: bool,
     base_row: int,
     row: int,
@@ -38,8 +38,8 @@ def _matrix_value(
 
 @wp.func
 def _vector_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
+    first: wp.array2d[wp.float64],
+    second: wp.array2d[wp.float64],
     use_first: bool,
     base_row: int,
     row: int,
@@ -63,8 +63,8 @@ def _vector_value(
 
 @wp.func
 def _write_matrix_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
+    first: wp.array2d[wp.float64],
+    second: wp.array2d[wp.float64],
     use_first: bool,
     base_row: int,
     row: int,
@@ -93,8 +93,8 @@ def _write_matrix_value(
 
 @wp.func
 def _write_vector_value(
-    first: wp.array2d(dtype=wp.float64),
-    second: wp.array2d(dtype=wp.float64),
+    first: wp.array2d[wp.float64],
+    second: wp.array2d[wp.float64],
     use_first: bool,
     base_row: int,
     row: int,

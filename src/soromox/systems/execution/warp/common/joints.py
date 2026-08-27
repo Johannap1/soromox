@@ -31,10 +31,10 @@ SPATIAL_DIM = 6
 
 @wp.func
 def _joint_strain(
-    basis: wp.array2d(dtype=wp.float64),
-    reference: wp.array2d(dtype=wp.float64),
-    coordinates: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
+    basis: wp.array2d[wp.float64],
+    reference: wp.array2d[wp.float64],
+    coordinates: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
     environment: int,
     segment: int,
 ) -> Vec6d:
@@ -75,9 +75,9 @@ def _joint_strain(
 
 @wp.func
 def _joint_strain_rate(
-    basis: wp.array2d(dtype=wp.float64),
-    velocities: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
+    basis: wp.array2d[wp.float64],
+    velocities: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
     environment: int,
     segment: int,
 ) -> Vec6d:
@@ -110,7 +110,7 @@ def _joint_strain_rate(
 
 @wp.func
 def _joint_basis_column(
-    basis: wp.array2d(dtype=wp.float64), segment: int, column: int
+    basis: wp.array2d[wp.float64], segment: int, column: int
 ) -> Vec6d:
     """Load one six-dimensional local joint-basis column.
 
@@ -135,16 +135,16 @@ def _joint_basis_column(
 
 @wp.kernel(enable_backward=False)
 def joint_terms_kernel(
-    q: wp.array2d(dtype=wp.float64),
-    qd: wp.array2d(dtype=wp.float64),
-    basis: wp.array2d(dtype=wp.float64),
-    reference: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    adjoint_dot: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    tangent_dot_qd: wp.array2d(dtype=wp.float64),
-    joint_velocity: wp.array2d(dtype=wp.float64),
+    q: wp.array2d[wp.float64],
+    qd: wp.array2d[wp.float64],
+    basis: wp.array2d[wp.float64],
+    reference: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    adjoint_dot: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    tangent_dot_qd: wp.array2d[wp.float64],
+    joint_velocity: wp.array2d[wp.float64],
 ):
     """Evaluate one joint per ``(environment, segment)`` work item.
 
@@ -241,16 +241,16 @@ def joint_terms_kernel(
 
 
 def launch_joint_terms(
-    q: wp.array2d(dtype=wp.float64),
-    qd: wp.array2d(dtype=wp.float64),
-    basis: wp.array2d(dtype=wp.float64),
-    reference: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    adjoint_dot: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    tangent_dot_qd: wp.array2d(dtype=wp.float64),
-    joint_velocity: wp.array2d(dtype=wp.float64),
+    q: wp.array2d[wp.float64],
+    qd: wp.array2d[wp.float64],
+    basis: wp.array2d[wp.float64],
+    reference: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    adjoint_dot: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    tangent_dot_qd: wp.array2d[wp.float64],
+    joint_velocity: wp.array2d[wp.float64],
 ):
     """Launch one shape-generic joint work item per segment and environment.
 

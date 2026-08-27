@@ -28,16 +28,16 @@ JOINT_BLOCK_DIM = 32
 
 @wp.kernel(enable_backward=False)
 def cooperative_joint_terms_kernel(
-    q: wp.array2d(dtype=wp.float64),
-    qd: wp.array2d(dtype=wp.float64),
-    basis: wp.array2d(dtype=wp.float64),
-    reference: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    adjoint_dot: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    tangent_dot_qd: wp.array2d(dtype=wp.float64),
-    joint_velocity: wp.array2d(dtype=wp.float64),
+    q: wp.array2d[wp.float64],
+    qd: wp.array2d[wp.float64],
+    basis: wp.array2d[wp.float64],
+    reference: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    adjoint_dot: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    tangent_dot_qd: wp.array2d[wp.float64],
+    joint_velocity: wp.array2d[wp.float64],
 ):
     """Evaluate one general joint cooperatively per warp-sized block.
 
@@ -272,16 +272,16 @@ def cooperative_joint_terms_kernel(
 
 
 def launch_cooperative_joint_terms(
-    q: wp.array2d(dtype=wp.float64),
-    qd: wp.array2d(dtype=wp.float64),
-    basis: wp.array2d(dtype=wp.float64),
-    reference: wp.array2d(dtype=wp.float64),
-    local_to_global: wp.array2d(dtype=wp.int32),
-    adjoint: wp.array2d(dtype=wp.float64),
-    adjoint_dot: wp.array2d(dtype=wp.float64),
-    tangent_local: wp.array2d(dtype=wp.float64),
-    tangent_dot_qd: wp.array2d(dtype=wp.float64),
-    joint_velocity: wp.array2d(dtype=wp.float64),
+    q: wp.array2d[wp.float64],
+    qd: wp.array2d[wp.float64],
+    basis: wp.array2d[wp.float64],
+    reference: wp.array2d[wp.float64],
+    local_to_global: wp.array2d[wp.int32],
+    adjoint: wp.array2d[wp.float64],
+    adjoint_dot: wp.array2d[wp.float64],
+    tangent_local: wp.array2d[wp.float64],
+    tangent_dot_qd: wp.array2d[wp.float64],
+    joint_velocity: wp.array2d[wp.float64],
 ):
     """Launch cooperative spatial-joint evaluation on a CUDA device.
 
