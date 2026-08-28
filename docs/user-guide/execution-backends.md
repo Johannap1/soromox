@@ -1,7 +1,7 @@
 # Execution Backends
 
 For most applications, leave `backend="auto"` unchanged. A supported model then
-uses the accelerated Warp dynamics and kinematics implementations on a GPU and
+uses the accelerated Warp kinematics and dynamics implementations on a GPU and
 the JAX/XLA implementations on CPU, while retaining the same system methods and
 numerical outputs. Set the option explicitly only when comparing implementations,
 reproducing a benchmark, or requiring a particular execution path.
@@ -25,7 +25,7 @@ robot = PlanarPCS.from_links(
 )
 ```
 
-The setting affects selected continuum-system dynamics and kinematics operations.
+The setting affects selected continuum-system kinematics and dynamics operations.
 
 ## Choosing a backend
 
@@ -33,7 +33,7 @@ The `backend` constructor argument accepts three values:
 
 | Value | Behavior |
 |---|---|
-| `"auto"` | Uses Warp for supported primal dynamics and kinematics on a GPU and JAX/XLA otherwise. This is the default. |
+| `"auto"` | Uses Warp for supported primal kinematics and dynamics on a GPU and JAX/XLA otherwise. This is the default. |
 | `"jax"` | Always uses the reference JAX/XLA implementation. |
 | `"warp"` | Requests the Warp implementation where the system, quadrature rule, and device support it. |
 
@@ -63,9 +63,9 @@ pip install "soromox[warp]"
 
 | System | Warp support | Requirements |
 |---|---|---|
-| `GVS` | Dynamics and kinematics on GPU; explicit Warp execution is also available on CPU | FP64 arrays |
-| `PCS` | Dynamics and kinematics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
-| `PlanarPCS` | Dynamics and kinematics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `GVS` | Kinematics and dynamics on GPU; explicit Warp execution is also available on CPU | FP64 arrays |
+| `PCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `PlanarPCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
 
 Other systems, including `PlanarHSA`, continue to use JAX/XLA. For PCS models
 with a quadrature rule other than five Gauss points, `"auto"` falls back to
@@ -106,7 +106,7 @@ yd = robot.forward_dynamics(t, y)
 trajectory = robot.rollout_to(initial_state, t1=1.0)
 ```
 
-The accelerated dynamics and kinematics methods additionally accept per-call
+The accelerated kinematics and dynamics methods additionally accept per-call
 overrides. This is useful for validation and benchmarking without constructing
 another model:
 
