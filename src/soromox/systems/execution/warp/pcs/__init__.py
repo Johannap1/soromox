@@ -1,4 +1,4 @@
-"""Public Warp-native PlanarPCS and PCS dynamics building blocks.
+"""Public Warp-native PlanarPCS and PCS dynamics and kinematics building blocks.
 
 The package exposes a shared runtime operand and workspace-shape contract plus
 dimension-specific raw kernels and direct launch functions. All launch
@@ -7,8 +7,8 @@ allocate buffers or invoke JAX, which allows an external integrator to compose
 them into a larger CUDA graph.
 
 Ordinary Soromox users should call the system methods. This lower-level surface
-is intended for integration packages that need PlanarPCS or PCS mechanics
-inside another Warp-native simulation loop.
+is intended for integration packages that need PlanarPCS or PCS dynamics and
+kinematics inside another Warp-native simulation loop.
 """
 
 from __future__ import annotations

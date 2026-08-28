@@ -3,7 +3,7 @@
 !!! warning "Integration API"
     SoRoMoX users should call the public `GVS` dynamics and kinematics methods.
     The symbols on this page are intended for packages that reuse the GVS
-    mechanics or kinematics pipelines with preallocated Warp buffers.
+    dynamics and kinematics pipelines with preallocated Warp buffers.
 
 ::: soromox.systems.execution.warp.gvs
     options:
