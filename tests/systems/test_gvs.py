@@ -1502,8 +1502,10 @@ def test_jacobian_and_time_derivative_bodyframe_abscissa_batched_matches_pointwi
     s_points = sample_arc_lengths(robot)
 
     for q, qd in ((zero_cfg, zero_vel), (q_random, qd_random)):
-        J_batch, Jd_batch = robot.jacobian_and_time_derivative_bodyframe_abscissa_batched(
-            q, qd, s_points
+        J_batch, Jd_batch = (
+            robot.jacobian_and_time_derivative_bodyframe_abscissa_batched(
+                q, qd, s_points
+            )
         )
 
         for idx, s_val in enumerate(s_points):
@@ -1530,8 +1532,10 @@ def test_jacobian_and_time_derivative_inertialframe_abscissa_batched_matches_poi
     s_points = sample_arc_lengths(robot)
 
     for q, qd in ((zero_cfg, zero_vel), (q_random, qd_random)):
-        J_batch, Jd_batch = robot.jacobian_and_time_derivative_inertialframe_abscissa_batched(
-            q, qd, s_points
+        J_batch, Jd_batch = (
+            robot.jacobian_and_time_derivative_inertialframe_abscissa_batched(
+                q, qd, s_points
+            )
         )
 
         for idx, s_val in enumerate(s_points):
@@ -2123,28 +2127,30 @@ def test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths(
 
     assert robot.max_dof > robot.num_dofs
     assert_allclose(
-        robot.forward_kinematics_batched(q, samples),
+        robot.forward_kinematics_abscissa_batched(q, samples),
         expected_poses,
         rtol=RTOL,
         atol=ATOL,
     )
     assert_allclose(
-        robot.jacobian_bodyframe_batched(q, samples),
+        robot.jacobian_bodyframe_abscissa_batched(q, samples),
         expected_body_jacobians,
         rtol=RTOL,
         atol=ATOL,
     )
     assert_allclose(
-        robot.jacobian_inertialframe_batched(q, samples),
+        robot.jacobian_inertialframe_abscissa_batched(q, samples),
         expected_inertial_jacobians,
         rtol=RTOL,
         atol=ATOL,
     )
-    actual_body_terms = robot.jacobian_and_time_derivative_bodyframe_batched(
+    actual_body_terms = robot.jacobian_and_time_derivative_bodyframe_abscissa_batched(
         q, qd, samples
     )
-    actual_inertial_terms = robot.jacobian_and_time_derivative_inertialframe_batched(
-        q, qd, samples
+    actual_inertial_terms = (
+        robot.jacobian_and_time_derivative_inertialframe_abscissa_batched(
+            q, qd, samples
+        )
     )
     for actual, expected in zip(actual_body_terms, expected_body_terms, strict=True):
         assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
