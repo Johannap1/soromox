@@ -12,22 +12,43 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from soromox.systems.execution.transforms import make_dynamics_evaluator
+from soromox.systems.execution.transforms import (
+    make_dynamics_evaluator,
+    make_kinematics_evaluators,
+)
 from soromox.systems.execution.types import (
+    AbscissaBatchedKinematicsEvaluator,
     DynamicsEvaluator,
     DynamicsModel,
     DynamicsTerms,
+    KinematicsEvaluator,
+    KinematicsModel,
+    KinematicsOperation,
+    KinematicsResult,
     WarpExecutorKey,
 )
 from soromox.systems.execution.warp.config import gvs_block_dim
-from soromox.systems.execution.warp.gvs.operands import GVSOperands
-from soromox.systems.execution.warp.pcs.operands import PCSOperands
+from soromox.systems.execution.warp.gvs.operands import (
+    GVSKinematicsOperands,
+    GVSOperands,
+)
+from soromox.systems.execution.warp.pcs.operands import (
+    PCSKinematicsOperands,
+    PCSOperands,
+)
 
 WarpExecutor = Callable[[Any, Array, Array], DynamicsTerms]
+WarpKinematicsExecutor = Callable[
+    [Any, Array, Array, KinematicsOperation], KinematicsResult
+]
 
 _EXECUTOR_MODULES: dict[WarpExecutorKey, str] = {
     "gvs": "soromox.systems.execution.warp.gvs.executor",
     "pcs": "soromox.systems.execution.warp.pcs.executor",
+}
+_KINEMATICS_EXECUTOR_MODULES: dict[WarpExecutorKey, str] = {
+    "gvs": "soromox.systems.execution.warp.gvs.kinematics_executor",
+    "pcs": "soromox.systems.execution.warp.pcs.kinematics_executor",
 }
 
 
@@ -62,6 +83,35 @@ def load_executor(key: WarpExecutorKey) -> WarpExecutor:
     return cast(WarpExecutor, module.execute_dynamics_terms)
 
 
+@cache
+def load_kinematics_executor(key: WarpExecutorKey) -> WarpKinematicsExecutor:
+    """Load one family kinematics executor behind the optional-Warp boundary.
+
+    Args:
+        key: Registered GVS or PCS executor family.
+
+    Returns:
+        The family's canonical batch-shaped kinematics executor.
+
+    Raises:
+        ImportError: If the optional ``warp-lang`` dependency is unavailable.
+        KeyError: If ``key`` is not a registered family.
+    """
+
+    module_name = _KINEMATICS_EXECUTOR_MODULES[key]
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as error:
+        if error.name == "warp":
+            raise ImportError(
+                "The requested kinematics executor requires the optional "
+                "'warp-lang' dependency. Install it with "
+                "`pip install soromox[warp]`."
+            ) from error
+        raise
+    return cast(WarpKinematicsExecutor, module.execute_kinematics)
+
+
 def execute_dynamics_terms(
     key: WarpExecutorKey,
     operands: Any,
@@ -86,6 +136,29 @@ def execute_dynamics_terms(
     return load_executor(key)(operands, q, qd)
 
 
+def execute_kinematics(
+    key: WarpExecutorKey,
+    operands: Any,
+    q: Array,
+    sample_s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Invoke a lazily resolved family kinematics executor.
+
+    Args:
+        key: Registered GVS or PCS executor family.
+        operands: Family-specific runtime operand bundle.
+        q: Batched configurations with shape ``(E, D)``.
+        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        operation: Select poses, inertial Jacobians, or both.
+
+    Returns:
+        Canonically batch-shaped kinematics output.
+    """
+
+    return load_kinematics_executor(key)(operands, q, sample_s, operation)
+
+
 def _validate_batch(q: Array, qd: Array, family_name: str) -> None:
     """Validate restrictions shared by the production Warp executors.
 
@@ -108,6 +181,31 @@ def _validate_batch(q: Array, qd: Array, family_name: str) -> None:
         raise TypeError(
             f"The Warp {family_name} dynamics executor requires float64 q "
             f"and qd; got {q.dtype} and {qd.dtype}."
+        )
+
+
+def _validate_kinematics_batch(q: Array, sample_s: Array, family_name: str) -> None:
+    """Validate canonical Warp kinematics inputs.
+
+    Args:
+        q: Batched configurations with shape ``(E, D)``.
+        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        family_name: Human-readable family name used in errors.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If either canonical batch dimension is empty.
+        TypeError: If either array is not FP64.
+    """
+
+    if q.shape[0] == 0 or sample_s.shape[1] == 0:
+        raise ValueError("The Warp kinematics executor requires non-empty batches.")
+    if q.dtype != jnp.float64 or sample_s.dtype != jnp.float64:
+        raise TypeError(
+            f"The Warp {family_name} kinematics executor requires float64 q "
+            f"and s; got {q.dtype} and {sample_s.dtype}."
         )
 
 
@@ -192,6 +290,94 @@ _GVS_EVALUATOR = make_dynamics_evaluator(_call_gvs_batch, family_name="GVS")
 _PCS_EVALUATOR = make_dynamics_evaluator(_call_pcs_batch, family_name="PCS")
 
 
+@eqx.filter_jit
+def _execute_gvs_kinematics_batch(
+    model: KinematicsModel,
+    q: Array,
+    sample_s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Build GVS operands and execute one canonical kinematics batch.
+
+    Args:
+        model: GVS model satisfying the neutral kinematics contract.
+        q: Batched active configurations ``(E, D)``.
+        sample_s: Per-environment abscissae ``(E, N)``.
+        operation: Select poses, inertial Jacobians, or both.
+
+    Returns:
+        Canonically batch-shaped GVS kinematics output.
+    """
+
+    _validate_kinematics_batch(q, sample_s, "GVS")
+    operands = GVSKinematicsOperands.from_model(
+        model,
+        block_dim=gvs_block_dim(
+            model.num_dofs,
+            gpu=jax.default_backend() == "gpu",
+        ),
+    )
+    return execute_kinematics("gvs", operands, q, sample_s, operation)
+
+
+@eqx.filter_jit
+def _execute_pcs_kinematics_batch(
+    model: KinematicsModel,
+    q: Array,
+    sample_s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Build PCS operands and execute one canonical kinematics batch.
+
+    Args:
+        model: PCS or PlanarPCS model satisfying the neutral contract.
+        q: Batched active configurations ``(E, D)``.
+        sample_s: Per-environment abscissae ``(E, N)``.
+        operation: Select poses, inertial Jacobians, or both.
+
+    Returns:
+        Canonically batch-shaped PCS kinematics output.
+    """
+
+    _validate_kinematics_batch(q, sample_s, "PCS")
+    return execute_kinematics(
+        "pcs", PCSKinematicsOperands.from_model(model), q, sample_s, operation
+    )
+
+
+def _call_gvs_kinematics_batch(
+    model: KinematicsModel,
+    q: Array,
+    sample_s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Forward a canonical GVS batch through the lazy executor boundary."""
+
+    return _execute_gvs_kinematics_batch(model, q, sample_s, operation)
+
+
+def _call_pcs_kinematics_batch(
+    model: KinematicsModel,
+    q: Array,
+    sample_s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Forward a canonical PCS batch through the lazy executor boundary."""
+
+    return _execute_pcs_kinematics_batch(model, q, sample_s, operation)
+
+
+_KINEMATICS_EVALUATORS = {
+    (key, operation): make_kinematics_evaluators(
+        _call_gvs_kinematics_batch if key == "gvs" else _call_pcs_kinematics_batch,
+        family_name="GVS" if key == "gvs" else "PCS",
+        operation=operation,
+    )
+    for key in ("gvs", "pcs")
+    for operation in ("pose", "jacobian", "both")
+}
+
+
 def get_dynamics_evaluator(key: WarpExecutorKey) -> DynamicsEvaluator:
     """Return the transform-aware evaluator for a registered family.
 
@@ -208,10 +394,47 @@ def get_dynamics_evaluator(key: WarpExecutorKey) -> DynamicsEvaluator:
     return _PCS_EVALUATOR
 
 
+def get_kinematics_evaluator(
+    key: WarpExecutorKey, operation: KinematicsOperation
+) -> KinematicsEvaluator:
+    """Return a transform-aware scalar kinematics evaluator.
+
+    Args:
+        key: Registered GVS or PCS executor family.
+        operation: Select poses, inertial Jacobians, or both.
+
+    Returns:
+        Scalar-semantics evaluator with custom batching and JVP rules.
+    """
+
+    return _KINEMATICS_EVALUATORS[(key, operation)][0]
+
+
+def get_abscissa_batched_kinematics_evaluator(
+    key: WarpExecutorKey, operation: KinematicsOperation
+) -> AbscissaBatchedKinematicsEvaluator:
+    """Return a transform-aware abscissa-batch kinematics evaluator.
+
+    Args:
+        key: Registered GVS or PCS executor family.
+        operation: Select poses, inertial Jacobians, or both.
+
+    Returns:
+        Abscissa-batch evaluator with environment-batch fusion and JVP rules.
+    """
+
+    return _KINEMATICS_EVALUATORS[(key, operation)][1]
+
+
 __all__ = [
     "WarpExecutor",
+    "WarpKinematicsExecutor",
     "WarpExecutorKey",
     "execute_dynamics_terms",
+    "execute_kinematics",
+    "get_abscissa_batched_kinematics_evaluator",
     "get_dynamics_evaluator",
+    "get_kinematics_evaluator",
+    "load_kinematics_executor",
     "load_executor",
 ]

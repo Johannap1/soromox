@@ -491,7 +491,9 @@ class OperationalSpaceDynamics(eqx.Module):
             Jd_full: Stacked Jacobian time derivative of shape (n_points * n_velocity_dim, num_dofs).
         """
         # Use batched method from the robot
-        J_ps, Jd_ps = self.robot.jacobian_and_time_derivative_abscissa_batched(q, qd, self.s_ps)
+        J_ps, Jd_ps = self.robot.jacobian_and_time_derivative_abscissa_batched(
+            q, qd, self.s_ps
+        )
         # J_ps, Jd_ps have shape (n_points, n_pose_dim, num_dofs)
 
         # Stack to get (n_points * n_pose_dim, num_dofs)
@@ -828,7 +830,7 @@ class OperationalSpaceDynamics(eqx.Module):
             compute_task_pose_error: Returns task-selected pose error.
         """
         # Compute forward kinematics at all points
-        fk_results = self.robot.forward_kinematics_abscissa_batched(q, self.s_ps)
+        fk_results = self.robot.forward_kinematics(q, self.s_ps)
 
         # Extract pose vectors from forward kinematics results
         poses = vmap(self._extract_pose_from_fk)(fk_results)

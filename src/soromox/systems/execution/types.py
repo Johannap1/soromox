@@ -10,6 +10,8 @@ from jax import Array
 ExecutionBackend = Literal["auto", "jax", "warp"]
 WarpExecutorKey = Literal["gvs", "pcs"]
 DynamicsTerms = tuple[Array, Array, Array]
+KinematicsOperation = Literal["pose", "jacobian", "both"]
+KinematicsResult = Array | tuple[Array, Array]
 
 
 class DynamicsModel(Protocol):
@@ -155,6 +157,63 @@ class DynamicsEvaluator(Protocol):
         ...
 
 
+class KinematicsModel(Protocol):
+    """Structural contract for accelerated continuum-system kinematics."""
+
+    backend: ExecutionBackend
+    num_dofs: int
+    is_planar: bool
+
+    def _forward_kinematics(self, q: Array, s: Array) -> Array:
+        """Return the differentiable JAX pose at one backbone coordinate."""
+
+        ...
+
+    def _forward_kinematics_abscissa_batched(self, q: Array, s: Array) -> Array:
+        """Return poses from the model's specialized spatial JAX traversal."""
+
+        ...
+
+    def _forward_kinematics_jvp(
+        self,
+        q: Array,
+        s: Array,
+        qd: Array | None,
+        sd: Array | None,
+    ) -> tuple[Array, Array]:
+        """Return the established JAX/custom-JVP pose rule."""
+
+        ...
+
+    def _jacobian_inertialframe(self, q: Array, s: Array) -> Array:
+        """Return the differentiable JAX inertial Jacobian at one coordinate."""
+
+        ...
+
+    def _jacobian_inertialframe_abscissa_batched(self, q: Array, s: Array) -> Array:
+        """Return Jacobians from the specialized spatial JAX traversal."""
+
+        ...
+
+
+class KinematicsEvaluator(Protocol):
+    """Scalar-semantics callable backed by a batch-shaped kinematics executor."""
+
+    def __call__(self, model: KinematicsModel, q: Array, s: Array) -> KinematicsResult:
+        """Evaluate one configuration and one backbone coordinate."""
+
+        ...
+
+
+class AbscissaBatchedKinematicsEvaluator(Protocol):
+    """Spatial-batch callable backed by the canonical kinematics executor."""
+
+    def __call__(self, model: KinematicsModel, q: Array, s: Array) -> KinematicsResult:
+        """Evaluate one configuration at a one-dimensional coordinate batch."""
+
+        ...
+
+
 @dataclass(frozen=True)
 class DynamicsCapabilities:
     """Describe optional dynamics support for one system family.
@@ -175,12 +234,34 @@ class DynamicsCapabilities:
     required_num_gauss_points: int | None = None
 
 
+@dataclass(frozen=True)
+class KinematicsCapabilities:
+    """Describe optional Warp kinematics support for one system family.
+
+    Attributes:
+        family_name: Human-readable system-family name used in errors.
+        warp_executor: Lazy executor registry key for the family.
+        warp_cpu_supported: Whether explicit Warp execution is available on
+            CPU as well as CUDA.
+    """
+
+    family_name: str
+    warp_executor: WarpExecutorKey
+    warp_cpu_supported: bool = True
+
+
 __all__ = [
+    "AbscissaBatchedKinematicsEvaluator",
     "DynamicsCapabilities",
     "DynamicsEvaluator",
     "DynamicsModel",
     "DynamicsTerms",
     "ExecutionBackend",
     "ForwardDynamicsModel",
+    "KinematicsCapabilities",
+    "KinematicsEvaluator",
+    "KinematicsModel",
+    "KinematicsOperation",
+    "KinematicsResult",
     "WarpExecutorKey",
 ]

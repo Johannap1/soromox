@@ -9,6 +9,23 @@ import pytest
 
 from tools.benchmarks import benchmark_system_methods as benchmark
 
+KINEMATICS_METHODS = {
+    "forward_kinematics",
+    "forward_kinematics_abscissa_batched",
+    "jacobian_inertialframe",
+    "jacobian_inertialframe_abscissa_batched",
+    "forward_kinematics_and_jacobian_inertialframe",
+    "forward_kinematics_and_jacobian_inertialframe_abscissa_batched",
+}
+
+
+@pytest.mark.parametrize("system_name", ("planar_pcs", "pcs", "gvs"))
+def test_warp_kinematics_methods_are_registered(system_name: str) -> None:
+    registry = benchmark._build_system_registry()
+    registered_methods = {case.name for case in registry[system_name].cases}
+
+    assert registered_methods >= KINEMATICS_METHODS
+
 
 def test_configure_device_before_jax_import(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JAX_PLATFORMS", raising=False)

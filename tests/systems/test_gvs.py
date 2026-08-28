@@ -1068,7 +1068,7 @@ def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
 
 
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
-def test_forward_kinematics_abscissa_batched_matches_pointwise_evaluation(
+def test_vectorized_forward_kinematics_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
@@ -1097,7 +1097,7 @@ def test_forward_kinematics_abscissa_batched_matches_pointwise_evaluation(
             )
         )
 
-        g_batched = robot.forward_kinematics_abscissa_batched(q, s_points)
+        g_batched = robot.forward_kinematics(q, s_points)
         g_expected = stack_forward_kinematics(robot, q, s_points)
 
         assert_allclose(g_batched, g_expected, rtol=RTOL, atol=ATOL)
@@ -1315,7 +1315,7 @@ def test_jacobian_inertialframe_matches_central_differences(num_segments: int) -
 
 
 @pytest.mark.parametrize("num_segments", [1, 2])
-def test_jacobian_inertialframe_abscissa_batched_matches_pointwise_evaluation(
+def test_vectorized_jacobian_inertialframe_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
@@ -1344,7 +1344,7 @@ def test_jacobian_inertialframe_abscissa_batched_matches_pointwise_evaluation(
             )
         )
 
-        J_batch = robot.jacobian_inertialframe_abscissa_batched(q, s_points)
+        J_batch = robot.jacobian_inertialframe(q, s_points)
         J_expected = jnp.stack(
             [robot.jacobian_inertialframe(q, float(s)) for s in s_points],
             axis=0,
@@ -1555,6 +1555,29 @@ def test_public_gvs_jacobian_adapters_match_inertialframe_methods() -> None:
     s_ps = sample_arc_lengths(robot)
 
     assert_allclose(
+        robot.forward_kinematics_abscissa_batched(q, s_ps),
+        robot.forward_kinematics(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        robot.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        robot.jacobian_inertialframe(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    poses, jacobians = (
+        robot.forward_kinematics_and_jacobian_inertialframe_abscissa_batched(q, s_ps)
+    )
+    assert_allclose(poses, robot.forward_kinematics(q, s_ps), rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        jacobians,
+        robot.jacobian_inertialframe(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
+    assert_allclose(
         robot.jacobian(q, s),
         robot.jacobian_inertialframe(q, s),
         rtol=RTOL,
@@ -1562,7 +1585,7 @@ def test_public_gvs_jacobian_adapters_match_inertialframe_methods() -> None:
     )
     assert_allclose(
         robot.jacobian_abscissa_batched(q, s_ps),
-        robot.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        robot.jacobian_inertialframe(q, s_ps),
         rtol=RTOL,
         atol=ATOL,
     )

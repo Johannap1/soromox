@@ -228,6 +228,10 @@ def test_default_planar_jacobians_and_tip_methods() -> None:
 
     assert_allclose(robot.forward_kinematics_tips(q), fk_tips_expected)
     assert_allclose(robot.jacobian_tips(q), J_tips_expected)
+    assert_allclose(
+        robot.forward_kinematics_abscissa_batched(q, s_tips), fk_tips_expected
+    )
+    assert_allclose(robot.jacobian_abscissa_batched(q, s_tips), J_tips_expected)
 
 
 def test_default_spatial_jacobian_converts_se3_pose_derivative() -> None:
@@ -363,8 +367,8 @@ def test_default_integration_kinematics_uses_bodyframe_samples() -> None:
     g_expected = jax.vmap(
         lambda s: poses.planar_pose_to_transform(robot.forward_kinematics(q, s))
     )(s_flat).reshape(2, 1, 3, 3)
-    J_expected, Jd_expected = robot.jacobian_and_time_derivative_bodyframe_abscissa_batched(
-        q, qd, s_flat
+    J_expected, Jd_expected = (
+        robot.jacobian_and_time_derivative_bodyframe_abscissa_batched(q, qd, s_flat)
     )
 
     assert g_ps.shape == (2, 1, 3, 3)

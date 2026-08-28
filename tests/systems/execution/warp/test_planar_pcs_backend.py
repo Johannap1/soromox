@@ -9,11 +9,18 @@ import jax
 import pytest
 
 from soromox.systems.execution.warp.pcs.operands import (
+    PCSKinematicsOperands,
+    PCSKinematicsShapes,
     PCSOperands,
     PCSPipelineShapes,
 )
 
 from ._equivalence import assert_backend_equivalence
+from ._kinematics_equivalence import (
+    assert_inertial_jacobian_finite_difference,
+    assert_kinematics_backend_equivalence,
+    assert_warp_derivatives_use_jax,
+)
 
 
 def test_planar_pcs_operands_select_planar_dimension_data(
@@ -54,6 +61,40 @@ def test_planar_pcs_pipeline_shapes_cover_workspace_and_results(
         model.num_dofs,
         model.num_dofs,
     )
+
+
+def test_planar_pcs_kinematics_shapes_cover_reduced_and_fused_paths(
+    make_planar_pcs_model: Callable[[str], Any],
+) -> None:
+    """Describe caller-owned PlanarPCS kinematics workspaces and outputs."""
+
+    model = make_planar_pcs_model("jax")
+    operands = PCSKinematicsOperands.from_model(model)
+    shapes = PCSKinematicsShapes.from_operands(operands, batch_size=3, num_samples=7)
+
+    assert shapes.pose_workspace() == {
+        "segment_strain": (3, model.num_segments, 3),
+        "segment_pose": (3, model.num_segments + 1, 3),
+    }
+    assert shapes.jacobian_workspace() == shapes.workspace()
+    assert shapes.pose_output() == (3, 7, 3)
+    assert shapes.jacobian_output() == (3, 7, 3, model.num_dofs)
+
+
+def test_planar_pcs_public_kinematics_match_jax_on_cpu_and_gpu(
+    make_planar_pcs_model: Callable[[str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Match planar PCS kinematics for every public vectorization form."""
+
+    pytest.importorskip("warp")
+    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "planar-pcs-kinematics-cache"))
+    model = make_planar_pcs_model("jax")
+
+    assert_kinematics_backend_equivalence(model)
+    assert_inertial_jacobian_finite_difference(model)
+    assert_warp_derivatives_use_jax(model)
 
 
 def test_planar_pcs_public_dynamics_apis_match_jax_on_gpu(
