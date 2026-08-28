@@ -102,6 +102,9 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         documentation = inspect.getdoc(launcher)
         assert documentation is not None
         assert "Args:" in documentation
+    assert launch_forward_kinematics is launch_gvs_forward_kinematics
+    assert launch_inertial_jacobians is launch_gvs_inertial_jacobians
+    assert launch_forward_kinematics_and_jacobians is launch_gvs_kinematics
     specialized = (
         launch_gvs_forward_kinematics,
         launch_gvs_inertial_jacobians,
@@ -113,6 +116,34 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
     )
     for launcher in specialized:
         assert len(inspect.signature(launcher).parameters) >= 10
+    for launcher in specialized[:3]:
+        parameters = tuple(inspect.signature(launcher).parameters)
+        assert parameters[:2] == ("q", "s")
+    assert tuple(inspect.signature(launch_gvs_forward_kinematics).parameters)[:5] == (
+        "q",
+        "s",
+        "joint_adjoint",
+        "cell_adjoint",
+        "base_transform",
+    )
+    state_prefix = (
+        "q",
+        "s",
+        "joint_adjoint",
+        "joint_tangent",
+        "cell_adjoint",
+        "cell_tangent_local",
+        "base_transform",
+        "link_local_to_global",
+        "link_global_to_local",
+    )
+    assert (
+        tuple(inspect.signature(launch_gvs_inertial_jacobians).parameters)[:9]
+        == state_prefix
+    )
+    assert (
+        tuple(inspect.signature(launch_gvs_kinematics).parameters)[:9] == state_prefix
+    )
     for kernel in kernels:
         assert kernel is not None
 

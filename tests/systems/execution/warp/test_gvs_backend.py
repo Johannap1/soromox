@@ -27,7 +27,7 @@ from ._kinematics_equivalence import (
 
 
 def _all_basis_family_model() -> GVS:
-    """Build one padded GVS chain containing every supported basis family."""
+    """Build a high-order padded GVS chain containing every basis family."""
 
     basis_types = (
         "monomial",
@@ -52,7 +52,7 @@ def _all_basis_family_model() -> GVS:
             basis=StrainBasisSpec(
                 type=basis_type,
                 strain_selector=[False, True, False, False, False, False],
-                basis_order=[0, 1, 0, 0, 0, 0],
+                basis_order=[0, 6, 0, 0, 0, 0],
             ),
             num_gauss_points=5,
         )
@@ -60,7 +60,7 @@ def _all_basis_family_model() -> GVS:
     )
     return GVS.from_segments(
         segments,
-        max_dof=5,
+        max_dof=13,
         scale_rotational_basis_by_length=True,
         backend="jax",
     )
@@ -160,11 +160,11 @@ def test_gvs_public_kinematics_match_jax_on_cpu_and_gpu(
     assert_warp_derivatives_use_jax(model)
 
 
-def test_gvs_warp_kinematics_supports_every_basis_family(
+def test_gvs_warp_kinematics_supports_every_basis_family_and_high_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    """Match a mixed, padded chain containing all runtime basis evaluators."""
+    """Match all runtime basis evaluators with basis order greater than five."""
 
     pytest.importorskip("warp")
     monkeypatch.setenv(

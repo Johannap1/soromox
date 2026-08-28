@@ -63,9 +63,9 @@ pip install "soromox[warp]"
 
 | System | Warp support | Requirements |
 |---|---|---|
-| `GVS` | Kinematics and dynamics on GPU; explicit Warp execution is also available on CPU | FP64 arrays |
-| `PCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
 | `PlanarPCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `PCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `GVS` | Kinematics and dynamics on GPU; explicit Warp execution is also available on CPU | FP64 arrays |
 
 Other systems, including `PlanarHSA`, continue to use JAX/XLA. For PCS models
 with a quadrature rule other than five Gauss points, `"auto"` falls back to

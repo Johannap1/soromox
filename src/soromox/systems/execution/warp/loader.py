@@ -140,7 +140,7 @@ def execute_kinematics(
     key: WarpExecutorKey,
     operands: Any,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Invoke a lazily resolved family kinematics executor.
@@ -149,14 +149,14 @@ def execute_kinematics(
         key: Registered GVS or PCS executor family.
         operands: Family-specific runtime operand bundle.
         q: Batched configurations with shape ``(E, D)``.
-        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
         Canonically batch-shaped kinematics output.
     """
 
-    return load_kinematics_executor(key)(operands, q, sample_s, operation)
+    return load_kinematics_executor(key)(operands, q, s, operation)
 
 
 def _validate_batch(q: Array, qd: Array, family_name: str) -> None:
@@ -184,12 +184,12 @@ def _validate_batch(q: Array, qd: Array, family_name: str) -> None:
         )
 
 
-def _validate_kinematics_batch(q: Array, sample_s: Array, family_name: str) -> None:
+def _validate_kinematics_batch(q: Array, s: Array, family_name: str) -> None:
     """Validate canonical Warp kinematics inputs.
 
     Args:
         q: Batched configurations with shape ``(E, D)``.
-        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         family_name: Human-readable family name used in errors.
 
     Returns:
@@ -200,12 +200,12 @@ def _validate_kinematics_batch(q: Array, sample_s: Array, family_name: str) -> N
         TypeError: If either array is not FP64.
     """
 
-    if q.shape[0] == 0 or sample_s.shape[1] == 0:
+    if q.shape[0] == 0 or s.shape[1] == 0:
         raise ValueError("The Warp kinematics executor requires non-empty batches.")
-    if q.dtype != jnp.float64 or sample_s.dtype != jnp.float64:
+    if q.dtype != jnp.float64 or s.dtype != jnp.float64:
         raise TypeError(
             f"The Warp {family_name} kinematics executor requires float64 q "
-            f"and s; got {q.dtype} and {sample_s.dtype}."
+            f"and s; got {q.dtype} and {s.dtype}."
         )
 
 
@@ -294,7 +294,7 @@ _PCS_EVALUATOR = make_dynamics_evaluator(_call_pcs_batch, family_name="PCS")
 def _execute_gvs_kinematics_batch(
     model: KinematicsModel,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Build GVS operands and execute one canonical kinematics batch.
@@ -302,14 +302,14 @@ def _execute_gvs_kinematics_batch(
     Args:
         model: GVS model satisfying the neutral kinematics contract.
         q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment abscissae ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
         Canonically batch-shaped GVS kinematics output.
     """
 
-    _validate_kinematics_batch(q, sample_s, "GVS")
+    _validate_kinematics_batch(q, s, "GVS")
     operands = GVSKinematicsOperands.from_model(
         model,
         block_dim=gvs_block_dim(
@@ -317,14 +317,14 @@ def _execute_gvs_kinematics_batch(
             gpu=jax.default_backend() == "gpu",
         ),
     )
-    return execute_kinematics("gvs", operands, q, sample_s, operation)
+    return execute_kinematics("gvs", operands, q, s, operation)
 
 
 @eqx.filter_jit
 def _execute_pcs_kinematics_batch(
     model: KinematicsModel,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Build PCS operands and execute one canonical kinematics batch.
@@ -332,39 +332,39 @@ def _execute_pcs_kinematics_batch(
     Args:
         model: PCS or PlanarPCS model satisfying the neutral contract.
         q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment abscissae ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
         Canonically batch-shaped PCS kinematics output.
     """
 
-    _validate_kinematics_batch(q, sample_s, "PCS")
+    _validate_kinematics_batch(q, s, "PCS")
     return execute_kinematics(
-        "pcs", PCSKinematicsOperands.from_model(model), q, sample_s, operation
+        "pcs", PCSKinematicsOperands.from_model(model), q, s, operation
     )
 
 
 def _call_gvs_kinematics_batch(
     model: KinematicsModel,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Forward a canonical GVS batch through the lazy executor boundary."""
 
-    return _execute_gvs_kinematics_batch(model, q, sample_s, operation)
+    return _execute_gvs_kinematics_batch(model, q, s, operation)
 
 
 def _call_pcs_kinematics_batch(
     model: KinematicsModel,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Forward a canonical PCS batch through the lazy executor boundary."""
 
-    return _execute_pcs_kinematics_batch(model, q, sample_s, operation)
+    return _execute_pcs_kinematics_batch(model, q, s, operation)
 
 
 _KINEMATICS_EVALUATORS = {

@@ -28,7 +28,7 @@ from soromox.systems.execution.warp.pcs.spatial_kinematics import (
 def execute_kinematics(
     operands: PCSKinematicsOperands,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Execute batched PCS poses and inertial-frame Jacobians in Warp.
@@ -36,7 +36,7 @@ def execute_kinematics(
     Args:
         operands: Runtime PCS or PlanarPCS model data.
         q: Batched active configurations with shape ``(E, D)``.
-        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
@@ -47,11 +47,11 @@ def execute_kinematics(
     shapes = PCSKinematicsShapes.from_operands(
         operands,
         batch_size=q.shape[0],
-        num_samples=sample_s.shape[1],
+        num_samples=s.shape[1],
     )
     common = (
         q,
-        sample_s,
+        s,
         operands.active_strain_indices,
         operands.active_strain_scales,
         operands.reference_strain.reshape(

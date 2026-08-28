@@ -286,7 +286,7 @@ def write_planar_sample_jacobian(
 
 @wp.kernel(enable_backward=False)
 def planar_pose_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
     epsilons: wp.array[wp.float64],
     segment_strain: wp.array3d[wp.float64],
@@ -296,7 +296,7 @@ def planar_pose_samples_kernel(
     """Evaluate PlanarPCS poses without Jacobian work.
 
     Args:
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         segment_starts: Cumulative segment-start coordinates.
         epsilons: Exponential and tangent thresholds.
         segment_strain: Precomputed segment strains.
@@ -308,12 +308,12 @@ def planar_pose_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = segment_strain.shape[1]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
@@ -327,7 +327,7 @@ def planar_pose_samples_kernel(
         segment_pose[environment, segment, 1],
         segment_pose[environment, segment, 2],
         xi,
-        s - segment_starts[segment],
+        abscissa - segment_starts[segment],
         epsilons[0],
     )
     row = int(0)
@@ -338,7 +338,7 @@ def planar_pose_samples_kernel(
 
 @wp.kernel(enable_backward=False)
 def planar_jacobian_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
@@ -351,7 +351,7 @@ def planar_jacobian_samples_kernel(
     """Evaluate PlanarPCS inertial Jacobians without pose output writes.
 
     Args:
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate index for each strain row.
         active_scales: Scale applied to each active strain row.
         segment_starts: Cumulative segment-start coordinates.
@@ -366,16 +366,16 @@ def planar_jacobian_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = active_indices.shape[0]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
-    local_s = s - segment_starts[segment]
+    local_s = abscissa - segment_starts[segment]
     xi = wp.vec3d(
         segment_strain[environment, segment, 0],
         segment_strain[environment, segment, 1],
@@ -406,7 +406,7 @@ def planar_jacobian_samples_kernel(
 
 @wp.kernel(enable_backward=False)
 def planar_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
@@ -420,7 +420,7 @@ def planar_samples_kernel(
     """Evaluate PlanarPCS poses and inertial Jacobians at runtime samples.
 
     Args:
-        sample_s: Per-environment backbone coordinates with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate index for each full strain row.
         active_scales: Scale applied to each active strain row.
         segment_starts: Cumulative segment-start coordinates.
@@ -436,16 +436,16 @@ def planar_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = active_indices.shape[0]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
-    local_s = s - segment_starts[segment]
+    local_s = abscissa - segment_starts[segment]
     xi = wp.vec3d(
         segment_strain[environment, segment, 0],
         segment_strain[environment, segment, 1],
@@ -480,7 +480,7 @@ def planar_samples_kernel(
 
 def launch_planar_forward_kinematics(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -496,7 +496,7 @@ def launch_planar_forward_kinematics(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 3)``.
@@ -528,8 +528,8 @@ def launch_planar_forward_kinematics(
     )
     wp.launch(
         planar_pose_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
-        inputs=[sample_s, segment_starts, epsilons, segment_strain, segment_pose],
+        dim=(q.shape[0], s.shape[1]),
+        inputs=[s, segment_starts, epsilons, segment_strain, segment_pose],
         outputs=[poses],
         block_dim=128,
     )
@@ -537,7 +537,7 @@ def launch_planar_forward_kinematics(
 
 def launch_planar_inertial_jacobians(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -554,7 +554,7 @@ def launch_planar_inertial_jacobians(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 3)``.
@@ -587,9 +587,9 @@ def launch_planar_inertial_jacobians(
     )
     wp.launch(
         planar_jacobian_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,
@@ -605,7 +605,7 @@ def launch_planar_inertial_jacobians(
 
 def launch_planar_kinematics(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -623,7 +623,7 @@ def launch_planar_kinematics(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 3)``.
@@ -657,9 +657,9 @@ def launch_planar_kinematics(
     )
     wp.launch(
         planar_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,
