@@ -26,6 +26,7 @@ from soromox.systems.execution.config import (
 from soromox.systems.execution.dispatch import (
     dispatch_dynamics_terms,
     dispatch_kinematics,
+    dispatch_kinematics_abscissa_batched,
 )
 from soromox.systems.execution.transforms import (
     evaluate_forward_dynamics,
@@ -73,6 +74,7 @@ __all__ = [
     "WarpExecutorKey",
     "dispatch_dynamics_terms",
     "dispatch_kinematics",
+    "dispatch_kinematics_abscissa_batched",
     "evaluate_forward_dynamics",
     "evaluate_forward_kinematics",
     "evaluate_inertial_jacobian",

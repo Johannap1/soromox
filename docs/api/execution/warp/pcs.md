@@ -3,7 +3,7 @@
 !!! warning "Integration API"
     SoRoMoX users should call `PCS` or `PlanarPCS` system methods. The symbols
     on this page are intended for packages that reuse the five-point PCS
-    mechanics pipeline with preallocated Warp buffers.
+    mechanics or kinematics pipelines with preallocated Warp buffers.
 
 ::: soromox.systems.execution.warp.pcs
     options:

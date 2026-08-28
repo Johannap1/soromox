@@ -1,4 +1,4 @@
-"""Backend-neutral validation and selection for dynamics execution."""
+"""Backend-neutral validation and selection for system execution."""
 
 from __future__ import annotations
 
@@ -79,14 +79,14 @@ def _select_backend(
     ):
         if configured == "warp":
             raise NotImplementedError(
-                f"The Warp {capabilities.family_name} dynamics executor "
+                f"The Warp {capabilities.family_name} executor "
                 f"requires exactly {required_points} Gauss points."
             )
         selected = "jax"
     if selected == "warp" and not warp_supported:
         if configured == "warp":
             raise NotImplementedError(
-                f"The Warp {capabilities.family_name} dynamics executor is "
+                f"The Warp {capabilities.family_name} executor is "
                 "not enabled for this system."
             )
         selected = "jax"
@@ -208,17 +208,13 @@ def dispatch_kinematics(
     capabilities: KinematicsCapabilities,
     warp_supported: bool = True,
 ) -> KinematicsResult:
-    """Dispatch scalar, spatially batched, and environment-batched kinematics.
-
-    ``q`` accepts ``(D,)`` or ``(E,D)``. ``s`` accepts a scalar, a shared
-    spatial batch ``(N,)``, or per-environment samples ``(E,N)``. Leading
-    dimensions are preserved in every pose and Jacobian result.
+    """Dispatch one unbatched configuration at one scalar abscissa.
 
     Args:
         model: Continuum system implementing the neutral kinematics contract.
-        q: Generalized coordinates with shape ``(D,)`` or ``(E, D)``.
-        s: Scalar abscissa, shared abscissae ``(N,)``, or per-environment
-            abscissae ``(E, N)``.
+        q: Generalized-coordinate vector with shape ``(D,)`` for one
+            configuration.
+        s: Scalar abscissa.
         operation: Select poses, inertial Jacobians, or their fused evaluation.
         backend: Optional per-call backend override. ``None`` uses the model's
             configured backend.
@@ -227,8 +223,7 @@ def dispatch_kinematics(
             executor.
 
     Returns:
-        Poses, inertial Jacobians, or their tuple with leading dimensions
-        determined by ``q`` and ``s``.
+        A pose, inertial Jacobian, or their tuple at ``s``.
 
     Raises:
         ValueError: If an input shape or backend name is invalid.
@@ -239,21 +234,10 @@ def dispatch_kinematics(
 
     q = jnp.asarray(q)
     s = jnp.asarray(s)
-    if q.ndim not in (1, 2) or q.shape[-1:] != (model.num_dofs,):
-        raise ValueError(
-            "q must have shape (num_dofs,) or (batch_size, num_dofs); "
-            f"expected (..., {model.num_dofs}), got {q.shape}."
-        )
-    if s.ndim not in (0, 1, 2):
-        raise ValueError(
-            "s must be scalar, (num_samples,), or "
-            f"(batch_size, num_samples); got {s.shape}."
-        )
-    if s.ndim == 2 and q.ndim == 2 and s.shape[0] != q.shape[0]:
-        raise ValueError(
-            "Per-environment samples must share q's batch size; "
-            f"got q {q.shape} and s {s.shape}."
-        )
+    if q.shape != (model.num_dofs,):
+        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if s.ndim != 0:
+        raise ValueError(f"s must be scalar, got shape {s.shape}.")
 
     selected = _select_backend(
         model,
@@ -262,53 +246,76 @@ def dispatch_kinematics(
         warp_supported=warp_supported,
     )
 
-    def scalar(model_: KinematicsModel, q_: Array, s_: Array) -> KinematicsResult:
-        return _reference_kinematics_result(model_, q_, s_, operation)
-
     if selected == "jax":
-        if q.ndim == 1 and s.ndim == 0:
-            return scalar(model, q, s)
-        if q.ndim == 1 and s.ndim == 1:
-            return _reference_kinematics_abscissa_batched_result(model, q, s, operation)
-        if q.ndim == 1:
-            return jax.vmap(
-                lambda samples: _reference_kinematics_abscissa_batched_result(
-                    model, q, samples, operation
-                )
-            )(s)
-        if s.ndim == 0:
-            return jax.vmap(scalar, in_axes=(None, 0, None))(model, q, s)
-        if s.ndim == 1:
-            return jax.vmap(
-                lambda q_value: _reference_kinematics_abscissa_batched_result(
-                    model, q_value, s, operation
-                )
-            )(q)
-        return jax.vmap(
-            lambda q_value, samples: _reference_kinematics_abscissa_batched_result(
-                model, q_value, samples, operation
-            )
-        )(q, s)
+        return _reference_kinematics_result(model, q, s, operation)
 
     scalar_evaluator = get_kinematics_evaluator(capabilities.warp_executor, operation)
+    return scalar_evaluator(model, q, s)
+
+
+def dispatch_kinematics_abscissa_batched(
+    model: KinematicsModel,
+    q: Array,
+    s: Array,
+    *,
+    operation: KinematicsOperation,
+    backend: ExecutionBackend | None,
+    capabilities: KinematicsCapabilities,
+    warp_supported: bool = True,
+) -> KinematicsResult:
+    """Dispatch kinematics for one configuration and an abscissa batch.
+
+    Environment batching is deliberately expressed with :func:`jax.vmap` over
+    this function's public system wrapper. The Warp evaluator's custom batching
+    rule collapses that mapped axis into one canonical ``(E,D)``/``(E,N)``
+    executor invocation.
+
+    Args:
+        model: Continuum system implementing the neutral kinematics contract.
+        q: Generalized-coordinate vector with shape ``(D,)`` for one
+            configuration.
+        s: Curvilinear abscissae with shape ``(N,)``.
+        operation: Select poses, inertial Jacobians, or their fused evaluation.
+        backend: Optional per-call backend override. ``None`` uses the model's
+            configured backend.
+        capabilities: Static support declared for the system family.
+        warp_supported: Whether this exact model type supports the family Warp
+            executor.
+
+    Returns:
+        Poses, inertial Jacobians, or their tuple with leading dimension ``N``.
+
+    Raises:
+        ValueError: If an input shape or backend name is invalid.
+        NotImplementedError: If explicit Warp execution is unsupported.
+        ImportError: If Warp is selected but unavailable.
+        TypeError: If Warp receives a dtype other than FP64.
+    """
+
+    q = jnp.asarray(q)
+    s = jnp.asarray(s)
+    if q.shape != (model.num_dofs,):
+        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if s.ndim != 1:
+        raise ValueError(f"s must have shape (num_samples,), got {s.shape}.")
+
+    selected = _select_backend(
+        model,
+        backend,
+        capabilities,
+        warp_supported=warp_supported,
+    )
+    if selected == "jax":
+        return _reference_kinematics_abscissa_batched_result(model, q, s, operation)
+
     abscissa_batched_evaluator = get_abscissa_batched_kinematics_evaluator(
         capabilities.warp_executor, operation
     )
-    if q.ndim == 1 and s.ndim == 0:
-        return scalar_evaluator(model, q, s)
-    if q.ndim == 1 and s.ndim == 1:
-        return abscissa_batched_evaluator(model, q, s)
-    if q.ndim == 1:
-        return jax.vmap(abscissa_batched_evaluator, in_axes=(None, None, 0))(
-            model, q, s
-        )
-    if s.ndim == 0:
-        return jax.vmap(scalar_evaluator, in_axes=(None, 0, None))(model, q, s)
-    if s.ndim == 1:
-        return jax.vmap(abscissa_batched_evaluator, in_axes=(None, 0, None))(
-            model, q, s
-        )
-    return jax.vmap(abscissa_batched_evaluator, in_axes=(None, 0, 0))(model, q, s)
+    return abscissa_batched_evaluator(model, q, s)
 
 
-__all__ = ["dispatch_dynamics_terms", "dispatch_kinematics"]
+__all__ = [
+    "dispatch_dynamics_terms",
+    "dispatch_kinematics",
+    "dispatch_kinematics_abscissa_batched",
+]

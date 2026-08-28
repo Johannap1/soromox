@@ -27,6 +27,7 @@ from soromox.systems.execution import (
     PCSBackendParams,
     dispatch_dynamics_terms,
     dispatch_kinematics,
+    dispatch_kinematics_abscissa_batched,
     evaluate_forward_dynamics,
 )
 from soromox.systems.pcs.params import PlanarPCSParams
@@ -933,18 +934,16 @@ class PlanarPCS(SoftRobot):
         *,
         backend: ExecutionBackend | None = None,
     ) -> Array:
-        """Compute planar poses for scalar or vectorized inputs.
+        """Compute a planar pose at one curvilinear abscissa.
 
         Args:
-            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
-            s: Scalar, shared backbone samples ``(N,)``, or per-environment
-                samples ``(E, N)``.
+            q: Active generalized strains with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
             backend: Optional execution override. ``None`` uses the model's
                 configured backend.
 
         Returns:
-            Planar poses with trailing shape ``(3,)`` and leading dimensions
-            determined by ``q`` and ``s``.
+            Planar pose ``[theta, x, y]`` with shape ``(3,)``.
         """
 
         return dispatch_kinematics(
@@ -977,7 +976,15 @@ class PlanarPCS(SoftRobot):
             Planar poses with shape ``(N, 3)``.
         """
 
-        return self.forward_kinematics(q, s_ps, backend=backend)
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="pose",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PlanarPCS,
+        )
 
     @eqx.filter_jit
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
@@ -1878,18 +1885,16 @@ class PlanarPCS(SoftRobot):
         *,
         backend: ExecutionBackend | None = None,
     ) -> Array:
-        """Compute inertial Jacobians for scalar or vectorized inputs.
+        """Compute an inertial Jacobian at one curvilinear abscissa.
 
         Args:
-            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
-            s: Scalar, shared backbone samples ``(N,)``, or per-environment
-                samples ``(E, N)``.
+            q: Active generalized strains with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
             backend: Optional execution override. ``None`` uses the model's
                 configured backend.
 
         Returns:
-            Inertial Jacobians with trailing shape ``(3, D)`` and leading
-            dimensions determined by ``q`` and ``s``.
+            Inertial Jacobian with shape ``(3, D)``.
         """
 
         return dispatch_kinematics(
@@ -1922,7 +1927,15 @@ class PlanarPCS(SoftRobot):
             Inertial-frame Jacobians with shape ``(N, 3, D)``.
         """
 
-        return self.jacobian_inertialframe(q, s_ps, backend=backend)
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="jacobian",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PlanarPCS,
+        )
 
     @eqx.filter_jit
     def forward_kinematics_and_jacobian_inertialframe(
@@ -1932,18 +1945,17 @@ class PlanarPCS(SoftRobot):
         *,
         backend: ExecutionBackend | None = None,
     ) -> tuple[Array, Array]:
-        """Compute planar poses and inertial Jacobians in one traversal.
+        """Compute a planar pose and inertial Jacobian in one traversal.
 
         Args:
-            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
-            s: Scalar, shared backbone samples ``(N,)``, or per-environment
-                samples ``(E, N)``.
+            q: Active generalized strains with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
             backend: Optional execution override. ``None`` uses the model's
                 configured backend.
 
         Returns:
-            A tuple containing poses with trailing shape ``(3,)`` and inertial
-            Jacobians with trailing shape ``(3, D)``.
+            A pose with shape ``(3,)`` and an inertial Jacobian with shape
+            ``(3, D)``.
         """
 
         return dispatch_kinematics(
@@ -1977,8 +1989,14 @@ class PlanarPCS(SoftRobot):
             ``(N, 3, D)``.
         """
 
-        return self.forward_kinematics_and_jacobian_inertialframe(
-            q, s_ps, backend=backend
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="both",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PlanarPCS,
         )
 
     @eqx.filter_jit

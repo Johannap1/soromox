@@ -420,7 +420,7 @@ def test_forward_kinematics_tips_matches_pointwise_evaluation(
 
 
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
-def test_vectorized_forward_kinematics_matches_pointwise_evaluation(
+def test_forward_kinematics_abscissa_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     model, _ = make_pcs(num_segments=num_segments)
@@ -432,7 +432,7 @@ def test_vectorized_forward_kinematics_matches_pointwise_evaluation(
     s_ps = jnp.asarray(s_values, dtype=jnp.float64)
 
     for q in (zero_cfg, random_cfg):
-        g_batched = model.forward_kinematics(q, s_ps)
+        g_batched = model.forward_kinematics_abscissa_batched(q, s_ps)
         g_expected = jax.vmap(lambda s, q=q: model.forward_kinematics(q, s))(s_ps)
 
         assert_allclose(g_batched, g_expected, rtol=RTOL, atol=ATOL)
@@ -764,7 +764,7 @@ def test_jacobian_inertialframe_matches_central_differences(num_segments: int):
 
 
 @pytest.mark.parametrize("num_segments", [1, 2])
-def test_vectorized_jacobian_inertialframe_matches_pointwise_evaluation(
+def test_jacobian_inertialframe_abscissa_batched_matches_pointwise_evaluation(
     num_segments: int,
 ) -> None:
     model, _ = make_pcs(num_segments=num_segments)
@@ -778,7 +778,7 @@ def test_vectorized_jacobian_inertialframe_matches_pointwise_evaluation(
     s_points = jnp.asarray(sample_arc_lengths(model), dtype=jnp.float64)
 
     for q in (zero_cfg, random_cfg):
-        J_batch = model.jacobian_inertialframe(q, s_points)
+        J_batch = model.jacobian_inertialframe_abscissa_batched(q, s_points)
 
         for idx, s_val in enumerate(s_points):
             J_single = model.jacobian_inertialframe(q, s_val)
@@ -986,23 +986,28 @@ def test_public_pcs_jacobian_wrappers_match_inertialframe_methods() -> None:
 
     assert_allclose(
         model.forward_kinematics_abscissa_batched(q, s_ps),
-        model.forward_kinematics(q, s_ps),
+        jax.vmap(model.forward_kinematics, in_axes=(None, 0))(q, s_ps),
         rtol=RTOL,
         atol=ATOL,
     )
     assert_allclose(
         model.jacobian_inertialframe_abscissa_batched(q, s_ps),
-        model.jacobian_inertialframe(q, s_ps),
+        jax.vmap(model.jacobian_inertialframe, in_axes=(None, 0))(q, s_ps),
         rtol=RTOL,
         atol=ATOL,
     )
     poses, jacobians = (
         model.forward_kinematics_and_jacobian_inertialframe_abscissa_batched(q, s_ps)
     )
-    assert_allclose(poses, model.forward_kinematics(q, s_ps), rtol=RTOL, atol=ATOL)
+    assert_allclose(
+        poses,
+        model.forward_kinematics_abscissa_batched(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
     assert_allclose(
         jacobians,
-        model.jacobian_inertialframe(q, s_ps),
+        model.jacobian_inertialframe_abscissa_batched(q, s_ps),
         rtol=RTOL,
         atol=ATOL,
     )
@@ -1015,7 +1020,7 @@ def test_public_pcs_jacobian_wrappers_match_inertialframe_methods() -> None:
     )
     assert_allclose(
         model.jacobian_abscissa_batched(q, s_ps),
-        model.jacobian_inertialframe(q, s_ps),
+        model.jacobian_inertialframe_abscissa_batched(q, s_ps),
         rtol=RTOL,
         atol=ATOL,
     )
@@ -1422,7 +1427,7 @@ def test_integration_kinematics_matches_existing_batched_path(
     s_points = Xs_scaled.reshape(-1)
     num_inner = model.num_gauss_points
 
-    g_expected = model.forward_kinematics(q, s_points).reshape(
+    g_expected = model.forward_kinematics_abscissa_batched(q, s_points).reshape(
         num_segments, num_inner, 4, 4
     )
     J_full, Jd_full = model._J_Jd_local_abscissa_batched(q, qd, s_points)
@@ -1823,8 +1828,8 @@ def test_strain_basis_consistency_strain_and_kinematics(num_segments: int):
     assert g_tips_full.shape == (num_segments, 4, 4)
     assert_allclose(g_tips_full, g_tips_small, rtol=RTOL, atol=ATOL)
 
-    g_batched_small = reduced.forward_kinematics(q_small, s_values)
-    g_batched_full = full.forward_kinematics(q_full, s_values)
+    g_batched_small = reduced.forward_kinematics_abscissa_batched(q_small, s_values)
+    g_batched_full = full.forward_kinematics_abscissa_batched(q_full, s_values)
     N = s_values.shape[0]
     assert g_batched_small.shape == (N, 4, 4)
     assert g_batched_full.shape == (N, 4, 4)
@@ -2223,8 +2228,8 @@ def test_reverse_mode_of_vmap_at_zero_configuration() -> None:
 
     for name, fn in (
         (
-            "forward_kinematics_vectorized",
-            lambda q: jnp.sum(model.forward_kinematics(q, s_ps)),
+            "forward_kinematics_abscissa_batched",
+            lambda q: jnp.sum(model.forward_kinematics_abscissa_batched(q, s_ps)),
         ),
         ("inertia_matrix", lambda q: jnp.sum(model.inertia_matrix(q))),
         ("gravitational_force", lambda q: jnp.sum(model.gravitational_force(q))),

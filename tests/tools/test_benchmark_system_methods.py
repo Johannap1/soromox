@@ -73,12 +73,18 @@ def test_invalid_backend_is_rejected() -> None:
     [
         "dynamics_terms",
         "forward_dynamics",
+        "forward_kinematics",
+        "forward_kinematics_abscissa_batched",
+        "jacobian_inertialframe",
+        "jacobian_inertialframe_abscissa_batched",
+        "forward_kinematics_and_jacobian_inertialframe",
+        "forward_kinematics_and_jacobian_inertialframe_abscissa_batched",
         "rollout_to",
         "rollout_closed_loop_to",
         "rollout_discrete_closed_loop_to",
     ],
 )
-def test_backend_metadata_includes_dynamics_and_rollout_methods(method: str) -> None:
+def test_backend_metadata_includes_accelerated_methods(method: str) -> None:
     registry = benchmark._build_system_registry()
 
     assert benchmark._execution_backend_applies(registry["gvs"], method)

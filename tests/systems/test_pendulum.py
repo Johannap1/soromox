@@ -570,7 +570,7 @@ def test_batched_methods(N):
     s_ps = jnp.array(L_cum[1:])  # all tip positions
 
     # Forward kinematics batched
-    chi_batched = robot.forward_kinematics(q, s_ps)
+    chi_batched = robot.forward_kinematics_abscissa_batched(q, s_ps)
     chi_tips = robot.forward_kinematics_tips(q)
     assert_allclose(chi_batched, chi_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
 
