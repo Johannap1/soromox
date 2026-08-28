@@ -42,14 +42,31 @@ jobs:
       - name: Run non-system tests
         run: python -m pytest --ignore=tests/systems -m "not memory_intensive"
 
-      - name: Run system tests
-        run: python -m pytest tests/systems -m "not memory_intensive"
+      - name: Run remaining system tests
+        run: |
+          python -m pytest tests/systems \
+            --ignore=tests/systems/test_gvs.py \
+            --ignore=tests/systems/test_pcs.py \
+            --ignore=tests/systems/test_planar_pcs.py \
+            -m "not memory_intensive"
 
-      - name: Run memory-intensive GVS autodiff tests
+      - name: Run GVS system tests
+        run: python -m pytest tests/systems/test_gvs.py -m "not memory_intensive"
+
+      - name: Run PCS system tests
+        run: python -m pytest tests/systems/test_pcs.py -m "not memory_intensive"
+
+      - name: Run PlanarPCS system tests
+        run: python -m pytest tests/systems/test_planar_pcs.py -m "not memory_intensive"
+
+      - name: Run memory-intensive GVS tests
         run: |
           python -m pytest tests/systems/test_gvs.py::test_forward_mode_automatic_differentiability_at_zero_configuration
           python -m pytest tests/systems/test_gvs.py::test_reverse_mode_automatic_differentiability_at_zero_configuration
           python -m pytest tests/systems/test_gvs.py::test_gvs_autodiff_checks
+          for basis_type in monomial legendre chebyshev fourier gaussian imq; do
+            python -m pytest "tests/systems/test_gvs.py::test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths[$basis_type]"
+          done
 
   minimum-numerical-dependencies:
     name: test (minimum numerical dependencies, Python 3.11)
@@ -97,8 +114,11 @@ jobs:
       - name: Run PlanarPCS system tests
         run: python -m pytest tests/systems/test_planar_pcs.py -m "not memory_intensive"
 
-      - name: Run memory-intensive GVS autodiff tests
+      - name: Run memory-intensive GVS tests
         run: |
           python -m pytest tests/systems/test_gvs.py::test_forward_mode_automatic_differentiability_at_zero_configuration
           python -m pytest tests/systems/test_gvs.py::test_reverse_mode_automatic_differentiability_at_zero_configuration
           python -m pytest tests/systems/test_gvs.py::test_gvs_autodiff_checks
+          for basis_type in monomial legendre chebyshev fourier gaussian imq; do
+            python -m pytest "tests/systems/test_gvs.py::test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths[$basis_type]"
+          done

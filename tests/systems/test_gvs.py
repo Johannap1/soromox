@@ -2064,6 +2064,7 @@ def test_rotational_strain_basis_length_scaling_matches_unscaled_coordinates() -
     "basis_type",
     ("monomial", "legendre", "chebyshev", "fourier", "gaussian", "imq"),
 )
+@pytest.mark.memory_intensive
 def test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths(
     basis_type: str,
 ) -> None:
