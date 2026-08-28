@@ -1,4 +1,4 @@
-"""Public Warp-native GVS dynamics building blocks.
+"""Public Warp-native GVS dynamics and kinematics building blocks.
 
 The kernels and launch functions in this module operate entirely on
 ``warp.array`` objects. They do not require JAX and do not allocate output
@@ -9,8 +9,8 @@ dtypes, coordinate maps, and launch ordering described by each function.
 Soromox system users should normally call :meth:`GVS.dynamics_terms
 <soromox.systems.GVS.dynamics_terms>` or :meth:`GVS.forward_dynamics
 <soromox.systems.GVS.forward_dynamics>` instead. The lower-level API is intended
-for integration packages that need to compose the mechanics pipeline inside a
-larger Warp-native simulation loop.
+for integration packages that need to compose the dynamics and kinematics
+pipelines inside a larger Warp-native simulation loop.
 """
 
 from __future__ import annotations
