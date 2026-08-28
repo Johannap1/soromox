@@ -7,9 +7,9 @@ described in [Execution Backends](../../user-guide/execution-backends.md).
 !!! note "Use the system methods in normal applications"
     Most users should not call classes or functions in this package directly.
     Construct `GVS`, `PCS`, or `PlanarPCS` with `backend="auto"`, `"jax"`, or
-    `"warp"`, then call `dynamics_terms`, `forward_dynamics`, or a rollout
-    method. The lower-level interfaces below primarily support typed
-    configuration and external integration packages.
+    `"warp"`, then call the public dynamics or kinematics methods. The
+    lower-level interfaces below primarily support typed configuration and
+    external integration packages.
 
 ## Public configuration
 

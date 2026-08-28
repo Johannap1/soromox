@@ -72,7 +72,18 @@ from tools.benchmarks._benchmark_common import (
 
 Array = jax.Array
 Tree = Any
-_DIRECT_BACKEND_AWARE_METHODS = frozenset({"dynamics_terms", "forward_dynamics"})
+_DIRECT_BACKEND_AWARE_METHODS = frozenset(
+    {
+        "dynamics_terms",
+        "forward_dynamics",
+        "forward_kinematics",
+        "forward_kinematics_abscissa_batched",
+        "jacobian_inertialframe",
+        "jacobian_inertialframe_abscissa_batched",
+        "forward_kinematics_and_jacobian_inertialframe",
+        "forward_kinematics_and_jacobian_inertialframe_abscissa_batched",
+    }
+)
 
 
 def _active_cpu_affinity() -> str | None:
@@ -148,7 +159,7 @@ def _execution_backend_applies(config: SystemBenchmark, method: str) -> bool:
 
     Returns:
         ``True`` when the system supports alternate execution backends and the
-        method dispatches dynamics through that backend.
+        method dispatches through that backend.
     """
 
     return config.supports_backend and (

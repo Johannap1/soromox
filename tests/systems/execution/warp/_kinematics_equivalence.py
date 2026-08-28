@@ -62,19 +62,11 @@ def assert_kinematics_backend_equivalence(model: Any) -> None:
         "jacobian_inertialframe",
         "forward_kinematics_and_jacobian_inertialframe",
     )
-    input_pairs = (
-        (q[0], samples[1]),
-        (q[0], samples),
-        (q, samples[1]),
-        (q, samples),
-        (q, per_environment_samples),
-    )
     for method_name in methods:
         method = getattr(model, method_name)
-        for q_value, s_value in input_pairs:
-            expected = method(q_value, s_value, backend="jax")
-            actual = method(q_value, s_value, backend="warp")
-            _assert_result_close(actual, expected)
+        expected = method(q[0], samples[1], backend="jax")
+        actual = method(q[0], samples[1], backend="warp")
+        _assert_result_close(actual, expected)
 
         jax_spatial = jax.vmap(partial(method, backend="jax"), in_axes=(None, 0))
         warp_spatial = jax.vmap(partial(method, backend="warp"), in_axes=(None, 0))
@@ -89,13 +81,13 @@ def assert_kinematics_backend_equivalence(model: Any) -> None:
         actual_pairwise = jax.vmap(partial(method, backend="warp"))(q, pairwise_samples)
         _assert_result_close(actual_pairwise, expected_pairwise)
 
-        expected_non_pairwise = jax.vmap(
+        expected_environments = jax.vmap(
             partial(method, backend="jax"), in_axes=(0, None)
-        )(q, samples)
-        actual_non_pairwise = jax.vmap(
+        )(q, samples[1])
+        actual_environments = jax.vmap(
             partial(method, backend="warp"), in_axes=(0, None)
-        )(q, samples)
-        _assert_result_close(actual_non_pairwise, expected_non_pairwise)
+        )(q, samples[1])
+        _assert_result_close(actual_environments, expected_environments)
 
         expected_cartesian = jax.vmap(jax_spatial, in_axes=(0, None))(q, samples)
         actual_cartesian = jax.vmap(warp_spatial, in_axes=(0, None))(q, samples)
@@ -113,10 +105,30 @@ def assert_kinematics_backend_equivalence(model: Any) -> None:
         ),
     ):
         abscissa_method = getattr(model, abscissa_method_name)
-        vectorized_method = getattr(model, vectorized_method_name)
-        expected = vectorized_method(q[0], samples, backend="jax")
+        scalar_method = getattr(model, vectorized_method_name)
+        expected = jax.vmap(partial(scalar_method, backend="jax"), in_axes=(None, 0))(
+            q[0], samples
+        )
         actual = abscissa_method(q[0], samples, backend="warp")
         _assert_result_close(actual, expected)
+
+        jax_environment_batch = jax.vmap(
+            partial(abscissa_method, backend="jax"), in_axes=(0, None)
+        )
+        warp_environment_batch = jax.vmap(
+            partial(abscissa_method, backend="warp"), in_axes=(0, None)
+        )
+        expected_environments = jax_environment_batch(q, samples)
+        actual_environments = warp_environment_batch(q, samples)
+        _assert_result_close(actual_environments, expected_environments)
+
+        expected_per_environment = jax.vmap(partial(abscissa_method, backend="jax"))(
+            q, per_environment_samples
+        )
+        actual_per_environment = jax.vmap(partial(abscissa_method, backend="warp"))(
+            q, per_environment_samples
+        )
+        _assert_result_close(actual_per_environment, expected_per_environment)
 
 
 def assert_inertial_jacobian_finite_difference(model: Any) -> None:

@@ -41,13 +41,15 @@ class DummyPlanarRobot:
         self.base_pose = jnp.asarray(base_pose)
         self.base_transform = poses.planar_pose_to_transform(self.base_pose)
 
-    def forward_kinematics(self, q, s_ps):
-        s_ps = jnp.atleast_1d(s_ps)
+    def forward_kinematics_abscissa_batched(self, q, s_ps):
         theta = self.base_pose[0]
         direction = jnp.array([jnp.cos(theta), jnp.sin(theta)])
         xy = self.base_pose[1:3] + s_ps[:, None] * direction
         theta_ps = jnp.full((s_ps.shape[0], 1), theta, dtype=s_ps.dtype)
         return jnp.concatenate([theta_ps, xy], axis=1)
+
+    def forward_kinematics(self, q, s):
+        return self.forward_kinematics_abscissa_batched(q, jnp.asarray([s]))[0]
 
     def cross_section_geometry(self, q, s):
         return CrossSectionGeometry.CIRCULAR, jnp.array([0.02])
@@ -62,11 +64,13 @@ class DummySpatialRobot:
         self.base_pose = jnp.asarray(base_pose)
         self.base_transform = poses.quaternion_pose_to_transform(self.base_pose)
 
-    def forward_kinematics(self, q, s_ps):
-        s_ps = jnp.atleast_1d(s_ps)
+    def forward_kinematics_abscissa_batched(self, q, s_ps):
         transforms = jnp.repeat(self.base_transform[None, :, :], s_ps.shape[0], axis=0)
         offsets = s_ps[:, None] * self.base_transform[:3, 0]
         return transforms.at[:, :3, 3].add(offsets)
+
+    def forward_kinematics(self, q, s):
+        return self.forward_kinematics_abscissa_batched(q, jnp.asarray([s]))[0]
 
     def cross_section_geometry(self, q, s):
         return CrossSectionGeometry.CIRCULAR, jnp.array([0.02])

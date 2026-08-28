@@ -285,18 +285,11 @@ class SoftRobot(DynamicalSystem):
 
     def forward_kinematics(self, q: Array, s: Array) -> Array:
         """
-        Compute forward kinematics for scalar or vectorized inputs.
-
-        A leading dimension of ``q`` represents independent environments. A
-        one-dimensional ``s`` contains shared backbone samples, while a
-        two-dimensional ``s`` contains per-environment samples. Scalar inputs
-        retain the historical scalar output shape.
+        Compute the forward kinematics at a point s along the robot.
 
         Args:
-            q: Generalized coordinates with shape ``(num_dofs,)`` or
-                ``(num_environments, num_dofs)``.
-            s: Scalar, shared samples ``(num_samples,)``, or per-environment
-                samples ``(num_environments, num_samples)``. The meaning depends
+            q: Generalized coordinates of shape (num_dofs,).
+            s: Position parameter along the robot structure. The meaning depends
                 on the specific robot type:
                 - For continuum robots (PCS, PlanarPCS): arc-length in [0, L_total]
                 - For articulated robots (Pendulum): can be link index or fraction
@@ -306,36 +299,9 @@ class SoftRobot(DynamicalSystem):
                 - For 3D robots (PCS): SE(3) transformation matrix, shape (4, 4)
                 - For planar robots (PlanarPCS, Pendulum): [theta, x, y], shape (3,)
         """
-        q = jnp.asarray(q)
-        s = jnp.asarray(s)
-
-        def scalar(q_value: Array, s_value: Array) -> Array:
-            if custom_jvp_enabled():
-                return SoftRobot._forward_kinematics_custom_jvp(self, q_value, s_value)
-            return self._forward_kinematics(q_value, s_value)
-
-        if q.ndim == 1 and s.ndim == 0:
-            return scalar(q, s)
-        if q.ndim == 1 and s.ndim == 1:
-            return vmap(lambda s_value: scalar(q, s_value))(s)
-        if q.ndim == 1 and s.ndim == 2:
-            return vmap(vmap(lambda s_value: scalar(q, s_value)))(s)
-        if q.ndim == 2 and s.ndim == 0:
-            return vmap(lambda q_value: scalar(q_value, s))(q)
-        if q.ndim == 2 and s.ndim == 1:
-            return vmap(
-                lambda q_value: vmap(lambda s_value: scalar(q_value, s_value))(s)
-            )(q)
-        if q.ndim == 2 and s.ndim == 2 and q.shape[0] == s.shape[0]:
-            return vmap(
-                lambda q_value, s_values: vmap(
-                    lambda s_value: scalar(q_value, s_value)
-                )(s_values)
-            )(q, s)
-        raise ValueError(
-            "q and s must describe scalar, spatial, environment, or paired "
-            f"environment-by-spatial kinematics; got q {q.shape} and s {s.shape}."
-        )
+        if custom_jvp_enabled():
+            return SoftRobot._forward_kinematics_custom_jvp(self, q, s)
+        return self._forward_kinematics(q, s)
 
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
         """
@@ -412,22 +378,20 @@ class SoftRobot(DynamicalSystem):
         return vmap(lambda s: self.forward_kinematics(q, s))(s_tips)
 
     def forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
-        """Compute forward kinematics at a batch of curvilinear abscissae.
+        """
+        Compute the forward kinematics at multiple points along the robot.
 
-        The abscissa batch is the only mapped input; ``q`` represents one
-        configuration. Subclasses may override this method with a specialized
-        traversal that shares recurrence state across all requested locations.
+        Default implementation uses vmap over forward_kinematics.
+        Subclasses may override this for more efficient batch computation.
 
         Args:
-            q: Generalized coordinates with shape ``(num_dofs,)``.
-            s_ps: Curvilinear abscissae with shape ``(num_samples,)``.
+            q: Generalized coordinates of shape (num_dofs,).
+            s_ps: Array of position parameters, shape (N,).
 
         Returns:
-            Poses at all requested abscissae, with a leading
-            ``num_samples`` dimension.
+            chi_ps: Poses at all points, shape depends on robot type.
         """
-
-        return self.forward_kinematics(q, s_ps)
+        return vmap(lambda s: self.forward_kinematics(q, s))(s_ps)
 
     def forward_kinematics_arc_length_derivative(self, q: Array, s: Array) -> Array:
         """

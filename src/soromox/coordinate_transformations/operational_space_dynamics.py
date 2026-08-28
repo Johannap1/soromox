@@ -830,7 +830,7 @@ class OperationalSpaceDynamics(eqx.Module):
             compute_task_pose_error: Returns task-selected pose error.
         """
         # Compute forward kinematics at all points
-        fk_results = self.robot.forward_kinematics(q, self.s_ps)
+        fk_results = self.robot.forward_kinematics_abscissa_batched(q, self.s_ps)
 
         # Extract pose vectors from forward kinematics results
         poses = vmap(self._extract_pose_from_fk)(fk_results)

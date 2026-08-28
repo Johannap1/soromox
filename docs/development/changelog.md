@@ -15,7 +15,7 @@ and include benchmark baseline and measurement context for performance claims.
 
 - Added fused Warp forward-kinematics and inertial-Jacobian execution for
   `GVS`, `PCS`, and `PlanarPCS`, including spatial, environment, and combined
-  batches through the public vectorized methods.
+  batches through the explicit `*_abscissa_batched` methods and `jax.vmap`.
 - Added optional Warp dynamics backends for `GVS`, `PCS`, and `PlanarPCS`,
   including automatic GPU selection, JAX-routed differentiation, and reusable
   Warp-native execution APIs; see
@@ -42,7 +42,8 @@ and include benchmark baseline and measurement context for performance claims.
   the geometric mean over JAX by 2.28×; the eight-segment, 256-environment,
   64-abscissa PCS and GVS Jacobians improved 3.81× (1.989 to 0.521 ms) and
   12.21× (8.959 to 0.733 ms). On an Intel Core Ultra 9 285K, the overall
-  geometric mean was 1.00×, supporting the existing JAX-on-CPU `auto` policy.
+  geometric mean was 1.16×, but the large PCS pose, Jacobian, and fused cases
+  were 0.73–0.80×, supporting the existing JAX-on-CPU `auto` policy.
   Measurements used FP64, JAX 0.11.0, Warp 1.16.0, separate first-call timing,
   two warmups, and the median of nine GPU or seven CPU synchronized repeats.
   An Nsight Systems trace of the large fused PCS case confirmed two Warp
@@ -75,10 +76,7 @@ and include benchmark baseline and measurement context for performance claims.
   `forward_kinematics_abscissa_batched(...)`, `jacobian_batched(...)` is now
   `jacobian_abscissa_batched(...)`, and the body-frame, inertial-frame, and
   Jacobian-time-derivative variants follow the same `*_abscissa_batched`
-  convention. The old names have been removed. The un-suffixed continuum
-  `forward_kinematics(...)` and `jacobian_inertialframe(...)` methods now also
-  accept configuration, abscissa, and combined batches; JAX abscissa batches
-  retain the specialized family traversal.
+  convention. The old names have been removed.
 - Moved generic actuator-visualization adaptation out of
   `SoftRobot.actuator_visual_layers(...)` and into
   `soromox.rendering.actuator_visual_layers(...)`. Renderers continue to adapt

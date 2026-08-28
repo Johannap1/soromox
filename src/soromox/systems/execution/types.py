@@ -197,7 +197,7 @@ class KinematicsModel(Protocol):
 
 
 class KinematicsEvaluator(Protocol):
-    """Scalar-semantics callable backed by a batch-shaped kinematics executor."""
+    """Single-point callable backed by a batch-shaped kinematics executor."""
 
     def __call__(self, model: KinematicsModel, q: Array, s: Array) -> KinematicsResult:
         """Evaluate one configuration and one backbone coordinate."""

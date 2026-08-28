@@ -16,6 +16,7 @@ from soromox.systems.execution import (
     ExecutionBackend,
     dispatch_dynamics_terms,
     dispatch_kinematics,
+    dispatch_kinematics_abscissa_batched,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -142,6 +143,42 @@ class _KinematicsProbe(eqx.Module):
         """Dispatch probe Jacobians through the neutral boundary."""
 
         return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="jacobian",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+        )
+
+    def forward_kinematics_abscissa_batched(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Dispatch a probe pose batch through the neutral boundary."""
+
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s,
+            operation="pose",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+        )
+
+    def jacobian_inertialframe_abscissa_batched(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Dispatch a probe Jacobian batch through the neutral boundary."""
+
+        return dispatch_kinematics_abscissa_batched(
             self,
             q,
             s,
@@ -357,9 +394,9 @@ def test_kinematics_jax_spatial_vmap_uses_specialized_model_path() -> None:
     q_batch = jnp.zeros((4, model.num_dofs), dtype=jnp.float64)
     s = jnp.linspace(0.0, 1.0, 5, dtype=jnp.float64)
 
-    direct_pose = model.forward_kinematics(q, s)
+    direct_pose = model.forward_kinematics_abscissa_batched(q, s)
     mapped_pose = jax.vmap(lambda value: model.forward_kinematics(q, value))(s)
-    direct_jacobian = model.jacobian_inertialframe(q, s)
+    direct_jacobian = model.jacobian_inertialframe_abscissa_batched(q, s)
     mapped_jacobian = jax.vmap(lambda value: model.jacobian_inertialframe(q, value))(s)
     cartesian_pose = jax.vmap(
         lambda q_value: jax.vmap(
@@ -385,23 +422,45 @@ def test_kinematics_jax_spatial_vmap_uses_specialized_model_path() -> None:
     [
         ((2,), (), "q must have shape"),
         ((1, 1, 3), (), "q must have shape"),
-        ((2, 3), (3, 4), "share q's batch size"),
-        ((3,), (1, 2, 3), "s must be scalar"),
+        ((2, 3), (), "q must have shape"),
+        ((3,), (3,), "s must be scalar"),
     ],
 )
-def test_kinematics_dispatch_validates_vectorized_shapes(
+def test_kinematics_scalar_dispatch_validates_shapes(
     q_shape: tuple[int, ...],
     s_shape: tuple[int, ...],
     message: str,
 ) -> None:
-    """Reject ambiguous or incompatible kinematics batch shapes."""
+    """Reject batched inputs at the single-point public-method boundary."""
 
     model = _KinematicsProbe()
     with pytest.raises(ValueError, match=message):
         model.forward_kinematics(jnp.zeros(q_shape), jnp.zeros(s_shape))
 
 
-def test_kinematics_cartesian_batch_reaches_one_warp_executor(
+@pytest.mark.parametrize(
+    ("q_shape", "s_shape", "message"),
+    [
+        ((2, 3), (4,), "q must have shape"),
+        ((3,), (), "s must have shape"),
+        ((3,), (2, 4), "s must have shape"),
+    ],
+)
+def test_kinematics_abscissa_dispatch_validates_shapes(
+    q_shape: tuple[int, ...],
+    s_shape: tuple[int, ...],
+    message: str,
+) -> None:
+    """Keep environment batching outside the explicit abscissa-batch API."""
+
+    model = _KinematicsProbe()
+    with pytest.raises(ValueError, match=message):
+        model.forward_kinematics_abscissa_batched(
+            jnp.zeros(q_shape), jnp.zeros(s_shape)
+        )
+
+
+def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Collapse environment-by-spatial inputs into one canonical Warp call."""
@@ -432,23 +491,42 @@ def test_kinematics_cartesian_batch_reaches_one_warp_executor(
         lambda: "gpu",
     )
 
-    result = model.forward_kinematics(q, s)
+    result = jax.vmap(
+        model.forward_kinematics_abscissa_batched,
+        in_axes=(0, None),
+    )(q, s)
     jax.block_until_ready(result)
 
     assert result.shape == (4, 6, 3)
     assert observed_shapes == [(4, 6)]
 
 
+@pytest.mark.parametrize(
+    ("point_method_name", "batch_method_name", "trailing_shape"),
+    [
+        ("forward_kinematics", "forward_kinematics_abscissa_batched", (3,)),
+        (
+            "jacobian_inertialframe",
+            "jacobian_inertialframe_abscissa_batched",
+            (3, 3),
+        ),
+    ],
+)
 def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
     monkeypatch: pytest.MonkeyPatch,
+    point_method_name: str,
+    batch_method_name: str,
+    trailing_shape: tuple[int, ...],
 ) -> None:
-    """Fuse spatial, environment, and nested public-method vmaps."""
+    """Fuse pose and Jacobian public-method vmaps across every batch layout."""
 
     from soromox.systems.execution.warp import loader
 
     model = _KinematicsProbe(backend="warp")
     q = jnp.arange(12, dtype=jnp.float64).reshape(4, 3) / 10.0
     s = jnp.linspace(0.0, 1.0, 6, dtype=jnp.float64)
+    point_method = getattr(model, point_method_name)
+    batch_method = getattr(model, batch_method_name)
     observed_shapes: list[tuple[int, int]] = []
 
     def fake_batch(
@@ -457,12 +535,19 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
         sample_s: Array,
         operation: str,
     ) -> Array:
-        del model, operation
+        del model
         jax.debug.callback(
             lambda shape: observed_shapes.append((int(shape[0]), int(shape[1]))),
             jnp.asarray([q.shape[0], sample_s.shape[1]]),
         )
-        return jnp.zeros((q.shape[0], sample_s.shape[1], 3), dtype=q.dtype)
+        result_shape = (q.shape[0], sample_s.shape[1])
+        if operation == "pose":
+            result_shape = (*result_shape, 3)
+        elif operation == "jacobian":
+            result_shape = (*result_shape, 3, q.shape[1])
+        else:
+            raise AssertionError(f"Unexpected operation {operation!r}.")
+        return jnp.zeros(result_shape, dtype=q.dtype)
 
     monkeypatch.setattr(loader, "_execute_pcs_kinematics_batch", fake_batch)
     monkeypatch.setattr(
@@ -470,32 +555,47 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
         lambda: "gpu",
     )
 
-    spatial = jax.vmap(lambda value: model.forward_kinematics(q[0], value))(s)
+    spatial = jax.vmap(lambda value: point_method(q[0], value))(s)
     jax.block_until_ready(spatial)
     assert observed_shapes == [(1, 6)]
 
     observed_shapes.clear()
-    environments = jax.vmap(lambda value: model.forward_kinematics(value, s[0]))(q)
+    environments = jax.vmap(lambda value: point_method(value, s[0]))(q)
     jax.block_until_ready(environments)
     assert observed_shapes == [(4, 1)]
 
     observed_shapes.clear()
-    pairwise = jax.vmap(model.forward_kinematics)(q, s[: q.shape[0]])
+    pairwise = jax.vmap(point_method)(q, s[: q.shape[0]])
     jax.block_until_ready(pairwise)
-    assert pairwise.shape == (4, 3)
+    assert pairwise.shape == (4, *trailing_shape)
     assert observed_shapes == [(4, 1)]
 
     observed_shapes.clear()
-    non_pairwise = jax.vmap(model.forward_kinematics, in_axes=(0, None))(q, s)
+    non_pairwise = jax.vmap(point_method, in_axes=(0, None))(q, s[0])
     jax.block_until_ready(non_pairwise)
-    assert non_pairwise.shape == (4, 6, 3)
+    assert non_pairwise.shape == (4, *trailing_shape)
+    assert observed_shapes == [(4, 1)]
+
+    observed_shapes.clear()
+    explicit_cartesian = jax.vmap(
+        batch_method,
+        in_axes=(0, None),
+    )(q, s)
+    jax.block_until_ready(explicit_cartesian)
+    assert explicit_cartesian.shape == (4, 6, *trailing_shape)
     assert observed_shapes == [(4, 6)]
 
     observed_shapes.clear()
-    cartesian = jax.vmap(
-        lambda value: jax.vmap(lambda sample: model.forward_kinematics(value, sample))(
-            s
-        )
+    per_environment_s = jnp.stack([s, s[::-1], s, s[::-1]])
+    per_environment = jax.vmap(batch_method)(q, per_environment_s)
+    jax.block_until_ready(per_environment)
+    assert per_environment.shape == (4, 6, *trailing_shape)
+    assert observed_shapes == [(4, 6)]
+
+    observed_shapes.clear()
+    nested_cartesian = jax.vmap(
+        lambda value: jax.vmap(lambda sample: point_method(value, sample))(s)
     )(q)
-    jax.block_until_ready(cartesian)
+    jax.block_until_ready(nested_cartesian)
+    assert nested_cartesian.shape == (4, 6, *trailing_shape)
     assert observed_shapes == [(4, 6)]

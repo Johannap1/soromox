@@ -385,7 +385,7 @@ def get_dynamics_evaluator(key: WarpExecutorKey) -> DynamicsEvaluator:
         key: Registered family executor key.
 
     Returns:
-        Scalar-semantics evaluator whose custom ``vmap`` invokes one batched
+        Single-point evaluator whose custom ``vmap`` invokes one batched
         executor and whose derivative rule uses JAX.
     """
 
@@ -397,14 +397,14 @@ def get_dynamics_evaluator(key: WarpExecutorKey) -> DynamicsEvaluator:
 def get_kinematics_evaluator(
     key: WarpExecutorKey, operation: KinematicsOperation
 ) -> KinematicsEvaluator:
-    """Return a transform-aware scalar kinematics evaluator.
+    """Return a transform-aware single-point kinematics evaluator.
 
     Args:
         key: Registered GVS or PCS executor family.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
-        Scalar-semantics evaluator with custom batching and JVP rules.
+        Single-point evaluator with custom batching and JVP rules.
     """
 
     return _KINEMATICS_EVALUATORS[(key, operation)][0]

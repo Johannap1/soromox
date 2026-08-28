@@ -313,7 +313,7 @@ class BaseSoftRobotRenderer(ABC):
     def compute_backbone_poses(self, q: Array) -> Array:
         """Compute full FK poses at the configured backbone sample points."""
         s_ps = jnp.linspace(0.0, self.L_max, self.num_points)
-        return self.robot.forward_kinematics(q, s_ps)
+        return self.robot.forward_kinematics_abscissa_batched(q, s_ps)
 
     def compute_actuator_visual_layers(
         self,
@@ -1093,7 +1093,8 @@ class BaseSoftRobotRenderer(ABC):
     ) -> Array:
         """Compute backbone curves for multiple robots with base offsets.
 
-        Uses the vectorized ``forward_kinematics`` API for each robot.
+        Vectorizes :meth:`compute_backbone_curve` over configurations. Each
+        curve uses the robot's public abscissa-batched kinematics method.
 
         Args:
             q_batch: Configurations of shape (N, DOF) - batch-first
