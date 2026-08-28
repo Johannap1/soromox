@@ -475,15 +475,15 @@ def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
     def fake_batch(
         model: _KinematicsProbe,
         q: Array,
-        sample_s: Array,
+        s: Array,
         operation: str,
     ) -> Array:
         del operation
         jax.debug.callback(
             lambda shape: observed_shapes.append((int(shape[0]), int(shape[1]))),
-            jnp.asarray([q.shape[0], sample_s.shape[1]]),
+            jnp.asarray([q.shape[0], s.shape[1]]),
         )
-        return jnp.zeros((q.shape[0], sample_s.shape[1], 3), dtype=q.dtype)
+        return jnp.zeros((q.shape[0], s.shape[1], 3), dtype=q.dtype)
 
     monkeypatch.setattr(loader, "_execute_pcs_kinematics_batch", fake_batch)
     monkeypatch.setattr(
@@ -532,15 +532,15 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
     def fake_batch(
         model: _KinematicsProbe,
         q: Array,
-        sample_s: Array,
+        s: Array,
         operation: str,
     ) -> Array:
         del model
         jax.debug.callback(
             lambda shape: observed_shapes.append((int(shape[0]), int(shape[1]))),
-            jnp.asarray([q.shape[0], sample_s.shape[1]]),
+            jnp.asarray([q.shape[0], s.shape[1]]),
         )
-        result_shape = (q.shape[0], sample_s.shape[1])
+        result_shape = (q.shape[0], s.shape[1])
         if operation == "pose":
             result_shape = (*result_shape, 3)
         elif operation == "jacobian":

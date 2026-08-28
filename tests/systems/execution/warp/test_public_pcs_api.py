@@ -136,9 +136,34 @@ def test_public_pcs_launch_functions_have_documented_warp_contracts() -> None:
         documentation = inspect.getdoc(launcher)
         assert documentation is not None
         assert "Args:" in documentation
+    for launcher in launchers[:3]:
+        parameters = tuple(inspect.signature(launcher).parameters)
+        assert parameters[:2] == ("q", "s")
     specialized = launchers[3:]
     for launcher in specialized:
         assert len(inspect.signature(launcher).parameters) >= 10
+    kinematics_launchers = (
+        launch_planar_forward_kinematics,
+        launch_planar_inertial_jacobians,
+        launch_planar_kinematics,
+        launch_spatial_forward_kinematics,
+        launch_spatial_cooperative_inertial_jacobians,
+        launch_spatial_cooperative_kinematics,
+        launch_spatial_inertial_jacobians,
+        launch_spatial_kinematics,
+    )
+    kinematics_prefix = (
+        "q",
+        "s",
+        "active_indices",
+        "active_scales",
+        "reference_strain",
+        "segment_lengths",
+        "segment_starts",
+    )
+    for launcher in kinematics_launchers:
+        parameters = tuple(inspect.signature(launcher).parameters)
+        assert parameters[:7] == kinematics_prefix
     for kernel in kernels:
         assert kernel is not None
 

@@ -608,7 +608,7 @@ def write_spatial_sample_jacobian(
 
 @wp.kernel(enable_backward=False)
 def spatial_pose_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
     segment_strain: wp.array3d[wp.float64],
     segment_pose: wp.array4d[wp.float64],
@@ -617,7 +617,7 @@ def spatial_pose_samples_kernel(
     """Evaluate spatial PCS poses without Jacobian work.
 
     Args:
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         segment_starts: Cumulative segment-start coordinates.
         segment_strain: Precomputed segment strains.
         segment_pose: Precomputed boundary poses.
@@ -628,12 +628,12 @@ def spatial_pose_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = segment_strain.shape[1]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
@@ -642,7 +642,7 @@ def spatial_pose_samples_kernel(
     while k < 6:
         xi[k] = segment_strain[environment, segment, k]
         k += 1
-    accumulated = (s - segment_starts[segment]) * xi
+    accumulated = (abscissa - segment_starts[segment]) * xi
     row = int(0)
     while row < 4:
         column = int(0)
@@ -656,7 +656,7 @@ def spatial_pose_samples_kernel(
 
 @wp.kernel(enable_backward=False)
 def spatial_jacobian_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
@@ -668,7 +668,7 @@ def spatial_jacobian_samples_kernel(
     """Evaluate spatial PCS inertial Jacobians without pose output writes.
 
     Args:
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate index for each strain row.
         active_scales: Scale applied to each active strain row.
         segment_starts: Cumulative segment-start coordinates.
@@ -682,16 +682,16 @@ def spatial_jacobian_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = active_indices.shape[0]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
-    local_s = s - segment_starts[segment]
+    local_s = abscissa - segment_starts[segment]
     xi = Vec6d()
     k = int(0)
     while k < 6:
@@ -724,7 +724,7 @@ def spatial_jacobian_samples_kernel(
 
 @wp.kernel(enable_backward=False)
 def spatial_samples_kernel(
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     segment_starts: wp.array[wp.float64],
@@ -737,7 +737,7 @@ def spatial_samples_kernel(
     """Evaluate spatial PCS poses and inertial Jacobians at runtime samples.
 
     Args:
-        sample_s: Per-environment backbone coordinates with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate index for each full strain row.
         active_scales: Scale applied to each active strain row.
         segment_starts: Cumulative segment-start coordinates.
@@ -752,16 +752,16 @@ def spatial_samples_kernel(
     """
 
     environment, sample = wp.tid()
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     num_segments = active_indices.shape[0]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
-    local_s = s - segment_starts[segment]
+    local_s = abscissa - segment_starts[segment]
     xi = Vec6d()
     k = int(0)
     while k < 6:
@@ -796,7 +796,7 @@ def spatial_samples_kernel(
 
 def launch_spatial_forward_kinematics(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -811,7 +811,7 @@ def launch_spatial_forward_kinematics(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 6)``.
@@ -841,8 +841,8 @@ def launch_spatial_forward_kinematics(
     )
     wp.launch(
         spatial_pose_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
-        inputs=[sample_s, segment_starts, segment_strain, segment_pose],
+        dim=(q.shape[0], s.shape[1]),
+        inputs=[s, segment_starts, segment_strain, segment_pose],
         outputs=[poses],
         block_dim=128,
     )
@@ -850,7 +850,7 @@ def launch_spatial_forward_kinematics(
 
 def launch_spatial_inertial_jacobians(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -866,7 +866,7 @@ def launch_spatial_inertial_jacobians(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 6)``.
@@ -897,9 +897,9 @@ def launch_spatial_inertial_jacobians(
     )
     wp.launch(
         spatial_jacobian_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,
@@ -914,7 +914,7 @@ def launch_spatial_inertial_jacobians(
 
 def launch_spatial_kinematics(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -931,7 +931,7 @@ def launch_spatial_kinematics(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 6)``.
@@ -963,9 +963,9 @@ def launch_spatial_kinematics(
     )
     wp.launch(
         spatial_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,
@@ -980,7 +980,7 @@ def launch_spatial_kinematics(
 
 def launch_spatial_cooperative_inertial_jacobians(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -996,7 +996,7 @@ def launch_spatial_cooperative_inertial_jacobians(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 6)``.
@@ -1028,9 +1028,9 @@ def launch_spatial_cooperative_inertial_jacobians(
     )
     wp.launch(
         spatial_jacobian_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,
@@ -1045,7 +1045,7 @@ def launch_spatial_cooperative_inertial_jacobians(
 
 def launch_spatial_cooperative_kinematics(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     active_indices: wp.array2d[wp.int32],
     active_scales: wp.array2d[wp.float64],
     reference_strain: wp.array2d[wp.float64],
@@ -1062,7 +1062,7 @@ def launch_spatial_cooperative_kinematics(
 
     Args:
         q: Batched active coordinates ``(E, D)``.
-        sample_s: Per-environment sample coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         active_indices: Active coordinate indices by segment and strain row.
         active_scales: Active strain scales matching ``active_indices``.
         reference_strain: Reference strain ``(S, 6)``.
@@ -1095,9 +1095,9 @@ def launch_spatial_cooperative_kinematics(
     )
     wp.launch(
         spatial_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
-            sample_s,
+            s,
             active_indices,
             active_scales,
             segment_starts,

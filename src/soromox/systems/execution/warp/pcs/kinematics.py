@@ -42,12 +42,20 @@ def _selected_launcher(is_planar: bool, operation: str):
     return launch_planar_kinematics if is_planar else launch_spatial_kinematics
 
 
-def launch_forward_kinematics(*args: Any, is_planar: bool, **kwargs: Any) -> None:
+def launch_forward_kinematics(
+    q: Any,
+    s: Any,
+    *args: Any,
+    is_planar: bool,
+    **kwargs: Any,
+) -> None:
     """Launch PCS forward kinematics with caller-owned Warp arrays.
 
     Args:
-        *args: Dimension-specific positional arguments documented by
-            ``launch_planar_kinematics`` and ``launch_spatial_kinematics``.
+        q: Batched active configurations with shape ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
+        *args: Remaining dimension-specific positional arguments documented by
+            the specialized forward-kinematics launchers.
         is_planar: Select the PlanarPCS or spatial PCS kernel family.
         **kwargs: Dimension-specific keyword arguments forwarded unchanged.
 
@@ -55,15 +63,23 @@ def launch_forward_kinematics(*args: Any, is_planar: bool, **kwargs: Any) -> Non
         None. Outputs are written in place.
     """
 
-    _selected_launcher(is_planar, "pose")(*args, **kwargs)
+    _selected_launcher(is_planar, "pose")(q, s, *args, **kwargs)
 
 
-def launch_inertial_jacobians(*args: Any, is_planar: bool, **kwargs: Any) -> None:
+def launch_inertial_jacobians(
+    q: Any,
+    s: Any,
+    *args: Any,
+    is_planar: bool,
+    **kwargs: Any,
+) -> None:
     """Launch PCS inertial Jacobians through the shared fused recurrence.
 
     Args:
-        *args: Dimension-specific positional arguments documented by the
-            public specialized launcher.
+        q: Batched active configurations with shape ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
+        *args: Remaining dimension-specific positional arguments documented by
+            the specialized inertial-Jacobian launchers.
         is_planar: Select the PlanarPCS or spatial PCS kernel family.
         **kwargs: Dimension-specific keyword arguments forwarded unchanged.
 
@@ -71,17 +87,23 @@ def launch_inertial_jacobians(*args: Any, is_planar: bool, **kwargs: Any) -> Non
         None. Outputs are written in place.
     """
 
-    _selected_launcher(is_planar, "jacobian")(*args, **kwargs)
+    _selected_launcher(is_planar, "jacobian")(q, s, *args, **kwargs)
 
 
 def launch_forward_kinematics_and_jacobians(
-    *args: Any, is_planar: bool, **kwargs: Any
+    q: Any,
+    s: Any,
+    *args: Any,
+    is_planar: bool,
+    **kwargs: Any,
 ) -> None:
     """Launch fused PCS poses and inertial Jacobians.
 
     Args:
-        *args: Dimension-specific positional arguments documented by the
-            public specialized launcher.
+        q: Batched active configurations with shape ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
+        *args: Remaining dimension-specific positional arguments documented by
+            the specialized fused launchers.
         is_planar: Select the PlanarPCS or spatial PCS kernel family.
         **kwargs: Dimension-specific keyword arguments forwarded unchanged.
 
@@ -89,7 +111,7 @@ def launch_forward_kinematics_and_jacobians(
         None. Outputs are written in place.
     """
 
-    _selected_launcher(is_planar, "both")(*args, **kwargs)
+    _selected_launcher(is_planar, "both")(q, s, *args, **kwargs)
 
 
 __all__ = [

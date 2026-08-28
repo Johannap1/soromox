@@ -1,9 +1,7 @@
-# ruff: noqa: I001, UP018
+# ruff: noqa: I001, SIM109, UP018
 """Fused, runtime-shaped GVS pose and inertial-Jacobian Warp kernels."""
 
 from __future__ import annotations
-
-from typing import Any
 
 import warp as wp
 
@@ -22,6 +20,12 @@ wp.set_module_options({"enable_backward": False})
 
 SPATIAL_DIM = 6
 GVS_KINEMATICS_BLOCK_DIM = 128
+BASIS_FAMILY_MONOMIAL = wp.constant(0)
+BASIS_FAMILY_LEGENDRE = wp.constant(1)
+BASIS_FAMILY_CHEBYSHEV = wp.constant(2)
+BASIS_FAMILY_FOURIER = wp.constant(3)
+BASIS_FAMILY_GAUSSIAN = wp.constant(4)
+BASIS_FAMILY_IMQ = wp.constant(5)
 
 
 @wp.func
@@ -144,7 +148,7 @@ def _store_node_pose(
 
 @wp.func
 def _basis_width(
-    basis_type: int,
+    basis_family: int,
     active_params: wp.array2d[wp.float64],
     order_params: wp.array2d[wp.float64],
     segment: int,
@@ -153,7 +157,7 @@ def _basis_width(
     """Return the padded coordinate width of one strain row.
 
     Args:
-        basis_type: Integer basis-family identifier.
+        basis_family: Integer basis-family identifier.
         active_params: Per-segment row activation parameters.
         order_params: Per-segment row basis orders.
         segment: Selected segment index.
@@ -165,19 +169,19 @@ def _basis_width(
 
     active = int(active_params[segment, row])
     order = int(order_params[segment, row])
-    if basis_type == 3:
+    if basis_family == BASIS_FAMILY_FOURIER:
         return active * (2 * order + 1)
     return active * (order + 1)
 
 
 @wp.func
 def _basis_slot_value(
-    basis_type: int, x: wp.float64, order: int, slot: int
+    basis_family: int, x: wp.float64, order: int, slot: int
 ) -> wp.float64:
     """Evaluate one scalar basis slot at a normalized coordinate.
 
     Args:
-        basis_type: Integer basis-family identifier.
+        basis_family: Integer basis-family identifier.
         x: Normalized segment coordinate.
         order: Configured basis order.
         slot: Basis slot within one spatial row.
@@ -188,9 +192,11 @@ def _basis_slot_value(
     """
 
     value = wp.float64(0.0)
-    if basis_type == 0:
+    if basis_family == BASIS_FAMILY_MONOMIAL:
         value = wp.pow(x, wp.float64(slot))
-    elif basis_type == 1 or basis_type == 2:
+    elif (
+        basis_family == BASIS_FAMILY_LEGENDRE or basis_family == BASIS_FAMILY_CHEBYSHEV
+    ):
         z = wp.float64(2.0) * x - wp.float64(1.0)
         previous = wp.float64(1.0)
         current = z
@@ -202,7 +208,7 @@ def _basis_slot_value(
             n = int(1)
             while n < slot:
                 next_value = wp.float64(0.0)
-                if basis_type == 1:
+                if basis_family == BASIS_FAMILY_LEGENDRE:
                     nf = wp.float64(n)
                     next_value = (
                         (wp.float64(2.0) * nf + wp.float64(1.0)) * z * current
@@ -214,7 +220,7 @@ def _basis_slot_value(
                 current = next_value
                 n += 1
             value = current
-    elif basis_type == 3:
+    elif basis_family == BASIS_FAMILY_FOURIER:
         if slot == 0:
             value = wp.float64(1.0)
         else:
@@ -224,14 +230,14 @@ def _basis_slot_value(
                 value = wp.cos(angle)
             else:
                 value = wp.sin(angle)
-    elif basis_type == 4 or basis_type == 5:
+    elif basis_family == BASIS_FAMILY_GAUSSIAN or basis_family == BASIS_FAMILY_IMQ:
         order_safe = wp.max(order, 1)
         center = wp.float64(slot) / wp.float64(order_safe)
         delta = x - center
         if order == 0:
             if slot == 0:
                 value = wp.float64(1.0)
-        elif basis_type == 4:
+        elif basis_family == BASIS_FAMILY_GAUSSIAN:
             c = (
                 wp.float64(2.0)
                 * wp.sqrt(wp.log(wp.float64(2.0)))
@@ -276,16 +282,16 @@ def _basis_column_value(
     row = basis_rows[segment, column]
     if row < 0:
         return wp.float64(0.0)
-    basis_type = basis_type_index[segment]
+    basis_family = basis_type_index[segment]
     offset = int(0)
     previous_row = int(0)
     while previous_row < row:
         offset += _basis_width(
-            basis_type, active_params, order_params, segment, previous_row
+            basis_family, active_params, order_params, segment, previous_row
         )
         previous_row += 1
     slot = column - offset
-    value = _basis_slot_value(basis_type, x, int(order_params[segment, row]), slot)
+    value = _basis_slot_value(basis_family, x, int(order_params[segment, row]), slot)
     if scale_rotations != 0 and row < 3:
         value /= segment_lengths[segment]
     return value
@@ -579,7 +585,7 @@ def gvs_cooperative_node_states_kernel(
 @wp.kernel(enable_backward=False)
 def gvs_pose_samples_kernel(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
     link_reference_z1: wp.array2d[wp.float64],
@@ -601,7 +607,7 @@ def gvs_pose_samples_kernel(
 
     Args:
         q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
         link_reference_z1: Reference strain at first Magnus nodes.
@@ -626,11 +632,11 @@ def gvs_pose_samples_kernel(
     environment, sample = wp.tid()
     num_segments = segment_lengths.shape[0]
     num_cells = num_cells_array[0]
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
@@ -638,7 +644,7 @@ def gvs_pose_samples_kernel(
     x = wp.float64(0.0)
     if wp.abs(length) >= epsilons[0]:
         x = wp.clamp(
-            (s - segment_starts[segment]) / length,
+            (abscissa - segment_starts[segment]) / length,
             wp.float64(0.0),
             wp.float64(1.0),
         )
@@ -837,7 +843,7 @@ def write_gvs_sample_jacobian(
 @wp.kernel(enable_backward=False)
 def gvs_jacobian_samples_kernel(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
     link_global_to_local: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
@@ -861,7 +867,7 @@ def gvs_jacobian_samples_kernel(
 
     Args:
         q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
         link_global_to_local: Active-to-local link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
@@ -888,11 +894,11 @@ def gvs_jacobian_samples_kernel(
     environment, sample = wp.tid()
     num_segments = segment_lengths.shape[0]
     num_cells = num_cells_array[0]
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
@@ -900,7 +906,7 @@ def gvs_jacobian_samples_kernel(
     x = wp.float64(0.0)
     if wp.abs(length) >= epsilons[0]:
         x = wp.clamp(
-            (s - segment_starts[segment]) / length,
+            (abscissa - segment_starts[segment]) / length,
             wp.float64(0.0),
             wp.float64(1.0),
         )
@@ -994,7 +1000,7 @@ def gvs_jacobian_samples_kernel(
 @wp.kernel(enable_backward=False)
 def gvs_samples_kernel(
     q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
     link_global_to_local: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
@@ -1019,7 +1025,7 @@ def gvs_samples_kernel(
 
     Args:
         q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
         link_global_to_local: Active-to-local link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
@@ -1047,11 +1053,11 @@ def gvs_samples_kernel(
     environment, sample = wp.tid()
     num_segments = segment_lengths.shape[0]
     num_cells = num_cells_array[0]
-    s = sample_s[environment, sample]
+    abscissa = s[environment, sample]
     segment = int(0)
     i = int(0)
     while i < num_segments + 1:
-        if s > segment_starts[i]:
+        if abscissa > segment_starts[i]:
             segment = i
         i += 1
     segment = wp.max(0, wp.min(segment, num_segments - 1))
@@ -1059,7 +1065,9 @@ def gvs_samples_kernel(
     x = wp.float64(0.0)
     if wp.abs(length) >= epsilons[0]:
         x = wp.clamp(
-            (s - segment_starts[segment]) / length, wp.float64(0.0), wp.float64(1.0)
+            (abscissa - segment_starts[segment]) / length,
+            wp.float64(0.0),
+            wp.float64(1.0),
         )
     cell = int(0)
     i = int(0)
@@ -1157,11 +1165,11 @@ def gvs_samples_kernel(
 
 
 def launch_gvs_forward_kinematics(
+    q: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     joint_adjoint: wp.array2d[wp.float64],
     cell_adjoint: wp.array2d[wp.float64],
     base_transform: wp.array2d[wp.float64],
-    q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
     link_reference_z1: wp.array2d[wp.float64],
@@ -1182,11 +1190,11 @@ def launch_gvs_forward_kinematics(
     """Launch the reduced-work allocation-free GVS pose pipeline.
 
     Args:
+        q: Batched active configurations ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         joint_adjoint: Flattened inverse adjoints for every joint.
         cell_adjoint: Flattened inverse adjoints for every full link cell.
         base_transform: Absolute robot base transform.
-        q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
         link_reference_z1: Reference strain at first full-cell Magnus nodes.
@@ -1222,10 +1230,10 @@ def launch_gvs_forward_kinematics(
     )
     wp.launch(
         gvs_pose_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
             q,
-            sample_s,
+            s,
             link_local_to_global,
             link_basis_rows,
             link_reference_z1,
@@ -1248,6 +1256,7 @@ def launch_gvs_forward_kinematics(
 
 
 def _launch_gvs_node_states(
+    q: wp.array2d[wp.float64],
     joint_adjoint: wp.array2d[wp.float64],
     joint_tangent: wp.array2d[wp.float64],
     cell_adjoint: wp.array2d[wp.float64],
@@ -1255,13 +1264,13 @@ def _launch_gvs_node_states(
     link_global_to_local: wp.array2d[wp.int32],
     base_transform: wp.array2d[wp.float64],
     num_cells: wp.array[wp.int32],
-    q: wp.array2d[wp.float64],
     node_pose: wp.array2d[wp.float64],
     node_jacobian: wp.array2d[wp.float64],
 ) -> None:
     """Launch the device-appropriate schedule for the GVS state recurrence.
 
     Args:
+        q: Batched active configurations, used for batch size and device.
         joint_adjoint: Flattened inverse adjoints for every joint.
         joint_tangent: Joint tangents in active coordinates.
         cell_adjoint: Flattened inverse adjoints for every full link cell.
@@ -1269,7 +1278,6 @@ def _launch_gvs_node_states(
         link_global_to_local: Active-to-local link-coordinate map.
         base_transform: Absolute robot base transform.
         num_cells: One-entry array containing the padded cell count.
-        q: Batched active configurations, used for batch size and device.
         node_pose: Caller-owned flattened node-pose workspace.
         node_jacobian: Caller-owned flattened body-Jacobian workspace.
 
@@ -1305,15 +1313,15 @@ def _launch_gvs_node_states(
 
 
 def launch_gvs_inertial_jacobians(
+    q: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     joint_adjoint: wp.array2d[wp.float64],
     joint_tangent: wp.array2d[wp.float64],
     cell_adjoint: wp.array2d[wp.float64],
     cell_tangent_local: wp.array2d[wp.float64],
-    link_global_to_local: wp.array2d[wp.int32],
     base_transform: wp.array2d[wp.float64],
-    q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
+    link_global_to_local: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
     link_reference_z1: wp.array2d[wp.float64],
     link_reference_z2: wp.array2d[wp.float64],
@@ -1334,15 +1342,15 @@ def launch_gvs_inertial_jacobians(
     """Launch GVS inertial Jacobians without pose output writes.
 
     Args:
+        q: Batched active configurations ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         joint_adjoint: Flattened inverse adjoints for every joint.
         joint_tangent: Joint tangents in active coordinates.
         cell_adjoint: Flattened inverse adjoints for every full link cell.
         cell_tangent_local: Full-cell tangents in padded local coordinates.
-        link_global_to_local: Active-to-local link-coordinate map.
         base_transform: Absolute robot base transform.
-        q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
+        link_global_to_local: Active-to-local link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
         link_reference_z1: Reference strain at first full-cell Magnus nodes.
         link_reference_z2: Reference strain at second full-cell Magnus nodes.
@@ -1365,6 +1373,7 @@ def launch_gvs_inertial_jacobians(
     """
 
     _launch_gvs_node_states(
+        q,
         joint_adjoint,
         joint_tangent,
         cell_adjoint,
@@ -1372,16 +1381,15 @@ def launch_gvs_inertial_jacobians(
         link_global_to_local,
         base_transform,
         num_cells,
-        q,
         node_pose,
         node_jacobian,
     )
     wp.launch(
         gvs_jacobian_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
             q,
-            sample_s,
+            s,
             link_local_to_global,
             link_global_to_local,
             link_basis_rows,
@@ -1406,15 +1414,15 @@ def launch_gvs_inertial_jacobians(
 
 
 def launch_gvs_kinematics(
+    q: wp.array2d[wp.float64],
+    s: wp.array2d[wp.float64],
     joint_adjoint: wp.array2d[wp.float64],
     joint_tangent: wp.array2d[wp.float64],
     cell_adjoint: wp.array2d[wp.float64],
     cell_tangent_local: wp.array2d[wp.float64],
-    link_global_to_local: wp.array2d[wp.int32],
     base_transform: wp.array2d[wp.float64],
-    q: wp.array2d[wp.float64],
-    sample_s: wp.array2d[wp.float64],
     link_local_to_global: wp.array2d[wp.int32],
+    link_global_to_local: wp.array2d[wp.int32],
     link_basis_rows: wp.array2d[wp.int32],
     link_reference_z1: wp.array2d[wp.float64],
     link_reference_z2: wp.array2d[wp.float64],
@@ -1436,15 +1444,15 @@ def launch_gvs_kinematics(
     """Launch the allocation-free GVS node recurrence and sample stage.
 
     Args:
+        q: Batched active configurations ``(E, D)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         joint_adjoint: Flattened inverse adjoints for every joint.
         joint_tangent: Joint tangents in active coordinates.
         cell_adjoint: Flattened inverse adjoints for every full link cell.
         cell_tangent_local: Full-cell tangents in padded local coordinates.
-        link_global_to_local: Active-to-local link-coordinate map.
         base_transform: Absolute robot base transform.
-        q: Batched active configurations ``(E, D)``.
-        sample_s: Per-environment backbone coordinates ``(E, N)``.
         link_local_to_global: Padded local-to-active link-coordinate map.
+        link_global_to_local: Active-to-local link-coordinate map.
         link_basis_rows: Spatial row occupied by every local basis column.
         link_reference_z1: Reference strain at first full-cell Magnus nodes.
         link_reference_z2: Reference strain at second full-cell Magnus nodes.
@@ -1468,6 +1476,7 @@ def launch_gvs_kinematics(
     """
 
     _launch_gvs_node_states(
+        q,
         joint_adjoint,
         joint_tangent,
         cell_adjoint,
@@ -1475,16 +1484,15 @@ def launch_gvs_kinematics(
         link_global_to_local,
         base_transform,
         num_cells,
-        q,
         node_pose,
         node_jacobian,
     )
     wp.launch(
         gvs_samples_kernel,
-        dim=(q.shape[0], sample_s.shape[1]),
+        dim=(q.shape[0], s.shape[1]),
         inputs=[
             q,
-            sample_s,
+            s,
             link_local_to_global,
             link_global_to_local,
             link_basis_rows,
@@ -1511,51 +1519,9 @@ def launch_gvs_kinematics(
 gvs_forward_kinematics = wp.jax_callable(launch_gvs_forward_kinematics, num_outputs=2)
 gvs_inertial_jacobians = wp.jax_callable(launch_gvs_inertial_jacobians, num_outputs=3)
 gvs_kinematics = wp.jax_callable(launch_gvs_kinematics, num_outputs=4)
-
-
-def launch_forward_kinematics(*args: Any, **kwargs: Any) -> None:
-    """Launch reduced-work GVS poses with caller-owned Warp arrays.
-
-    Args:
-        *args: Positional operands and buffers documented by
-            :func:`launch_gvs_forward_kinematics`.
-        **kwargs: Keyword operands forwarded unchanged.
-
-    Returns:
-        None. Outputs are written in place.
-    """
-
-    launch_gvs_forward_kinematics(*args, **kwargs)
-
-
-def launch_inertial_jacobians(*args: Any, **kwargs: Any) -> None:
-    """Launch reduced-output GVS inertial Jacobians.
-
-    Args:
-        *args: Positional operands and buffers documented by
-            :func:`launch_gvs_inertial_jacobians`.
-        **kwargs: Keyword operands forwarded unchanged.
-
-    Returns:
-        None. Outputs are written in place.
-    """
-
-    launch_gvs_inertial_jacobians(*args, **kwargs)
-
-
-def launch_forward_kinematics_and_jacobians(*args: Any, **kwargs: Any) -> None:
-    """Launch fused GVS poses and inertial Jacobians.
-
-    Args:
-        *args: Positional operands and buffers documented by
-            :func:`launch_gvs_kinematics`.
-        **kwargs: Keyword operands forwarded unchanged.
-
-    Returns:
-        None. Outputs are written in place.
-    """
-
-    launch_gvs_kinematics(*args, **kwargs)
+launch_forward_kinematics = launch_gvs_forward_kinematics
+launch_inertial_jacobians = launch_gvs_inertial_jacobians
+launch_forward_kinematics_and_jacobians = launch_gvs_kinematics
 
 
 __all__ = [

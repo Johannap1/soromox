@@ -56,7 +56,7 @@ def _full_local_kinematics(
 def execute_kinematics(
     operands: GVSKinematicsOperands,
     q: Array,
-    sample_s: Array,
+    s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
     """Execute batched GVS poses and inertial-frame Jacobians in Warp.
@@ -64,7 +64,7 @@ def execute_kinematics(
     Args:
         operands: Runtime GVS model data and static dimensions.
         q: Batched active configurations with shape ``(E, D)``.
-        sample_s: Per-environment abscissae with shape ``(E, N)``.
+        s: Per-environment abscissae with shape ``(E, N)``.
         operation: Select poses, inertial Jacobians, or both.
 
     Returns:
@@ -77,7 +77,7 @@ def execute_kinematics(
     shapes = GVSKinematicsShapes.from_operands(
         operands,
         batch_size=batch_size,
-        num_samples=sample_s.shape[1],
+        num_samples=s.shape[1],
     )
     output_dims = shapes.workspace()
     output_dims.update(
@@ -88,10 +88,7 @@ def execute_kinematics(
     )
     joint_rows = batch_size * operands.num_segments * SPATIAL_DIM
     cell_rows = batch_size * operands.num_segments * operands.num_cells * SPATIAL_DIM
-    common = (
-        q,
-        sample_s,
-        operands.link_local_to_global,
+    sample_operands = (
         operands.link_basis_rows,
         operands.link_reference_z1.reshape(
             operands.num_segments * operands.num_cells, SPATIAL_DIM
@@ -117,10 +114,13 @@ def execute_kinematics(
         output_dims = shapes.pose_workspace()
         output_dims["poses"] = shapes.pose_output()
         return gvs_forward_kinematics(
+            q,
+            s,
             joint_adjoint,
             cell_adjoint,
             operands.base_transform,
-            *common,
+            operands.link_local_to_global,
+            *sample_operands,
             output_dims=output_dims,
         )[-1]
     joint_adjoint, joint_tangent, cell_adjoint, cell_tangent = _full_local_kinematics(
@@ -132,23 +132,29 @@ def execute_kinematics(
         output_dims = shapes.workspace()
         output_dims["jacobians"] = shapes.jacobian_output()
         return gvs_inertial_jacobians(
+            q,
+            s,
             joint_adjoint,
             joint_tangent.reshape(joint_rows, operands.num_dofs),
             cell_adjoint,
             cell_tangent.reshape(cell_rows, operands.max_dof),
-            operands.link_global_to_local,
             operands.base_transform,
-            *common,
+            operands.link_local_to_global,
+            operands.link_global_to_local,
+            *sample_operands,
             output_dims=output_dims,
         )[-1]
     outputs = gvs_kinematics(
+        q,
+        s,
         joint_adjoint,
         joint_tangent.reshape(joint_rows, operands.num_dofs),
         cell_adjoint,
         cell_tangent.reshape(cell_rows, operands.max_dof),
-        operands.link_global_to_local,
         operands.base_transform,
-        *common,
+        operands.link_local_to_global,
+        operands.link_global_to_local,
+        *sample_operands,
         output_dims=output_dims,
     )
     poses, jacobians = outputs[-2:]
