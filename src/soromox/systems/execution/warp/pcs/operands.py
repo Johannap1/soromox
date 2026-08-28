@@ -35,6 +35,10 @@ class PCSOperandSource(Protocol):
     gravity_base: Array
     global_eps: float
     tangent_eps: float
+    L: Array
+    L_cum: Array
+    base_pose: Array
+    g0: Array
 
 
 class PCSOperands(eqx.Module):
@@ -229,4 +233,201 @@ class PCSPipelineShapes:
         return outputs
 
 
-__all__ = ["PCSOperandSource", "PCSOperands", "PCSPipelineShapes"]
+class PCSKinematicsOperands(eqx.Module):
+    """Runtime model data required by public PCS kinematics launchers.
+
+    Attributes:
+        is_planar: Select PlanarPCS or spatial PCS storage and kernels.
+        num_segments: Number of constant-strain segments.
+        num_dofs: Number of active generalized strains.
+        block_dim: Preferred Warp block size.
+        active_strain_indices: Active-coordinate index for each full strain row.
+        active_strain_scales: Scale matching every active strain row.
+        reference_strain: Model reference strain.
+        segment_lengths: Physical segment lengths.
+        segment_starts: Cumulative segment-start coordinates.
+        base_pose: Planar base pose or spatial base transform.
+        global_eps: Exponential-map threshold.
+        tangent_eps: Tangent-map threshold.
+    """
+
+    is_planar: bool = eqx.field(static=True)
+    num_segments: int = eqx.field(static=True)
+    num_dofs: int = eqx.field(static=True)
+    block_dim: int = eqx.field(static=True)
+    active_strain_indices: Array
+    active_strain_scales: Array
+    reference_strain: Array
+    segment_lengths: Array
+    segment_starts: Array
+    base_pose: Array
+    global_eps: float
+    tangent_eps: float
+
+    @classmethod
+    def from_model(cls, model: PCSOperandSource) -> PCSKinematicsOperands:
+        """Create an allocation-free view of PlanarPCS or PCS model arrays.
+
+        Args:
+            model: Object satisfying :class:`PCSOperandSource`.
+
+        Returns:
+            Operand bundle referencing the model's existing JAX arrays.
+        """
+
+        base_pose = model.base_pose if model.is_planar else model.g0
+        return cls(
+            is_planar=model.is_planar,
+            num_segments=model.num_segments,
+            num_dofs=model.num_dofs,
+            block_dim=model.backend_params.warp_block_dim,
+            active_strain_indices=model.active_strain_indices,
+            active_strain_scales=model.active_strain_scales,
+            reference_strain=model.xi_ref,
+            segment_lengths=model.L,
+            segment_starts=model.L_cum,
+            base_pose=base_pose,
+            global_eps=model.global_eps,
+            tangent_eps=model.tangent_eps,
+        )
+
+
+@dataclass(frozen=True)
+class PCSKinematicsShapes:
+    """Allocation contract for fused PCS pose/Jacobian execution.
+
+    Attributes:
+        batch_size: Number of independent environments.
+        num_samples: Number of backbone samples per environment.
+        num_segments: Number of constant-strain segments.
+        num_dofs: Number of active generalized strains.
+        spatial_dim: Three for PlanarPCS and six for spatial PCS.
+        is_planar: Select planar or spatial output storage.
+    """
+
+    batch_size: int
+    num_samples: int
+    num_segments: int
+    num_dofs: int
+    spatial_dim: int
+    is_planar: bool
+
+    @classmethod
+    def from_operands(
+        cls,
+        operands: PCSKinematicsOperands,
+        *,
+        batch_size: int,
+        num_samples: int,
+    ) -> PCSKinematicsShapes:
+        """Construct kinematics shapes from runtime operands.
+
+        Args:
+            operands: Public PCS kinematics operand bundle.
+            batch_size: Positive number of independent environments.
+            num_samples: Positive number of samples per environment.
+
+        Returns:
+            Immutable kinematics workspace and output dimensions.
+
+        Raises:
+            TypeError: If either requested dimension is not an integer.
+            ValueError: If either requested dimension is not positive.
+        """
+
+        for name, value in (("batch_size", batch_size), ("num_samples", num_samples)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer.")
+            if value < 1:
+                raise ValueError(f"{name} must be positive.")
+        return cls(
+            batch_size=batch_size,
+            num_samples=num_samples,
+            num_segments=operands.num_segments,
+            num_dofs=operands.num_dofs,
+            spatial_dim=3 if operands.is_planar else 6,
+            is_planar=operands.is_planar,
+        )
+
+    def workspace(self) -> dict[str, tuple[int, ...]]:
+        """Return caller-owned fused segment-boundary workspace shapes.
+
+        Returns:
+            Mapping from fused launcher workspace names to array shapes.
+        """
+
+        pose_shape = (3,) if self.is_planar else (4, 4)
+        return {
+            "segment_strain": (
+                self.batch_size,
+                self.num_segments,
+                self.spatial_dim,
+            ),
+            "segment_pose": (
+                self.batch_size,
+                self.num_segments + 1,
+                *pose_shape,
+            ),
+            "segment_jacobian": (
+                self.batch_size,
+                self.num_segments + 1,
+                self.spatial_dim,
+                self.num_dofs,
+            ),
+        }
+
+    def pose_workspace(self) -> dict[str, tuple[int, ...]]:
+        """Return the reduced pose-only workspace shapes.
+
+        Returns:
+            Mapping containing only segment strains and boundary poses.
+        """
+
+        workspace = self.workspace()
+        return {
+            "segment_strain": workspace["segment_strain"],
+            "segment_pose": workspace["segment_pose"],
+        }
+
+    def jacobian_workspace(self) -> dict[str, tuple[int, ...]]:
+        """Return the Jacobian-only workspace shapes.
+
+        Returns:
+            Mapping containing the fused recurrence workspaces required to
+            rotate body Jacobians into the inertial frame.
+        """
+
+        return self.workspace()
+
+    def pose_output(self) -> tuple[int, ...]:
+        """Return the native PlanarPCS or PCS pose output shape.
+
+        Returns:
+            Shape ``(E, N, 3)`` for PlanarPCS or ``(E, N, 4, 4)`` for PCS.
+        """
+
+        tail = (3,) if self.is_planar else (4, 4)
+        return self.batch_size, self.num_samples, *tail
+
+    def jacobian_output(self) -> tuple[int, ...]:
+        """Return the inertial-frame Jacobian output shape.
+
+        Returns:
+            Shape ``(E, N, spatial_dim, num_dofs)``.
+        """
+
+        return (
+            self.batch_size,
+            self.num_samples,
+            self.spatial_dim,
+            self.num_dofs,
+        )
+
+
+__all__ = [
+    "PCSKinematicsOperands",
+    "PCSKinematicsShapes",
+    "PCSOperandSource",
+    "PCSOperands",
+    "PCSPipelineShapes",
+]

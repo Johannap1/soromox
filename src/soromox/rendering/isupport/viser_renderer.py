@@ -8,7 +8,6 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -351,9 +350,7 @@ class ISupportViserRenderer(ViserRenderer):
     def _sample_world_poses(self, q: Array, curves: np.ndarray) -> np.ndarray:
         s_points = jnp.asarray(self._sample_s)
         poses = np.array(
-            jax.vmap(lambda q_i: self.robot.forward_kinematics_abscissa_batched(q_i, s_points))(
-                q
-            ),
+            self.robot.forward_kinematics(q, s_points),
             copy=True,
         )
         base_origin = np.asarray(self.robot.g0, dtype=np.float64)[:3, 3]

@@ -6,15 +6,64 @@ from collections.abc import Callable
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import pytest
 from numpy.testing import assert_allclose
 
+from soromox.systems import GVS, GVSSegment, JointSpec, LinkSpec, StrainBasisSpec
 from soromox.systems.execution.warp.gvs.operands import (
+    GVSKinematicsOperands,
+    GVSKinematicsShapes,
     GVSOperands,
     GVSPipelineShapes,
 )
 
 from ._equivalence import assert_backend_equivalence
+from ._kinematics_equivalence import (
+    assert_inertial_jacobian_finite_difference,
+    assert_kinematics_backend_equivalence,
+    assert_warp_derivatives_use_jax,
+)
+
+
+def _all_basis_family_model() -> GVS:
+    """Build one padded GVS chain containing every supported basis family."""
+
+    basis_types = (
+        "monomial",
+        "legendre",
+        "chebyshev",
+        "fourier",
+        "gaussian",
+        "imq",
+    )
+    segments = tuple(
+        GVSSegment(
+            link=LinkSpec.circular(
+                length=0.07 + 0.01 * index,
+                radius=0.012,
+                density=1020.0,
+                reference_strain=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                young_modulus=2.0e5,
+                shear_modulus=7.5e4,
+                material_damping_coefficient=0.01,
+            ),
+            joint=JointSpec(type="fixed"),
+            basis=StrainBasisSpec(
+                type=basis_type,
+                strain_selector=[False, True, False, False, False, False],
+                basis_order=[0, 1, 0, 0, 0, 0],
+            ),
+            num_gauss_points=5,
+        )
+        for index, basis_type in enumerate(basis_types)
+    )
+    return GVS.from_segments(
+        segments,
+        max_dof=5,
+        scale_rotational_basis_by_length=True,
+        backend="jax",
+    )
 
 
 def test_gvs_operands_are_views_over_precomputed_model_data(
@@ -74,6 +123,77 @@ def test_gvs_pipeline_shapes_require_positive_integer_batch(
     operands = GVSOperands.from_model(model, block_dim=128)
     with pytest.raises(error_type, match="batch_size"):
         GVSPipelineShapes.from_operands(operands, batch_size=batch_size)
+
+
+def test_gvs_kinematics_shapes_cover_reduced_and_fused_paths(
+    make_gvs_model: Callable[[str], Any],
+) -> None:
+    """Describe caller-owned GVS kinematics workspaces and outputs."""
+
+    model = make_gvs_model("jax")
+    operands = GVSKinematicsOperands.from_model(model, block_dim=1)
+    shapes = GVSKinematicsShapes.from_operands(operands, batch_size=3, num_samples=7)
+    node_count = 3 * model.num_segments * model.max_num_integration_points
+
+    assert shapes.pose_workspace() == {"node_pose": (node_count * 4, 4)}
+    assert shapes.workspace() == {
+        "node_pose": (node_count * 4, 4),
+        "node_jacobian": (node_count * 6, model.num_dofs),
+    }
+    assert shapes.pose_output() == (3, 7, 4, 4)
+    assert shapes.jacobian_output() == (3, 7, 6, model.num_dofs)
+
+
+def test_gvs_public_kinematics_match_jax_on_cpu_and_gpu(
+    make_gvs_model: Callable[[str], Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Match GVS kinematics for every public vectorization form."""
+
+    pytest.importorskip("warp")
+    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "gvs-kinematics-cache"))
+    model = make_gvs_model("jax")
+
+    assert_kinematics_backend_equivalence(model)
+    assert_inertial_jacobian_finite_difference(model)
+    assert_warp_derivatives_use_jax(model)
+
+
+def test_gvs_warp_kinematics_supports_every_basis_family(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Match a mixed, padded chain containing all runtime basis evaluators."""
+
+    pytest.importorskip("warp")
+    monkeypatch.setenv(
+        "WARP_CACHE_PATH", str(tmp_path / "gvs-all-bases-kinematics-cache")
+    )
+    model = _all_basis_family_model()
+    q = jnp.linspace(-0.025, 0.031, model.num_dofs, dtype=jnp.float64)
+    boundaries = model.segment_end_positions
+    interiors = boundaries[:-1] + 0.43 * model.segment_lengths
+    samples = jnp.concatenate((boundaries[::-1], interiors, interiors[2:3]), axis=0)
+
+    assert_allclose(
+        model.basis_type_index,
+        jnp.arange(6, dtype=model.basis_type_index.dtype),
+        rtol=0.0,
+        atol=0.0,
+    )
+    for method_name in (
+        "forward_kinematics_abscissa_batched",
+        "jacobian_inertialframe_abscissa_batched",
+        "forward_kinematics_and_jacobian_inertialframe_abscissa_batched",
+    ):
+        method = getattr(model, method_name)
+        expected = method(q, samples, backend="jax")
+        actual = method(q, samples, backend="warp")
+        for actual_leaf, expected_leaf in zip(
+            jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True
+        ):
+            assert_allclose(actual_leaf, expected_leaf, rtol=2e-9, atol=2e-10)
 
 
 def test_gvs_public_dynamics_apis_match_jax_on_gpu(

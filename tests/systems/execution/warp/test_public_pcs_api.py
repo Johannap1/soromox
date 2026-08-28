@@ -17,16 +17,45 @@ def test_pcs_public_names_are_discoverable_without_loading_kernels() -> None:
 
     expected = {
         "PCSOperandSource",
+        "PCSKinematicsOperands",
+        "PCSKinematicsShapes",
         "PCSOperands",
         "PCSPipelineShapes",
+        "launch_forward_kinematics",
+        "launch_forward_kinematics_and_jacobians",
+        "launch_inertial_jacobians",
+        "launch_planar_forward_kinematics",
+        "launch_planar_inertial_jacobians",
+        "launch_planar_kinematics",
         "launch_planar_local_operators",
         "launch_planar_persistent_chain",
+        "launch_spatial_forward_kinematics",
+        "launch_spatial_cooperative_inertial_jacobians",
+        "launch_spatial_cooperative_kinematics",
+        "launch_spatial_inertial_jacobians",
+        "launch_spatial_kinematics",
         "launch_spatial_local_operators",
         "launch_spatial_persistent_chain",
+        "planar_jacobian_samples_kernel",
         "planar_local_operators_kernel",
         "planar_persistent_chain_kernel",
+        "planar_pose_samples_kernel",
+        "planar_pose_segment_states_kernel",
+        "planar_pose_step",
+        "planar_samples_kernel",
+        "planar_segment_states_kernel",
+        "spatial_jacobian_samples_kernel",
+        "spatial_cooperative_segment_states_kernel",
         "spatial_local_operators_kernel",
+        "spatial_operator_entry",
         "spatial_persistent_chain_kernel",
+        "spatial_pose_samples_kernel",
+        "spatial_pose_segment_states_kernel",
+        "spatial_pose_step_entry",
+        "spatial_samples_kernel",
+        "spatial_segment_states_kernel",
+        "propagate_spatial_jacobian_column",
+        "write_spatial_sample_jacobian",
     }
     assert expected == set(pcs.__all__)
     assert expected <= set(dir(pcs))
@@ -37,32 +66,78 @@ def test_public_pcs_launch_functions_have_documented_warp_contracts() -> None:
 
     pytest.importorskip("warp")
     from soromox.systems.execution.warp.pcs import (
+        launch_forward_kinematics,
+        launch_forward_kinematics_and_jacobians,
+        launch_inertial_jacobians,
+        launch_planar_forward_kinematics,
+        launch_planar_inertial_jacobians,
+        launch_planar_kinematics,
         launch_planar_local_operators,
         launch_planar_persistent_chain,
+        launch_spatial_cooperative_inertial_jacobians,
+        launch_spatial_cooperative_kinematics,
+        launch_spatial_forward_kinematics,
+        launch_spatial_inertial_jacobians,
+        launch_spatial_kinematics,
         launch_spatial_local_operators,
         launch_spatial_persistent_chain,
+        planar_jacobian_samples_kernel,
         planar_local_operators_kernel,
         planar_persistent_chain_kernel,
+        planar_pose_samples_kernel,
+        planar_pose_segment_states_kernel,
+        planar_samples_kernel,
+        planar_segment_states_kernel,
+        spatial_cooperative_segment_states_kernel,
+        spatial_jacobian_samples_kernel,
         spatial_local_operators_kernel,
         spatial_persistent_chain_kernel,
+        spatial_pose_samples_kernel,
+        spatial_pose_segment_states_kernel,
+        spatial_samples_kernel,
+        spatial_segment_states_kernel,
     )
 
     launchers = (
+        launch_forward_kinematics,
+        launch_forward_kinematics_and_jacobians,
+        launch_inertial_jacobians,
+        launch_planar_forward_kinematics,
+        launch_planar_inertial_jacobians,
+        launch_planar_kinematics,
         launch_planar_local_operators,
         launch_planar_persistent_chain,
+        launch_spatial_forward_kinematics,
+        launch_spatial_cooperative_inertial_jacobians,
+        launch_spatial_cooperative_kinematics,
+        launch_spatial_inertial_jacobians,
+        launch_spatial_kinematics,
         launch_spatial_local_operators,
         launch_spatial_persistent_chain,
     )
     kernels = (
+        planar_jacobian_samples_kernel,
         planar_local_operators_kernel,
         planar_persistent_chain_kernel,
+        planar_pose_samples_kernel,
+        planar_pose_segment_states_kernel,
+        planar_samples_kernel,
+        planar_segment_states_kernel,
+        spatial_jacobian_samples_kernel,
+        spatial_cooperative_segment_states_kernel,
         spatial_local_operators_kernel,
         spatial_persistent_chain_kernel,
+        spatial_pose_samples_kernel,
+        spatial_pose_segment_states_kernel,
+        spatial_samples_kernel,
+        spatial_segment_states_kernel,
     )
     for launcher in launchers:
         documentation = inspect.getdoc(launcher)
         assert documentation is not None
         assert "Args:" in documentation
+    specialized = launchers[3:]
+    for launcher in specialized:
         assert len(inspect.signature(launcher).parameters) >= 10
     for kernel in kernels:
         assert kernel is not None

@@ -22,9 +22,11 @@ from soromox.systems.components import (
 from soromox.systems.execution import (
     DEFAULT_PCS_BLOCK_DIM,
     PCS_DYNAMICS,
+    PCS_KINEMATICS,
     ExecutionBackend,
     PCSBackendParams,
     dispatch_dynamics_terms,
+    dispatch_kinematics,
     evaluate_forward_dynamics,
 )
 from soromox.systems.pcs.params import PCSParams
@@ -943,6 +945,60 @@ class PCS(SoftRobot):
         return xi
 
     @eqx.filter_jit
+    def forward_kinematics(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute SE(3) poses for scalar or vectorized inputs.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
+            s: Scalar, shared backbone samples ``(N,)``, or per-environment
+                samples ``(E, N)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Homogeneous transforms with trailing shape ``(4, 4)`` and leading
+            dimensions determined by ``q`` and ``s``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="pose",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PCS,
+        )
+
+    @eqx.filter_jit
+    def forward_kinematics_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute SE(3) poses at a batch of curvilinear abscissae.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Homogeneous transforms with shape ``(N, 4, 4)``.
+        """
+
+        return self.forward_kinematics(q, s_ps, backend=backend)
+
+    @eqx.filter_jit
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
         """
         Compute the forward kinematics of the robot at a point s along the robot.
@@ -1067,7 +1123,7 @@ class PCS(SoftRobot):
         return g_tips
 
     @eqx.filter_jit
-    def forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
+    def _forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
         """
         Compute the forward kinematics of the robot at a batch of points s_ps along the robot.
 
@@ -1810,7 +1866,9 @@ class PCS(SoftRobot):
         Returns:
             J_local_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
         """
-        J_local_ps_ = self._J_local_abscissa_batched(q, s_ps)  # shape (N, 6, num_strains)
+        J_local_ps_ = self._J_local_abscissa_batched(
+            q, s_ps
+        )  # shape (N, 6, num_strains)
 
         J_local_ps = jnp.einsum(
             "ijk, kl->ijl", J_local_ps_, self.B_xi
@@ -1830,7 +1888,7 @@ class PCS(SoftRobot):
         return self._rotation_adjoint_from_pose(g_s) @ J_local
 
     @eqx.filter_jit
-    def jacobian_inertialframe(self, q: Array, s: Array) -> Array:
+    def _jacobian_inertialframe(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a point s along the robot in the inertial frame.
 
@@ -1843,6 +1901,117 @@ class PCS(SoftRobot):
         """
         g_s, J_local = self._jacobian_bodyframe_with_pose(q, s)
         return self._body_jacobian_to_inertial(g_s, J_local)
+
+    @eqx.filter_jit
+    def jacobian_inertialframe(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute inertial Jacobians for scalar or vectorized inputs.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
+            s: Scalar, shared backbone samples ``(N,)``, or per-environment
+                samples ``(E, N)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Inertial Jacobians with trailing shape ``(6, D)`` and leading
+            dimensions determined by ``q`` and ``s``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="jacobian",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PCS,
+        )
+
+    @eqx.filter_jit
+    def jacobian_inertialframe_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute inertial Jacobians at a batch of curvilinear abscissae.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Inertial-frame Jacobians with shape ``(N, 6, D)``.
+        """
+
+        return self.jacobian_inertialframe(q, s_ps, backend=backend)
+
+    @eqx.filter_jit
+    def forward_kinematics_and_jacobian_inertialframe(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array]:
+        """Compute SE(3) poses and inertial Jacobians in one traversal.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)`` or ``(E, D)``.
+            s: Scalar, shared backbone samples ``(N,)``, or per-environment
+                samples ``(E, N)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            A tuple containing poses with trailing shape ``(4, 4)`` and
+            inertial Jacobians with trailing shape ``(6, D)``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="both",
+            backend=backend,
+            capabilities=PCS_KINEMATICS,
+            warp_supported=type(self) is PCS,
+        )
+
+    @eqx.filter_jit
+    def forward_kinematics_and_jacobian_inertialframe_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array]:
+        """Compute fused poses and Jacobians for an abscissa batch.
+
+        Args:
+            q: Active generalized strains with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Poses with shape ``(N, 4, 4)`` and inertial Jacobians with shape
+            ``(N, 6, D)``.
+        """
+
+        return self.forward_kinematics_and_jacobian_inertialframe(
+            q, s_ps, backend=backend
+        )
 
     @eqx.filter_jit
     def jacobian_and_arc_length_derivative_inertialframe(
@@ -1900,7 +2069,7 @@ class PCS(SoftRobot):
         return Js
 
     @eqx.filter_jit
-    def jacobian_inertialframe_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
+    def _jacobian_inertialframe_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a batch of points s_ps along the robot in the inertial frame.
         Args:
@@ -1915,7 +2084,7 @@ class PCS(SoftRobot):
             q, s_ps
         )  # shape (N, 6, num_active_strains)
 
-        g_ps = self.forward_kinematics_abscissa_batched(q, s_ps)  # shape (N, 4, 4)
+        g_ps = self._forward_kinematics_abscissa_batched(q, s_ps)  # shape (N, 4, 4)
         # construct g with zero translation for the Adjoint transformation
         g_rot_ps = jnp.block(
             [
@@ -2282,11 +2451,11 @@ class PCS(SoftRobot):
             J_global_ps (Array): Jacobians evaluated at all points, shape (N, 6, num_active_strains)
             Jd_global_ps (Array): Time-derivative of the Jacobians, shape (N, 6, num_active_strains)
         """
-        J_local_ps, Jd_local_ps = self.jacobian_and_time_derivative_bodyframe_abscissa_batched(
-            q, qd, s_ps
+        J_local_ps, Jd_local_ps = (
+            self.jacobian_and_time_derivative_bodyframe_abscissa_batched(q, qd, s_ps)
         )  # shape (N, 6, num_active_strains)
 
-        g_ps = self.forward_kinematics_abscissa_batched(q, s_ps)  # shape (N, 4, 4)
+        g_ps = self._forward_kinematics_abscissa_batched(q, s_ps)  # shape (N, 4, 4)
         # construct g with zero translation for the Adjoint transformation
         g_rot_ps = jnp.block(
             [
@@ -2321,7 +2490,7 @@ class PCS(SoftRobot):
     @eqx.filter_jit
     def _jacobian(self, q: Array, s: Array) -> Array:
         """Protected SoftRobot hook for the inertial-frame Jacobian."""
-        return self.jacobian_inertialframe(q, s)
+        return self._jacobian_inertialframe(q, s)
 
     @eqx.filter_jit
     def _jacobian_arc_length_derivative(self, q: Array, s: Array) -> Array:
@@ -2348,7 +2517,7 @@ class PCS(SoftRobot):
             Inertial-frame Jacobians with shape
             ``(num_points, 6, num_active_strains)``.
         """
-        return self.jacobian_inertialframe_abscissa_batched(q, s_ps)
+        return self._jacobian_inertialframe_abscissa_batched(q, s_ps)
 
     @eqx.filter_jit
     def _jacobian_and_time_derivative(
@@ -2374,7 +2543,9 @@ class PCS(SoftRobot):
             A tuple ``(J, J_dot)`` whose arrays both have shape
             ``(num_points, 6, num_active_strains)``.
         """
-        return self.jacobian_and_time_derivative_inertialframe_abscissa_batched(q, qd, s_ps)
+        return self.jacobian_and_time_derivative_inertialframe_abscissa_batched(
+            q, qd, s_ps
+        )
 
     # ==========================================
     # Useful functions for the system
@@ -2636,7 +2807,7 @@ class PCS(SoftRobot):
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the forward kinematics for each quadrature point
-        g_ps = self.forward_kinematics_abscissa_batched(
+        g_ps = self._forward_kinematics_abscissa_batched(
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 4, 4)
         g_ps = g_ps.reshape(
@@ -2960,7 +3131,7 @@ class PCS(SoftRobot):
         )  # shape (num_segments, num_gauss_points) for both Xs_scaled and Ws_scaled
 
         # compute the forward kinematics for each quadrature point
-        g_ps = self.forward_kinematics_abscissa_batched(
+        g_ps = self._forward_kinematics_abscissa_batched(
             q, Xs_scaled.flatten()
         )  # shape (num_segments * num_gauss_points, 4, 4)
         g_ps = g_ps.reshape(

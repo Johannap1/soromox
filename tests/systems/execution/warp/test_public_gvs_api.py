@@ -17,14 +17,28 @@ def test_gvs_public_names_are_discoverable_without_loading_warp() -> None:
 
     expected = {
         "GVSOperandSource",
+        "GVSKinematicsOperands",
+        "GVSKinematicsShapes",
         "GVSOperands",
         "GVSPipelineShapes",
         "cell_terms_kernel",
         "cooperative_joint_terms_kernel",
+        "gvs_cooperative_node_states_kernel",
         "joint_terms_kernel",
+        "gvs_jacobian_samples_kernel",
+        "gvs_node_poses_kernel",
+        "gvs_node_states_kernel",
+        "gvs_pose_samples_kernel",
+        "gvs_samples_kernel",
         "launch_cell_terms",
         "launch_cooperative_joint_terms",
         "launch_joint_terms",
+        "launch_forward_kinematics",
+        "launch_forward_kinematics_and_jacobians",
+        "launch_gvs_forward_kinematics",
+        "launch_gvs_inertial_jacobians",
+        "launch_gvs_kinematics",
+        "launch_inertial_jacobians",
         "launch_persistent_chain",
         "persistent_chain_kernel",
     }
@@ -39,21 +53,45 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
     from soromox.systems.execution.warp.gvs import (
         cell_terms_kernel,
         cooperative_joint_terms_kernel,
+        gvs_cooperative_node_states_kernel,
+        gvs_jacobian_samples_kernel,
+        gvs_node_poses_kernel,
+        gvs_node_states_kernel,
+        gvs_pose_samples_kernel,
+        gvs_samples_kernel,
         joint_terms_kernel,
         launch_cell_terms,
         launch_cooperative_joint_terms,
+        launch_forward_kinematics,
+        launch_forward_kinematics_and_jacobians,
+        launch_gvs_forward_kinematics,
+        launch_gvs_inertial_jacobians,
+        launch_gvs_kinematics,
+        launch_inertial_jacobians,
         launch_joint_terms,
         launch_persistent_chain,
         persistent_chain_kernel,
     )
 
     launchers = (
+        launch_forward_kinematics,
+        launch_forward_kinematics_and_jacobians,
+        launch_gvs_forward_kinematics,
+        launch_gvs_inertial_jacobians,
+        launch_gvs_kinematics,
+        launch_inertial_jacobians,
         launch_joint_terms,
         launch_cooperative_joint_terms,
         launch_cell_terms,
         launch_persistent_chain,
     )
     kernels = (
+        gvs_cooperative_node_states_kernel,
+        gvs_jacobian_samples_kernel,
+        gvs_node_poses_kernel,
+        gvs_node_states_kernel,
+        gvs_pose_samples_kernel,
+        gvs_samples_kernel,
         joint_terms_kernel,
         cooperative_joint_terms_kernel,
         cell_terms_kernel,
@@ -64,6 +102,16 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         documentation = inspect.getdoc(launcher)
         assert documentation is not None
         assert "Args:" in documentation
+    specialized = (
+        launch_gvs_forward_kinematics,
+        launch_gvs_inertial_jacobians,
+        launch_gvs_kinematics,
+        launch_joint_terms,
+        launch_cooperative_joint_terms,
+        launch_cell_terms,
+        launch_persistent_chain,
+    )
+    for launcher in specialized:
         assert len(inspect.signature(launcher).parameters) >= 10
     for kernel in kernels:
         assert kernel is not None

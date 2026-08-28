@@ -629,20 +629,6 @@ class Pendulum(SoftRobot):
         return chi
 
     @eqx.filter_jit
-    def forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
-        """
-        Compute forward kinematics at multiple arc-length positions.
-
-        Args:
-            q: Joint angles, shape (N,) [rad].
-            s_ps: Arc-length positions, shape (M,) [m].
-
-        Returns:
-            chi_ps: Poses at all positions, shape (M, 3).
-        """
-        return vmap(lambda s: self.forward_kinematics(q, s))(s_ps)
-
-    @eqx.filter_jit
     def _jacobian(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian at arc-length position s along the pendulum.

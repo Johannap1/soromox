@@ -377,6 +377,50 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             ),
         ),
         BenchmarkCase(
+            name="forward_kinematics_abscissa_batched",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
+            ),
+        ),
+        BenchmarkCase(
+            name="jacobian_inertialframe",
+            builder=lambda sys, ctx, _: (
+                sys.jacobian_inertialframe,
+                (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="jacobian_inertialframe_abscissa_batched",
+            builder=lambda sys, ctx, _: (
+                sys.jacobian_inertialframe_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_kinematics_and_jacobian_inertialframe",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe,
+                (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name=("forward_kinematics_and_jacobian_inertialframe_abscissa_batched"),
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
+            ),
+        ),
+        BenchmarkCase(
             name="inverse_kinematics",
             description="Recover strains from planar tip poses",
             builder=lambda sys, ctx, _: (sys.inverse_kinematics, (ctx["chi_tips"],)),
@@ -440,6 +484,34 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             name="forward_kinematics_abscissa_batched",
             builder=lambda sys, ctx, _: (
                 sys.forward_kinematics_abscissa_batched,
+                (ctx["q"], ctx["s_points"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="jacobian_inertialframe",
+            builder=lambda sys, ctx, _: (
+                sys.jacobian_inertialframe,
+                (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="jacobian_inertialframe_abscissa_batched",
+            builder=lambda sys, ctx, _: (
+                sys.jacobian_inertialframe_abscissa_batched,
+                (ctx["q"], ctx["s_points"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_kinematics_and_jacobian_inertialframe",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe,
+                (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name=("forward_kinematics_and_jacobian_inertialframe_abscissa_batched"),
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe_abscissa_batched,
                 (ctx["q"], ctx["s_points"]),
             ),
         ),
@@ -509,6 +581,43 @@ def _build_system_registry() -> Mapping[str, SystemBenchmark]:
             builder=lambda sys, ctx, _: (
                 sys.forward_kinematics,
                 (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_kinematics_abscissa_batched",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
+            ),
+        ),
+        BenchmarkCase(
+            name="jacobian_inertialframe_abscissa_batched",
+            builder=lambda sys, ctx, _: (
+                sys.jacobian_inertialframe_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
+            ),
+        ),
+        BenchmarkCase(
+            name="forward_kinematics_and_jacobian_inertialframe",
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe,
+                (ctx["q"], ctx["s_tip"]),
+            ),
+        ),
+        BenchmarkCase(
+            name=("forward_kinematics_and_jacobian_inertialframe_abscissa_batched"),
+            builder=lambda sys, ctx, _: (
+                sys.forward_kinematics_and_jacobian_inertialframe_abscissa_batched,
+                (
+                    ctx["q"],
+                    jnp.linspace(0.0, sys.length, 2 * sys.num_segments + 1),
+                ),
             ),
         ),
         BenchmarkCase(
@@ -938,10 +1047,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
 
                     per_point_note = ""
-                    if (
-                        case.name == "forward_kinematics_abscissa_batched"
-                        and len(call_args) >= 2
-                    ):
+                    if case.name.endswith("_abscissa_batched") and len(call_args) >= 2:
                         s_arg = call_args[1]
                         num_points = None
                         if hasattr(s_arg, "shape") and s_arg.shape:

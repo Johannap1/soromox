@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import equinox as eqx
+import jax.numpy as jnp
 from jax import Array
 
 
@@ -39,6 +40,17 @@ class GVSOperandSource(Protocol):
     inertia_upper_columns: Array
     inner_weighted_mass_diagonals: Array
     gravity_base: Array
+    g0: Array
+    integration_points: Array
+    segment_end_positions: Array
+    basis_type_index: Array
+    basis_active_params: Array
+    basis_order_params: Array
+    scale_rotational_basis_by_length: bool
+    Z1: float
+    Z2: float
+    global_eps: float
+    tangent_eps: float
 
 
 class GVSOperands(eqx.Module):
@@ -275,4 +287,218 @@ class GVSPipelineShapes:
         }
 
 
-__all__ = ["GVSOperandSource", "GVSOperands", "GVSPipelineShapes"]
+class GVSKinematicsOperands(eqx.Module):
+    """Runtime model data required by public GVS kinematics launchers.
+
+    Static dimensions determine output and workspace shapes. Array fields are
+    runtime operands so physical parameters and configurations remain reusable
+    with compiled Warp kernels and captured CUDA graphs.
+
+    Attributes:
+        num_segments: Number of serial joint-link segments.
+        num_dofs: Number of active generalized coordinates.
+        max_dof: Padded local coordinate width.
+        num_cells: Padded integration cells per segment.
+        block_dim: Preferred cooperative block size.
+        scale_rotational_basis_by_length: Whether angular basis rows are scaled.
+        base_transform: Absolute robot base transform.
+        joint_basis: Padded joint basis matrices.
+        joint_reference: Reference joint strains.
+        joint_local_to_global: Joint-local to active-coordinate map.
+        joint_global_to_local: Active-coordinate to joint-local map.
+        link_local_to_global: Link-local to active-coordinate map.
+        link_global_to_local: Active-coordinate to link-local map.
+        link_basis_z1_values: Sparse full-cell basis at first Magnus nodes.
+        link_basis_z2_values: Sparse full-cell basis at second Magnus nodes.
+        link_basis_rows: Spatial row occupied by every local basis column.
+        link_reference_z1: Reference strain at first Magnus nodes.
+        link_reference_z2: Reference strain at second Magnus nodes.
+        segment_lengths: Physical link lengths.
+        segment_starts: Cumulative link-start coordinates.
+        integration_points: Normalized cell-boundary coordinates.
+        cell_widths: Normalized full-cell widths.
+        basis_type_index: Basis-family index for every segment.
+        basis_active_params: Per-row basis activation parameters.
+        basis_order_params: Per-row basis-order parameters.
+        magnus_points: Normalized two-point Magnus quadrature coordinates.
+        global_eps: Exponential-map threshold.
+        tangent_eps: Tangent-map threshold.
+    """
+
+    num_segments: int = eqx.field(static=True)
+    num_dofs: int = eqx.field(static=True)
+    max_dof: int = eqx.field(static=True)
+    num_cells: int = eqx.field(static=True)
+    block_dim: int = eqx.field(static=True)
+    scale_rotational_basis_by_length: bool = eqx.field(static=True)
+    base_transform: Array
+    joint_basis: Array
+    joint_reference: Array
+    joint_local_to_global: Array
+    joint_global_to_local: Array
+    link_local_to_global: Array
+    link_global_to_local: Array
+    link_basis_z1_values: Array
+    link_basis_z2_values: Array
+    link_basis_rows: Array
+    link_reference_z1: Array
+    link_reference_z2: Array
+    segment_lengths: Array
+    segment_starts: Array
+    integration_points: Array
+    cell_widths: Array
+    basis_type_index: Array
+    basis_active_params: Array
+    basis_order_params: Array
+    magnus_points: Array
+    global_eps: float
+    tangent_eps: float
+
+    @classmethod
+    def from_model(
+        cls, model: GVSOperandSource, *, block_dim: int
+    ) -> GVSKinematicsOperands:
+        """Create an allocation-free view of a GVS model's kinematics arrays.
+
+        Args:
+            model: Object satisfying :class:`GVSOperandSource`.
+            block_dim: Cooperative lanes per environment, or one on Warp CPU.
+
+        Returns:
+            Operand bundle referencing the model's existing JAX arrays.
+        """
+
+        return cls(
+            num_segments=model.num_segments,
+            num_dofs=model.num_dofs,
+            max_dof=model.max_dof,
+            num_cells=model.max_num_integration_points - 1,
+            block_dim=block_dim,
+            scale_rotational_basis_by_length=model.scale_rotational_basis_by_length,
+            base_transform=model.g0,
+            joint_basis=model.B_joint,
+            joint_reference=model.xi_ref_joint,
+            joint_local_to_global=model.joint_local_to_global,
+            joint_global_to_local=model.joint_global_to_local,
+            link_local_to_global=model.link_local_to_global,
+            link_global_to_local=model.link_global_to_local,
+            link_basis_z1_values=model.scaled_B_Z1_values,
+            link_basis_z2_values=model.scaled_B_Z2_values,
+            link_basis_rows=model.link_basis_rows,
+            link_reference_z1=model.xi_ref_Z1,
+            link_reference_z2=model.xi_ref_Z2,
+            segment_lengths=model.segment_lengths,
+            segment_starts=model.segment_end_positions,
+            integration_points=model.integration_points,
+            cell_widths=model.cell_widths,
+            basis_type_index=model.basis_type_index,
+            basis_active_params=model.basis_active_params,
+            basis_order_params=model.basis_order_params,
+            magnus_points=jnp.asarray([model.Z1, model.Z2]),
+            global_eps=model.global_eps,
+            tangent_eps=model.tangent_eps,
+        )
+
+
+@dataclass(frozen=True)
+class GVSKinematicsShapes:
+    """Allocation contract for fused GVS pose/Jacobian execution.
+
+    Attributes:
+        batch_size: Number of independent environments.
+        num_samples: Number of backbone samples per environment.
+        num_segments: Number of serial joint-link segments.
+        num_cells: Padded integration cells per segment.
+        num_dofs: Number of active generalized coordinates.
+    """
+
+    batch_size: int
+    num_samples: int
+    num_segments: int
+    num_cells: int
+    num_dofs: int
+
+    @classmethod
+    def from_operands(
+        cls,
+        operands: GVSKinematicsOperands,
+        *,
+        batch_size: int,
+        num_samples: int,
+    ) -> GVSKinematicsShapes:
+        """Construct kinematics shapes from runtime operands.
+
+        Args:
+            operands: Public GVS kinematics operand bundle.
+            batch_size: Positive number of independent environments.
+            num_samples: Positive number of samples per environment.
+
+        Returns:
+            Immutable kinematics workspace and output dimensions.
+
+        Raises:
+            TypeError: If either requested dimension is not an integer.
+            ValueError: If either requested dimension is not positive.
+        """
+
+        for name, value in (("batch_size", batch_size), ("num_samples", num_samples)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer.")
+            if value < 1:
+                raise ValueError(f"{name} must be positive.")
+        return cls(
+            batch_size=batch_size,
+            num_samples=num_samples,
+            num_segments=operands.num_segments,
+            num_cells=operands.num_cells,
+            num_dofs=operands.num_dofs,
+        )
+
+    def workspace(self) -> dict[str, tuple[int, ...]]:
+        """Return caller-owned fused cell-boundary workspace shapes.
+
+        Returns:
+            Mapping from fused launcher workspace names to array shapes.
+        """
+
+        node_count = self.batch_size * self.num_segments * (self.num_cells + 1)
+        return {
+            "node_pose": (node_count * 4, 4),
+            "node_jacobian": (node_count * 6, self.num_dofs),
+        }
+
+    def pose_workspace(self) -> dict[str, tuple[int, ...]]:
+        """Return the reduced pose-only workspace shapes.
+
+        Returns:
+            Mapping containing only the flattened node-pose workspace.
+        """
+
+        return {"node_pose": self.workspace()["node_pose"]}
+
+    def pose_output(self) -> tuple[int, ...]:
+        """Return the native GVS pose output shape.
+
+        Returns:
+            Shape ``(batch_size, num_samples, 4, 4)``.
+        """
+
+        return self.batch_size, self.num_samples, 4, 4
+
+    def jacobian_output(self) -> tuple[int, ...]:
+        """Return the native GVS inertial-Jacobian output shape.
+
+        Returns:
+            Shape ``(batch_size, num_samples, 6, num_dofs)``.
+        """
+
+        return self.batch_size, self.num_samples, 6, self.num_dofs
+
+
+__all__ = [
+    "GVSKinematicsOperands",
+    "GVSKinematicsShapes",
+    "GVSOperandSource",
+    "GVSOperands",
+    "GVSPipelineShapes",
+]
