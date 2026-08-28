@@ -13,6 +13,19 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added opt-in Capstan guide friction to threadlike transmissions. A
+  `friction_coefficient` on `ThreadlikeActuator` and `ThreadlikeImpedance`
+  attenuates effort along a routed path as `exp(-mu * Theta(s))`, where `Theta`
+  is the accumulated turn of the path, instead of applying it uniformly. `PCS`
+  and `PlanarPCS` implement the wrap-angle model; `GVS` rejects a nonzero
+  coefficient during construction. The coefficient is a differentiable leaf and
+  can be identified under `jit`. Zero is the default and reproduces the
+  frictionless model exactly. See
+  [threadlike actuation](../api/actuation/threadlike.md#guide-friction).
+- Added `wrap_angle_smoothing` to `PCSStructure` and `PlanarPCSStructure`, which
+  replaces `|kappa|` with `sqrt(kappa**2 + eps**2)` in the wrap-angle density so
+  the friction coefficient stays identifiable near a straight configuration.
+
 ### Changed
 
 - Made effort laws declare their transmission-state dependencies so
@@ -52,14 +65,33 @@ and include benchmark baseline and measurement context for performance claims.
   `soromox.rendering.actuator_visual_layers(...)`. Renderers continue to adapt
   standard `SoftRobot` systems automatically, while robot-defined hooks remain
   available for specialized visualization behavior.
+- Replaced `ThreadlikeImpedanceParams.routing` with a nested
+  `transmission` field, so a passive routed path now carries a
+  `ThreadlikeTransmission` like its articulated counterpart. The
+  `ThreadlikeImpedance` constructor keeps its `routing=` keyword; direct
+  construction of `ThreadlikeImpedanceParams` and `update_params(routing=...)`
+  become `transmission=...`.
+- Corrected the planar routed-path offset sign, which used
+  `sigma_x + d * kappa` where `PlanarPCS` kinematics require
+  `sigma_x - d * kappa`. Planar routings must negate their `y` offsets to
+  reproduce previous behavior, which is exactly equivalent when the routing
+  slope is zero.
 
 ### Fixed
 
 - Fixed GVS abscissa-batched partial-cell poses and inertial Jacobians so
   rotational strain-basis values consistently honor
   `scale_rotational_basis_by_length` for every supported basis family.
+- Fixed planar threadlike path lengths and moment arms disagreeing with `PCS`
+  and with the path positions the renderer draws. At `kappa = 10`, `L = 0.1`
+  and offset `0.02` the model reported `0.120` for a path whose rendered arc
+  length is `0.080`; planar and spatial hosts now agree exactly.
 
 ### Documentation
+
+- Documented guide friction on the threadlike actuation page, replacing the
+  paragraph that listed along-path friction as outside the transmission model,
+  and recorded the invariants a nonzero coefficient deliberately breaks.
 
 ### Contributors
 
