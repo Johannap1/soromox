@@ -119,6 +119,12 @@ class _KinematicsProbe(eqx.Module):
         sd = jnp.zeros_like(s) if sd is None else sd
         return jax.jvp(self._forward_kinematics, (q, s), (qd, sd))
 
+    def _pose_tangent_from_inertial_velocity(self, pose: Array, eta: Array) -> Array:
+        """Planar probe poses use inertial velocity coordinates directly."""
+
+        del pose
+        return eta
+
     def _jacobian_inertialframe(self, q: Array, s: Array) -> Array:
         """Return a scalar-path inertial Jacobian."""
 
@@ -587,6 +593,49 @@ def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
 
     assert result.shape == (4, 6, 3)
     assert_allclose(result, 406.0)
+
+
+def test_warp_pose_gradients_use_fused_warp_jacobians(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Build scalar and spatial reverse-mode gradients from Warp Jacobians."""
+
+    from soromox.execution.warp import loader
+
+    model = _KinematicsProbe(backend="warp")
+    weights = jnp.asarray([2.0, 3.0, 5.0], dtype=jnp.float64)
+    q = jnp.asarray([0.1, -0.2, 0.3], dtype=jnp.float64)
+    s = jnp.linspace(0.0, 1.0, 6, dtype=jnp.float64)
+
+    def fake_batch(
+        model: _KinematicsProbe,
+        q: Array,
+        s: Array,
+        operation: str,
+    ) -> Array | tuple[Array, Array]:
+        del model
+        poses = jnp.broadcast_to(q[:, None, :], (q.shape[0], s.shape[1], 3))
+        jacobians = jnp.broadcast_to(
+            jnp.diag(weights),
+            (q.shape[0], s.shape[1], 3, 3),
+        )
+        if operation == "pose":
+            return poses
+        if operation == "jacobian":
+            return jacobians
+        return poses, jacobians
+
+    monkeypatch.setattr(loader, "_execute_pcs_kinematics_batch", fake_batch)
+
+    scalar_gradient = jax.grad(lambda q_: jnp.sum(model.forward_kinematics(q_, s[2])))(
+        q
+    )
+    spatial_gradient = jax.grad(
+        lambda q_: jnp.sum(model.forward_kinematics_abscissa_batched(q_, s))
+    )(q)
+
+    assert_allclose(scalar_gradient, weights, rtol=0.0, atol=0.0)
+    assert_allclose(spatial_gradient, s.size * weights, rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize(

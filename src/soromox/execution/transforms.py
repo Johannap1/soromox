@@ -268,6 +268,155 @@ def make_kinematics_evaluators(
     def slice_environment(result: KinematicsResult) -> KinematicsResult:
         return jax.tree.map(lambda value: value[0], result)
 
+    def pose_configuration_tangent(
+        model: KinematicsModel,
+        pose: Array,
+        jacobian: Array,
+        qd: Array,
+    ) -> Array:
+        """Apply a Warp-computed inertial Jacobian to a configuration tangent."""
+
+        eta = jnp.einsum("...ij,j->...i", jacobian, qd)
+        if jacobian.ndim == 2:
+            return model._pose_tangent_from_inertial_velocity(pose, eta)
+        return jax.vmap(model._pose_tangent_from_inertial_velocity)(pose, eta)
+
+    @jax.custom_batching.custom_vmap
+    def abscissa_batched_pose_jacobian_primal(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """Evaluate one spatial pose/Jacobian batch for derivative rules."""
+
+        pose, jacobian = execute_batch(model, q[None, :], s[None, :], "both")
+        return pose[0], jacobian[0]
+
+    @abscissa_batched_pose_jacobian_primal.def_vmap
+    def abscissa_batched_pose_jacobian_vmap(
+        axis_size: int,
+        in_batched: tuple[Any, bool, bool],
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+    ) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
+        """Merge mapped derivative requests into one fused Warp batch."""
+
+        model_batched, q_batched, s_batched = in_batched
+        if any(jax.tree.leaves(model_batched)):
+            raise ValueError(
+                f"Batching over {family_name} model parameters is not supported."
+            )
+        if not q_batched:
+            q = jnp.broadcast_to(q, (axis_size, *q.shape))
+        if not s_batched:
+            s = jnp.broadcast_to(s, (axis_size, *s.shape))
+        return execute_batch(model, q, s, "both"), (True, True)
+
+    @jax.custom_batching.custom_vmap
+    def scalar_pose_jacobian_primal(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """Evaluate one pose/Jacobian pair for a scalar derivative rule."""
+
+        pose, jacobian = execute_batch(model, q[None, :], s.reshape(1, 1), "both")
+        return pose[0, 0], jacobian[0, 0]
+
+    @scalar_pose_jacobian_primal.def_vmap
+    def scalar_pose_jacobian_vmap(
+        axis_size: int,
+        in_batched: tuple[Any, bool, bool],
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+    ) -> tuple[tuple[Array, Array], tuple[bool, bool]]:
+        """Preserve canonical environment/spatial batching in derivative rules."""
+
+        model_batched, q_batched, s_batched = in_batched
+        if any(jax.tree.leaves(model_batched)):
+            raise ValueError(
+                f"Batching over {family_name} model parameters is not supported."
+            )
+        if q_batched:
+            if not s_batched:
+                s = jnp.broadcast_to(s, (axis_size,))
+            pose, jacobian = execute_batch(model, q, s[:, None], "both")
+            return (pose[:, 0], jacobian[:, 0]), (True, True)
+        return abscissa_batched_pose_jacobian_primal(model, q, s), (True, True)
+
+    @eqx.filter_custom_jvp
+    def scalar_pose_jacobian_evaluator(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """Evaluate Warp pose/Jacobian values with a JAX higher-order rule."""
+
+        return scalar_pose_jacobian_primal(model, q, s)
+
+    @scalar_pose_jacobian_evaluator.def_jvp
+    def scalar_pose_jacobian_jvp(
+        primals: tuple[KinematicsModel, Array, Array],
+        tangents: tuple[Any, Array | None, Array | None],
+    ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
+        """Retain established semantics beyond the first Warp-backed derivative."""
+
+        return eqx.filter_jvp(
+            lambda model, q, s: (
+                model._absolute_forward_kinematics(q, s),
+                model._absolute_inertial_jacobian(q, s),
+            ),
+            primals,
+            tangents,
+        )
+
+    @eqx.filter_custom_jvp
+    def abscissa_batched_pose_jacobian_evaluator(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> tuple[Array, Array]:
+        """Evaluate a Warp spatial batch with a JAX higher-order rule."""
+
+        return abscissa_batched_pose_jacobian_primal(model, q, s)
+
+    @abscissa_batched_pose_jacobian_evaluator.def_jvp
+    def abscissa_batched_pose_jacobian_jvp(
+        primals: tuple[KinematicsModel, Array, Array],
+        tangents: tuple[Any, Array | None, Array | None],
+    ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
+        """Differentiate nested Warp-gradient transforms through JAX."""
+
+        return eqx.filter_jvp(
+            lambda model, q, s: (
+                model._absolute_forward_kinematics_abscissa_batched(q, s),
+                model._absolute_inertial_jacobian_abscissa_batched(q, s),
+            ),
+            primals,
+            tangents,
+        )
+
+    def scalar_warp_pose_jvp(
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+        qd: Array,
+        sd: Array | None,
+    ) -> tuple[Array, Array]:
+        """Use fused Warp pose/Jacobian execution for fixed-base q tangents."""
+
+        pose, jacobian = scalar_pose_jacobian_evaluator(model, q, s)
+        tangent = pose_configuration_tangent(model, pose, jacobian, qd)
+        if sd is not None:
+            _, arc_tangent = model._forward_kinematics_jvp(q, s, None, sd)
+            tangent = tangent + arc_tangent
+        return pose, tangent
+
+    def abscissa_batched_warp_pose_jvp(
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+        qd: Array,
+    ) -> tuple[Array, Array]:
+        """Use one fused Warp batch for fixed-base spatial q tangents."""
+
+        pose, jacobian = abscissa_batched_pose_jacobian_evaluator(model, q, s)
+        return pose, pose_configuration_tangent(model, pose, jacobian, qd)
+
     @jax.custom_batching.custom_vmap
     def scalar_primal(model: KinematicsModel, q: Array, s: Array) -> KinematicsResult:
         result = execute_batch(model, q[None, :], s.reshape(1, 1), operation)
@@ -312,6 +461,8 @@ def make_kinematics_evaluators(
         model, q, s = primals
         _model_tangent, qd, sd = tangents
         if operation == "pose":
+            if qd is not None and not model.floating_base:
+                return scalar_warp_pose_jvp(model, q, s, qd, sd)
             return model._forward_kinematics_jvp(q, s, qd, sd)
         if operation == "jacobian":
             return eqx.filter_jvp(
@@ -319,7 +470,10 @@ def make_kinematics_evaluators(
                 primals,
                 tangents,
             )
-        pose, pose_tangent = model._forward_kinematics_jvp(q, s, qd, sd)
+        if qd is not None and not model.floating_base:
+            pose, pose_tangent = scalar_warp_pose_jvp(model, q, s, qd, sd)
+        else:
+            pose, pose_tangent = model._forward_kinematics_jvp(q, s, qd, sd)
         jacobian, jacobian_tangent = eqx.filter_jvp(
             lambda model_, q_, s_: model_._absolute_inertial_jacobian(q_, s_),
             primals,
@@ -378,6 +532,15 @@ def make_kinematics_evaluators(
                 model_._absolute_inertial_jacobian_abscissa_batched(q_, s_),
             )
 
+        model, q, s = primals
+        _model_tangent, qd, sd = tangents
+        if (
+            operation == "pose"
+            and qd is not None
+            and sd is None
+            and not model.floating_base
+        ):
+            return abscissa_batched_warp_pose_jvp(model, q, s, qd)
         return eqx.filter_jvp(jax_abscissa_batched, primals, tangents)
 
     return scalar_evaluator, abscissa_batched_evaluator

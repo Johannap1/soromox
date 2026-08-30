@@ -29,7 +29,7 @@ from ._equivalence import assert_backend_equivalence
 from ._kinematics_equivalence import (
     assert_inertial_jacobian_finite_difference,
     assert_kinematics_backend_equivalence,
-    assert_warp_derivatives_use_jax,
+    assert_warp_derivatives_match_jax,
 )
 
 
@@ -164,7 +164,7 @@ def test_gvs_public_kinematics_match_jax_on_cpu_and_gpu(
 
     assert_kinematics_backend_equivalence(model)
     assert_inertial_jacobian_finite_difference(model)
-    assert_warp_derivatives_use_jax(model)
+    assert_warp_derivatives_match_jax(model)
 
 
 def test_gvs_backend_params_override_reaches_warp_launches(

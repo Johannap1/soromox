@@ -166,8 +166,8 @@ def assert_inertial_jacobian_finite_difference(model: Any) -> None:
     assert_allclose(actual, finite_difference, rtol=3e-5, atol=3e-7)
 
 
-def assert_warp_derivatives_use_jax(model: Any) -> None:
-    """Check that differentiating a Warp request follows the JAX equations.
+def assert_warp_derivatives_match_jax(model: Any) -> None:
+    """Check that Warp-routed kinematics derivatives match JAX.
 
     Args:
         model: Exact PlanarPCS, PCS, or GVS model supported by Warp.
@@ -210,9 +210,54 @@ def assert_warp_derivatives_use_jax(model: Any) -> None:
         )
         _assert_result_close(actual, expected)
 
+    for method_name in (
+        "forward_kinematics",
+        "forward_kinematics_abscissa_batched",
+    ):
+        method = getattr(model, method_name)
+        s_value = (
+            _sample_coordinates(model)
+            if method_name.endswith("abscissa_batched")
+            else s
+        )
+        coordinate_argument = (
+            {"s_ps": s_value}
+            if method_name.endswith("abscissa_batched")
+            else {"s": s_value}
+        )
+
+        def objective(
+            q_value: Any,
+            backend: str,
+            method: Any = method,
+            coordinate_argument: Any = coordinate_argument,
+        ) -> Any:
+            pose = method(q_value, backend=backend, **coordinate_argument)
+            return jnp.sum(jnp.sin(pose) + 0.25 * pose**2)
+
+        expected_gradient = jax.grad(partial(objective, backend="jax"))(q)
+        actual_gradient = jax.grad(partial(objective, backend="warp"))(q)
+        _assert_result_close(actual_gradient, expected_gradient)
+
+    def scalar_objective(q_value: Any, backend: str) -> Any:
+        pose = model.forward_kinematics(q_value, s, backend=backend)
+        return jnp.sum(jnp.sin(pose) + 0.25 * pose**2)
+
+    expected_hvp = jax.jvp(
+        jax.grad(partial(scalar_objective, backend="jax")),
+        (q,),
+        (tangent,),
+    )[1]
+    actual_hvp = jax.jvp(
+        jax.grad(partial(scalar_objective, backend="warp")),
+        (q,),
+        (tangent,),
+    )[1]
+    _assert_result_close(actual_hvp, expected_hvp)
+
 
 __all__ = [
     "assert_inertial_jacobian_finite_difference",
     "assert_kinematics_backend_equivalence",
-    "assert_warp_derivatives_use_jax",
+    "assert_warp_derivatives_match_jax",
 ]

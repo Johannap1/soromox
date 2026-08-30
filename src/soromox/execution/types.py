@@ -244,6 +244,11 @@ class KinematicsModel(Protocol):
 
         ...
 
+    def _pose_tangent_from_inertial_velocity(self, pose: Array, eta: Array) -> Array:
+        """Convert an inertial velocity into a pose-representation tangent."""
+
+        ...
+
     def _jacobian_inertialframe(self, q: Array, s: Array) -> Array:
         """Return the differentiable JAX inertial Jacobian at one coordinate."""
 

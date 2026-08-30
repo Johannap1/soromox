@@ -278,26 +278,32 @@ including nested scalar `vmap` expressions for Cartesian batches.
 
 ## Differentiation
 
-JAX transformations always differentiate the JAX implementation, even when
-the model uses Warp for ordinary primal GPU calls. This applies to accelerated
-kinematics and Jacobians as well as `model.dynamics_terms` and complete
-`forward_dynamics` evaluations.
+Fixed-base forward-kinematics configuration derivatives retain the selected
+Warp path. The fused Warp invocation returns the pose and inertial Jacobian;
+the transformation rule applies that Jacobian to configuration tangents and
+JAX transposes the resulting exact linear expression for reverse mode. This
+applies to scalar, abscissa-batched, and environment-batched calls for
+`PlanarPCS`, `PCS`, and `GVS`.
 
 ```python
 import jax
 import jax.numpy as jnp
 
 def objective(q_value):
-    B, Cqd, G = robot.dynamics_terms(q_value, qd)
-    return jnp.sum(B) + jnp.sum(Cqd**2) + jnp.sum(G**2)
+    poses = robot.forward_kinematics_abscissa_batched(q_value, s_ps)
+    return jnp.sum(jnp.sin(poses) + 0.25 * poses**2)
 
 gradient = jax.grad(objective)(q)
 ```
 
-The same routing applies to `jax.jvp`, `jax.jacfwd`, `jax.jacrev`, and reverse
-mode through a rollout. The returned derivatives therefore retain the existing
-JAX semantics; gradients are not computed by differentiating the current
-forward-only Warp kernels.
+This is an analytical Warp-Jacobian rule, not Warp's native kernel AD. It
+supports first-order configuration `jax.jvp`, `jax.jacfwd`, `jax.jacrev`, and
+`jax.grad`; nested higher-order transformations use the JAX equations because
+the current forward-only Warp pipelines expose first-order inertial Jacobians,
+but not their derivatives. Arc-length-only derivatives, floating-base
+kinematics derivatives, derivatives of inertial Jacobians,
+`model.dynamics_terms`, complete `forward_dynamics`, and actuation derivatives
+also continue to use JAX.
 
 ## Warp launch settings
 

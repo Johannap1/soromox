@@ -37,6 +37,12 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Changed
 
+- Routed first-order, fixed-base `PlanarPCS`, `PCS`, and `GVS`
+  forward-kinematics pose derivatives through fused Warp pose/Jacobian
+  execution when Warp is selected. Inertial-Jacobian and higher-order
+  kinematics derivatives, plus dynamics-term and forward-dynamics derivatives,
+  remain on JAX because the current multi-launch Warp pipelines expose neither
+  the required higher derivatives nor a reverse pass.
 - Made effort laws declare their transmission-state dependencies so
   `DirectEffort` skips unused actuator-coordinate and velocity evaluation, and
   generalized-force assembly evaluates each actuator moment matrix only once.
@@ -49,6 +55,11 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Performance
 
+- Accelerated fixed-base forward-kinematics pose gradients on an RTX 5090 by
+  routing them through fused Warp pose/Jacobian kernels instead of the JAX
+  kinematics kernels. Across matched FP64 workloads, warmed geometric-mean
+  speedups were 1.10x for `PlanarPCS`, 1.91x for `PCS`, and 7.51x for `GVS`;
+  `PlanarPCS` ranged from 0.49-1.80x, so it is not a universal GPU win.
 - Added fused Warp kinematics kernels and measured 324 matched warmed cases per
   device across two- and eight-segment `PlanarPCS`, `PCS`, and `GVS` models,
   1/16/256 environments, and 1/8/64 abscissae. On an RTX 5090, Warp improved
