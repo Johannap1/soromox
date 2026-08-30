@@ -20,6 +20,9 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Changed
 
+- Added selectable `explicit_affine` and `material_derived` stiffness modes to
+  the SIP, R-SIP, and Soft Cart-Pole configuration.
+
 - Made effort laws declare their transmission-state dependencies so
   `DirectEffort` skips unused actuator-coordinate and velocity evaluation, and
   generalized-force assembly evaluates each actuator moment matrix only once.
