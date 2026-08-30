@@ -13,6 +13,11 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added signed direct `AffineJointActuator` routing and affine-curvature GVS
+  examples for the R-SIP, force-actuated Soft Cart-Pole, Soft Pendubot, and
+  Soft Furuta Pendulum, including semantic upright/hanging configurations,
+  open-loop simulations, summary plots, and Viser rendering.
+
 ### Changed
 
 - Made effort laws declare their transmission-state dependencies so
@@ -60,6 +65,9 @@ and include benchmark baseline and measurement context for performance claims.
   `scale_rotational_basis_by_length` for every supported basis family.
 
 ### Documentation
+
+- Documented the low-dimensional soft-pendulum coordinate, actuation, material,
+  and rigid-body-assumption conventions.
 
 ### Contributors
 
