@@ -9,6 +9,52 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
+def _rotation_components(theta: wp.float64) -> wp.vec2d:
+    """Return ``(cos(theta), sin(theta))`` for shared planar actions."""
+    return wp.vec2d(wp.cos(theta), wp.sin(theta))
+
+
+@wp.func
+def _rotation_matrix(theta: wp.float64) -> wp.mat22d:
+    """Return the planar rotation for ``theta``.
+
+    Args:
+        theta: Right-handed planar rotation angle.
+
+    Returns:
+        Two-dimensional active rotation matrix.
+    """
+    components = _rotation_components(theta)
+    cosine = components[0]
+    sine = components[1]
+    return wp.mat22d(cosine, -sine, sine, cosine)
+
+
+@wp.func
+def _rotate_vector(theta: wp.float64, value: wp.vec2d) -> wp.vec2d:
+    """Rotate one planar vector by ``theta``."""
+    components = _rotation_components(theta)
+    cosine = components[0]
+    sine = components[1]
+    return wp.vec2d(
+        cosine * value[0] - sine * value[1],
+        sine * value[0] + cosine * value[1],
+    )
+
+
+@wp.func
+def _rotate_vector_transpose(theta: wp.float64, value: wp.vec2d) -> wp.vec2d:
+    """Apply the transpose of a planar rotation to one vector."""
+    components = _rotation_components(theta)
+    cosine = components[0]
+    sine = components[1]
+    return wp.vec2d(
+        cosine * value[0] + sine * value[1],
+        -sine * value[0] + cosine * value[1],
+    )
+
+
+@wp.func
 def _rotation_transpose_entry(theta: wp.float64, row: int, column: int) -> wp.float64:
     """Return one entry of the transpose of a planar rotation.
 
@@ -20,8 +66,9 @@ def _rotation_transpose_entry(theta: wp.float64, row: int, column: int) -> wp.fl
     Returns:
         Entry ``(row, column)`` of ``R(theta).T``.
     """
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
+    components = _rotation_components(theta)
+    cosine = components[0]
+    sine = components[1]
     value = wp.float64(0.0)
     if row == 0 and column == 0 or row == 1 and column == 1:
         value = cosine
@@ -32,4 +79,10 @@ def _rotation_transpose_entry(theta: wp.float64, row: int, column: int) -> wp.fl
     return value
 
 
-__all__ = ["_rotation_transpose_entry"]
+__all__ = [
+    "_rotate_vector",
+    "_rotate_vector_transpose",
+    "_rotation_components",
+    "_rotation_matrix",
+    "_rotation_transpose_entry",
+]

@@ -10,6 +10,7 @@ from soromox.execution.warp.common.se3 import (
     _ad_action,
     _adjoint_inverse_action,
     _adjoint_inverse_transpose_action,
+    _exponential_transform,
     _forward_coefficients,
     _left_action,
     _left_coefficients,
@@ -28,7 +29,6 @@ from soromox.execution.warp.gvs.kinematics import (
     _basis_column_value,
     _load_node_pose,
     _relative_pose_from_inverse_adjoint,
-    _relative_pose_from_magnus,
     _store_node_pose,
     gvs_node_poses_kernel,
 )
@@ -263,7 +263,7 @@ def gvs_pose_twist_samples_kernel(
     magnus_dot = alpha * (xid1 + xid2) + coefficient * (
         _ad_action(xid1, xi2) + _ad_action(xi1, xid2)
     )
-    pose = base_pose * _relative_pose_from_magnus(magnus)
+    pose = base_pose * _exponential_transform(magnus)
     omega = wp.vec3d(magnus[0], magnus[1], magnus[2])
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
     angle_sq = wp.dot(omega, omega)
@@ -422,7 +422,7 @@ def gvs_sample_vjp_kernel(
     alpha = ds * wp.float64(0.5)
     coefficient = wp.sqrt(wp.float64(3.0)) * ds * ds / wp.float64(12.0)
     magnus = alpha * (xi1 + xi2) + coefficient * _ad_action(xi1, xi2)
-    pose = base_pose * _relative_pose_from_magnus(magnus)
+    pose = base_pose * _exponential_transform(magnus)
     omega = wp.vec3d(magnus[0], magnus[1], magnus[2])
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
     angle_sq = wp.dot(omega, omega)
@@ -563,8 +563,7 @@ def gvs_node_vjp_kernel(
             row = int(0)
             while row < SPATIAL_DIM:
                 effort += (
-                    joint_tangent[joint_base + row, global_index]
-                    * source_wrench[row]
+                    joint_tangent[joint_base + row, global_index] * source_wrench[row]
                 )
                 row += 1
             generalized_force[environment, global_index] += effort

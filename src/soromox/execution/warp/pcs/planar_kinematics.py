@@ -5,51 +5,13 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.execution.warp.pcs.planar_kernels import (
-    _forward_coefficients,
-    _planar_operators,
+from soromox.execution.warp.common.se2 import (
+    _constant_strain_operators,
+    planar_pose_step,
 )
+from soromox.execution.warp.common.so2 import _rotation_matrix
 
 wp.set_module_options({"enable_backward": False})
-
-
-@wp.func
-def planar_pose_step(
-    theta: wp.float64,
-    x: wp.float64,
-    y: wp.float64,
-    xi: wp.vec3d,
-    arc_length: wp.float64,
-    eps: wp.float64,
-) -> wp.vec3d:
-    """Integrate one constant-strain SE(2) pose step.
-
-    Args:
-        theta: Absolute orientation at the start of the step.
-        x: Absolute horizontal position at the start of the step.
-        y: Absolute vertical position at the start of the step.
-        xi: Constant planar strain in angular-first coordinates.
-        arc_length: Local integration distance.
-        eps: Requested small-angle threshold.
-
-    Returns:
-        Absolute planar pose ``[theta, x, y]`` after the step.
-    """
-
-    z = arc_length * xi[0]
-    cutoff = wp.max(wp.abs(arc_length * eps), wp.float64(0.04964607461902946))
-    coefficients = _forward_coefficients(z, cutoff)
-    vx = arc_length * xi[1]
-    vy = arc_length * xi[2]
-    local_x = coefficients[0] * vx - z * coefficients[1] * vy
-    local_y = z * coefficients[1] * vx + coefficients[0] * vy
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
-    return wp.vec3d(
-        theta + z,
-        x + cosine * local_x - sine * local_y,
-        y + sine * local_x + cosine * local_y,
-    )
 
 
 @wp.kernel(enable_backward=False)
@@ -187,7 +149,7 @@ def planar_segment_states_kernel(
         while row < 3:
             segment_pose[environment, segment + 1, row] = pose[row]
             row += 1
-        adjoint_inverse, transported_tangent, _, _ = _planar_operators(
+        adjoint_inverse, transported_tangent, _, _ = _constant_strain_operators(
             xi, wp.vec3d(), length, epsilons[0], epsilons[1]
         )
         row = int(0)
@@ -248,11 +210,10 @@ def write_planar_sample_jacobian(
         segment_strain[environment, segment, 1],
         segment_strain[environment, segment, 2],
     )
-    adjoint_inverse, transported_tangent, _, _ = _planar_operators(
+    adjoint_inverse, transported_tangent, _, _ = _constant_strain_operators(
         xi, wp.vec3d(), local_s, epsilons[0], epsilons[1]
     )
-    cosine = wp.cos(pose[0])
-    sine = wp.sin(pose[0])
+    rotation = _rotation_matrix(pose[0])
     row = int(0)
     while row < 3:
         column = int(0)
@@ -276,9 +237,9 @@ def write_planar_sample_jacobian(
                 body_row += 1
             output = body[0]
             if row == 1:
-                output = cosine * body[1] - sine * body[2]
+                output = rotation[0, 0] * body[1] + rotation[0, 1] * body[2]
             elif row == 2:
-                output = sine * body[1] + cosine * body[2]
+                output = rotation[1, 0] * body[1] + rotation[1, 1] * body[2]
             jacobians[environment, sample, row, column] = output
             column += 1
         row += 1

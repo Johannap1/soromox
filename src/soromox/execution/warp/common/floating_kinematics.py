@@ -9,6 +9,10 @@ from soromox.execution.warp.common.rotations import (
     _quaternion_rotation_matrix,
     _quaternion_rotation_transpose_entry,
 )
+from soromox.execution.warp.common.so2 import (
+    _rotate_vector,
+    _rotation_matrix,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -401,28 +405,25 @@ def _compose_planar_poses_and_twists_kernel(
 
     environment, sample = wp.tid()
     theta = base_pose[environment, 0]
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
-    relative_x = relative_pose[environment, sample, 1]
-    relative_y = relative_pose[environment, sample, 2]
-    radius_x = cosine * relative_x - sine * relative_y
-    radius_y = sine * relative_x + cosine * relative_y
+    rotation = _rotation_matrix(theta)
+    radius = rotation * wp.vec2d(
+        relative_pose[environment, sample, 1],
+        relative_pose[environment, sample, 2],
+    )
+    internal_linear = rotation * wp.vec2d(
+        internal_twist[environment, sample, 1],
+        internal_twist[environment, sample, 2],
+    )
     angular = base_velocity[environment, 0]
     poses[environment, sample, 0] = theta + relative_pose[environment, sample, 0]
-    poses[environment, sample, 1] = base_pose[environment, 1] + radius_x
-    poses[environment, sample, 2] = base_pose[environment, 2] + radius_y
+    poses[environment, sample, 1] = base_pose[environment, 1] + radius[0]
+    poses[environment, sample, 2] = base_pose[environment, 2] + radius[1]
     twists[environment, sample, 0] = angular + internal_twist[environment, sample, 0]
     twists[environment, sample, 1] = (
-        base_velocity[environment, 1]
-        - angular * radius_y
-        + cosine * internal_twist[environment, sample, 1]
-        - sine * internal_twist[environment, sample, 2]
+        base_velocity[environment, 1] - angular * radius[1] + internal_linear[0]
     )
     twists[environment, sample, 2] = (
-        base_velocity[environment, 2]
-        + angular * radius_x
-        + sine * internal_twist[environment, sample, 1]
-        + cosine * internal_twist[environment, sample, 2]
+        base_velocity[environment, 2] + angular * radius[0] + internal_linear[1]
     )
 
 
@@ -450,23 +451,26 @@ def _compose_planar_wrench_vjp_kernel(
 
     environment, sample = wp.tid()
     theta = base_pose[environment, 0]
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
-    relative_x = relative_pose[environment, sample, 1]
-    relative_y = relative_pose[environment, sample, 2]
-    radius_x = cosine * relative_x - sine * relative_y
-    radius_y = sine * relative_x + cosine * relative_y
+    rotation = _rotation_matrix(theta)
+    radius = rotation * wp.vec2d(
+        relative_pose[environment, sample, 1],
+        relative_pose[environment, sample, 2],
+    )
     moment = inertial_wrenches[environment, sample, 0]
     force_x = inertial_wrenches[environment, sample, 1]
     force_y = inertial_wrenches[environment, sample, 2]
+    relative_force = wp.vec2d(
+        rotation[0, 0] * force_x + rotation[1, 0] * force_y,
+        rotation[0, 1] * force_x + rotation[1, 1] * force_y,
+    )
     relative_wrenches[environment, sample, 0] = moment
-    relative_wrenches[environment, sample, 1] = cosine * force_x + sine * force_y
-    relative_wrenches[environment, sample, 2] = -sine * force_x + cosine * force_y
+    relative_wrenches[environment, sample, 1] = relative_force[0]
+    relative_wrenches[environment, sample, 2] = relative_force[1]
     wp.atomic_add(
         base_generalized_force,
         environment,
         0,
-        moment + radius_x * force_y - radius_y * force_x,
+        moment + radius[0] * force_y - radius[1] * force_x,
     )
     wp.atomic_add(base_generalized_force, environment, 1, force_x)
     wp.atomic_add(base_generalized_force, environment, 2, force_y)
@@ -480,13 +484,16 @@ def _compose_planar_poses_kernel(
 ):
     environment, sample = wp.tid()
     theta = base_pose[environment, 0]
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
-    x = relative_pose[environment, sample, 1]
-    y = relative_pose[environment, sample, 2]
+    radius = _rotate_vector(
+        theta,
+        wp.vec2d(
+            relative_pose[environment, sample, 1],
+            relative_pose[environment, sample, 2],
+        ),
+    )
     output[environment, sample, 0] = theta + relative_pose[environment, sample, 0]
-    output[environment, sample, 1] = base_pose[environment, 1] + cosine * x - sine * y
-    output[environment, sample, 2] = base_pose[environment, 2] + sine * x + cosine * y
+    output[environment, sample, 1] = base_pose[environment, 1] + radius[0]
+    output[environment, sample, 2] = base_pose[environment, 2] + radius[1]
 
 
 @wp.kernel(enable_backward=False)
@@ -498,20 +505,19 @@ def _compose_planar_jacobians_kernel(
 ):
     environment, sample = wp.tid()
     theta = base_pose[environment, 0]
-    cosine = wp.cos(theta)
-    sine = wp.sin(theta)
-    x_relative = relative_pose[environment, sample, 1]
-    y_relative = relative_pose[environment, sample, 2]
-    rx = cosine * x_relative - sine * y_relative
-    ry = sine * x_relative + cosine * y_relative
+    rotation = _rotation_matrix(theta)
+    radius = rotation * wp.vec2d(
+        relative_pose[environment, sample, 1],
+        relative_pose[environment, sample, 2],
+    )
 
     output[environment, sample, 0, 0] = wp.float64(1.0)
     output[environment, sample, 0, 1] = wp.float64(0.0)
     output[environment, sample, 0, 2] = wp.float64(0.0)
-    output[environment, sample, 1, 0] = -ry
+    output[environment, sample, 1, 0] = -radius[1]
     output[environment, sample, 1, 1] = wp.float64(1.0)
     output[environment, sample, 1, 2] = wp.float64(0.0)
-    output[environment, sample, 2, 0] = rx
+    output[environment, sample, 2, 0] = radius[0]
     output[environment, sample, 2, 1] = wp.float64(0.0)
     output[environment, sample, 2, 2] = wp.float64(1.0)
 
@@ -520,14 +526,12 @@ def _compose_planar_jacobians_kernel(
         output[environment, sample, 0, 3 + column] = internal[
             environment, sample, 0, column
         ]
-        output[environment, sample, 1, 3 + column] = (
-            cosine * internal[environment, sample, 1, column]
-            - sine * internal[environment, sample, 2, column]
+        internal_linear = rotation * wp.vec2d(
+            internal[environment, sample, 1, column],
+            internal[environment, sample, 2, column],
         )
-        output[environment, sample, 2, 3 + column] = (
-            sine * internal[environment, sample, 1, column]
-            + cosine * internal[environment, sample, 2, column]
-        )
+        output[environment, sample, 1, 3 + column] = internal_linear[0]
+        output[environment, sample, 2, 3 + column] = internal_linear[1]
         column += 1
 
 

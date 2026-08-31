@@ -289,6 +289,34 @@ def _translation(omega: wp.vec3d, linear: wp.vec3d, forward: wp.vec3d) -> wp.vec
 
 
 @wp.func
+def _exponential_transform(xi: Vec6d) -> wp.mat44d:
+    """Evaluate the homogeneous SE(3) exponential of a spatial coordinate.
+
+    Args:
+        xi: Angular-linear exponential coordinate.
+
+    Returns:
+        Homogeneous transform ``exp(xi)``.
+    """
+    omega = wp.vec3d(xi[0], xi[1], xi[2])
+    linear = wp.vec3d(xi[3], xi[4], xi[5])
+    angle_sq = wp.dot(omega, omega)
+    forward = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, forward)
+    result = wp.mat44d()
+    row = int(0)
+    while row < 3:
+        column = int(0)
+        while column < 3:
+            result[row, column] = _rotation_entry(omega, angle_sq, forward, row, column)
+            column += 1
+        result[row, 3] = translation[row]
+        row += 1
+    result[3, 3] = wp.float64(1.0)
+    return result
+
+
+@wp.func
 def _adjoint_inverse_entry(
     omega: wp.vec3d,
     translation: wp.vec3d,

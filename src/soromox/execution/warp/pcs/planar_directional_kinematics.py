@@ -5,10 +5,16 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.execution.warp.pcs.planar_kernels import _planar_operators
+from soromox.execution.warp.common.se2 import (
+    _constant_strain_operators,
+    planar_pose_step,
+)
+from soromox.execution.warp.common.so2 import (
+    _rotate_vector,
+    _rotate_vector_transpose,
+)
 from soromox.execution.warp.pcs.planar_kinematics import (
     planar_pose_segment_states_kernel,
-    planar_pose_step,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -83,7 +89,7 @@ def planar_segment_pose_twist_kernel(
             epsilons[0],
         )
         adjoint_inverse, transported_tangent, local_velocity, tangent_dot_velocity = (
-            _planar_operators(
+            _constant_strain_operators(
                 xi,
                 xid,
                 length,
@@ -173,7 +179,7 @@ def planar_pose_twist_samples_kernel(
         epsilons[0],
     )
     adjoint_inverse, transported_tangent, local_velocity, tangent_dot_velocity = (
-        _planar_operators(
+        _constant_strain_operators(
             xi,
             xid,
             local_s,
@@ -190,12 +196,11 @@ def planar_pose_twist_samples_kernel(
         )
         + local_velocity
     )
-    cosine = wp.cos(pose[0])
-    sine = wp.sin(pose[0])
+    inertial_linear = _rotate_vector(pose[0], wp.vec2d(body_twist[1], body_twist[2]))
     inertial_twist = wp.vec3d(
         body_twist[0],
-        cosine * body_twist[1] - sine * body_twist[2],
-        sine * body_twist[1] + cosine * body_twist[2],
+        inertial_linear[0],
+        inertial_linear[1],
     )
     row = int(0)
     while row < PLANAR_DIM:
@@ -261,7 +266,7 @@ def planar_sample_vjp_kernel(
         epsilons[0],
     )
     adjoint_inverse, transported_tangent, local_velocity, tangent_dot_velocity = (
-        _planar_operators(
+        _constant_strain_operators(
             xi,
             wp.vec3d(),
             local_s,
@@ -269,14 +274,17 @@ def planar_sample_vjp_kernel(
             epsilons[1],
         )
     )
-    cosine = wp.cos(pose[0])
-    sine = wp.sin(pose[0])
+    body_force = _rotate_vector_transpose(
+        pose[0],
+        wp.vec2d(
+            inertial_wrenches[environment, sample, 1],
+            inertial_wrenches[environment, sample, 2],
+        ),
+    )
     body_wrench = wp.vec3d(
         inertial_wrenches[environment, sample, 0],
-        cosine * inertial_wrenches[environment, sample, 1]
-        + sine * inertial_wrenches[environment, sample, 2],
-        -sine * inertial_wrenches[environment, sample, 1]
-        + cosine * inertial_wrenches[environment, sample, 2],
+        body_force[0],
+        body_force[1],
     )
     row = int(0)
     while row < PLANAR_DIM:
@@ -334,7 +342,7 @@ def planar_segment_vjp_kernel(
             segment_strain[environment, segment, 2],
         )
         adjoint_inverse, transported_tangent, local_velocity, tangent_dot_velocity = (
-            _planar_operators(
+            _constant_strain_operators(
                 xi,
                 wp.vec3d(),
                 segment_lengths[segment],

@@ -25,7 +25,9 @@ and include benchmark baseline and measurement context for performance claims.
   Allocation-free matrix-free launchers additionally evaluate
   `J(q, s) @ qd` and `sum_s J(q, s).T @ wrench_s` directly, reuse caller-owned
   boundary-pose state, and compose planar or spatial floating-base products
-  without materializing sample Jacobians.
+  without materializing sample Jacobians. Shared Warp quaternion, `SO(2)`,
+  `SO(3)`, `SE(2)`, and `SE(3)` helpers centralize rotation actions, stable
+  constant-strain operators, and exponential transforms across these paths.
 - Added optional Warp dynamics backends for `GVS`, `PCS`, and `PlanarPCS`,
   including automatic GPU selection, arbitrary positive PCS quadrature counts,
   JAX-routed differentiation, typed `GVSBackendParams` and `PCSBackendParams`
