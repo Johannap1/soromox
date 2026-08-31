@@ -95,10 +95,10 @@ def spatial_local_operators_kernel(
         + accumulated[2] * accumulated[2]
     )
     coefficients = _left_coefficients(angle_sq)
-    forward = _forward_coefficients(angle_sq)
+    exponential_coefficients = _forward_coefficients(angle_sq)
     omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
-    translation = _translation(omega, linear, forward)
+    translation = _translation(omega, linear, exponential_coefficients)
     output_base_row = item * SPATIAL_DIM
 
     row = int(0)
@@ -109,7 +109,7 @@ def spatial_local_operators_kernel(
                 omega,
                 translation,
                 angle_sq,
-                forward,
+                exponential_coefficients,
                 row,
                 column,
             )
@@ -125,7 +125,7 @@ def spatial_local_operators_kernel(
             omega,
             translation,
             angle_sq,
-            forward,
+            exponential_coefficients,
             tangent_column,
         )
         row = int(0)
@@ -139,7 +139,7 @@ def spatial_local_operators_kernel(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         tangent_velocity,
     )
     coefficient_derivatives = _left_coefficient_x_derivatives(angle_sq)
@@ -160,7 +160,7 @@ def spatial_local_operators_kernel(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         tangent_dot_velocity,
     )
     row = int(0)

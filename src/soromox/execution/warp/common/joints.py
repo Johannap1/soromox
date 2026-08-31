@@ -178,11 +178,13 @@ def joint_terms_kernel(
     angle_sq_dot = wp.float64(2.0) * (xi[0] * xid[0] + xi[1] * xid[1] + xi[2] * xid[2])
     omega = wp.vec3d(xi[0], xi[1], xi[2])
     linear = wp.vec3d(xi[3], xi[4], xi[5])
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
 
     velocity = _left_action(xi, xid, coefficients)
-    eta = _adjoint_inverse_action(omega, translation, angle_sq, forward, velocity)
+    eta = _adjoint_inverse_action(
+        omega, translation, angle_sq, exponential_coefficients, velocity
+    )
     derivative_velocity = _left_total_derivative_action(
         xi,
         xid,
@@ -202,7 +204,7 @@ def joint_terms_kernel(
                 omega,
                 translation,
                 angle_sq,
-                forward,
+                exponential_coefficients,
                 row,
                 column,
             )

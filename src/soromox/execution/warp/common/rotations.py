@@ -9,12 +9,24 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def _normalized_quaternion(poses: wp.array2d[wp.float64], environment: int) -> wp.vec4d:
-    """Load one normalized scalar-last quaternion with an identity fallback."""
-    x = poses[environment, 0]
-    y = poses[environment, 1]
-    z = poses[environment, 2]
-    w = poses[environment, 3]
+def _load_normalized_quaternion(
+    base_pose: wp.array2d[wp.float64], environment: int
+) -> wp.vec4d:
+    """Load one normalized scalar-last quaternion from a batched base pose.
+
+    Args:
+        base_pose: Batched spatial poses with shape ``(E, 7)`` in
+            ``[qx, qy, qz, qw, x, y, z]`` order.
+        environment: Environment row in ``base_pose``.
+
+    Returns:
+        Unit Hamilton quaternion in scalar-last order. An exactly zero
+        quaternion maps to ``[0, 0, 0, 1]`` to match the trace-safe JAX path.
+    """
+    x = base_pose[environment, 0]
+    y = base_pose[environment, 1]
+    z = base_pose[environment, 2]
+    w = base_pose[environment, 3]
     norm_sq = x * x + y * y + z * z + w * w
     if norm_sq <= wp.float64(0.0):
         return wp.vec4d(
@@ -34,19 +46,20 @@ def _normalized_quaternion(poses: wp.array2d[wp.float64], environment: int) -> w
 
 @wp.func
 def _quaternion_rotation_matrix(
-    poses: wp.array2d[wp.float64], environment: int
+    base_pose: wp.array2d[wp.float64], environment: int
 ) -> wp.mat33d:
     """Return one normalized scalar-last quaternion rotation matrix.
 
     Args:
-        poses: Batched scalar-last quaternion poses with shape ``(E, 7)``.
-        environment: Environment row in ``poses``.
+        base_pose: Batched spatial poses with shape ``(E, 7)`` in
+            ``[qx, qy, qz, qw, x, y, z]`` order.
+        environment: Environment row in ``base_pose``.
 
     Returns:
         The normalized three-dimensional rotation. A zero quaternion follows
         the trace-safe JAX path and maps to identity.
     """
-    quaternion = _normalized_quaternion(poses, environment)
+    quaternion = _load_normalized_quaternion(base_pose, environment)
     x = quaternion[0]
     y = quaternion[1]
     z = quaternion[2]
@@ -66,13 +79,14 @@ def _quaternion_rotation_matrix(
 
 @wp.func
 def _quaternion_rotation_transpose_entry(
-    poses: wp.array2d[wp.float64], environment: int, row: int, column: int
+    base_pose: wp.array2d[wp.float64], environment: int, row: int, column: int
 ) -> wp.float64:
     """Return one normalized quaternion rotation-transpose entry.
 
     Args:
-        poses: Batched scalar-last quaternion poses with shape ``(E, 7)``.
-        environment: Environment row in ``poses``.
+        base_pose: Batched spatial poses with shape ``(E, 7)`` in
+            ``[qx, qy, qz, qw, x, y, z]`` order.
+        environment: Environment row in ``base_pose``.
         row: Requested matrix row.
         column: Requested matrix column.
 
@@ -80,7 +94,7 @@ def _quaternion_rotation_transpose_entry(
         Entry ``(row, column)`` of the normalized rotation transpose. A zero
         quaternion follows the trace-safe JAX path and maps to identity.
     """
-    quaternion = _normalized_quaternion(poses, environment)
+    quaternion = _load_normalized_quaternion(base_pose, environment)
     x = quaternion[0]
     y = quaternion[1]
     z = quaternion[2]

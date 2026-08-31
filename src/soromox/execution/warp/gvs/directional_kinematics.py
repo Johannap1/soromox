@@ -268,14 +268,14 @@ def gvs_pose_twist_samples_kernel(
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
     angle_sq = wp.dot(omega, omega)
     coefficients = _left_coefficients(angle_sq)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     partial_twist = _left_action(magnus, magnus_dot, coefficients)
     body_twist = _adjoint_inverse_action(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         _load_spatial_vector(node_twist, node_item) + partial_twist,
     )
     inertial_twist = _rotate_spatial_to_inertial(pose, body_twist)
@@ -427,14 +427,14 @@ def gvs_sample_vjp_kernel(
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
     angle_sq = wp.dot(omega, omega)
     coefficients = _left_coefficients(angle_sq)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     body_wrench = _rotate_spatial_from_inertial(
         pose,
         _load_spatial_vector3d(inertial_wrenches, environment, sample),
     )
     source_wrench = _adjoint_inverse_transpose_action(
-        omega, translation, angle_sq, forward, body_wrench
+        omega, translation, angle_sq, exponential_coefficients, body_wrench
     )
     row = int(0)
     while row < SPATIAL_DIM:

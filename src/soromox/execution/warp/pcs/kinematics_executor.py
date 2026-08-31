@@ -79,14 +79,14 @@ def execute_kinematics(
                 relative_pose,
                 output_dims={"poses": pose_shape},
             )[-1]
-        relative_pose, internal_jacobian = relative
+        relative_pose, jacobians_internal = relative
         jacobian_shape = (
             q.shape[0],
             s.shape[1],
             3 if operands.is_planar else 6,
             operands.num_velocities,
         )
-        composition_block = () if operands.is_planar else (operands.relative.block_dim,)
+        composition_args = () if operands.is_planar else (operands.relative.block_dim,)
         if operation == "jacobian":
             callable_ = (
                 planar_floating_jacobian_composition
@@ -96,8 +96,8 @@ def execute_kinematics(
             return callable_(
                 base_pose,
                 relative_pose,
-                internal_jacobian,
-                *composition_block,
+                jacobians_internal,
+                *composition_args,
                 output_dims={"jacobians": jacobian_shape},
             )[-1]
         pose_shape = (
@@ -113,8 +113,8 @@ def execute_kinematics(
         outputs = callable_(
             base_pose,
             relative_pose,
-            internal_jacobian,
-            *composition_block,
+            jacobians_internal,
+            *composition_args,
             output_dims={"poses": pose_shape, "jacobians": jacobian_shape},
         )
         return outputs[-2], outputs[-1]

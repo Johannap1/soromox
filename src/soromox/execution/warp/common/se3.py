@@ -272,25 +272,36 @@ def _forward_coefficients(angle_sq: wp.float64) -> wp.vec3d:
 
 
 @wp.func
-def _translation(omega: wp.vec3d, linear: wp.vec3d, forward: wp.vec3d) -> wp.vec3d:
+def _translation(
+    omega: wp.vec3d,
+    linear: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
+) -> wp.vec3d:
     """Evaluate the translational component of an SE(3) exponential.
 
     Args:
         omega: Rotational exponential coordinate.
         linear: Translational exponential coordinate.
-        forward: Stable exponential-map coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
 
     Returns:
         Translation of the resulting homogeneous transformation.
     """
-    first = wp.cross(omega, linear)
-    second = wp.cross(omega, first)
-    return linear + forward[1] * first + forward[2] * second
+    omega_cross_linear = wp.cross(omega, linear)
+    omega_cross_squared_linear = wp.cross(omega, omega_cross_linear)
+    return (
+        linear
+        + exponential_coefficients[1] * omega_cross_linear
+        + exponential_coefficients[2] * omega_cross_squared_linear
+    )
 
 
 @wp.func
 def _exponential_transform(xi: Vec6d) -> wp.mat44d:
     """Evaluate the homogeneous SE(3) exponential of a spatial coordinate.
+
+    The final three entries are twist coordinates integrated through the
+    ``SE(3)`` left Jacobian, not direct pose-translation coordinates.
 
     Args:
         xi: Angular-linear exponential coordinate.
@@ -301,19 +312,25 @@ def _exponential_transform(xi: Vec6d) -> wp.mat44d:
     omega = wp.vec3d(xi[0], xi[1], xi[2])
     linear = wp.vec3d(xi[3], xi[4], xi[5])
     angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
-    result = wp.mat44d()
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
+    transform = wp.mat44d()
     row = int(0)
     while row < 3:
         column = int(0)
         while column < 3:
-            result[row, column] = _rotation_entry(omega, angle_sq, forward, row, column)
+            transform[row, column] = _rotation_entry(
+                omega,
+                angle_sq,
+                exponential_coefficients,
+                row,
+                column,
+            )
             column += 1
-        result[row, 3] = translation[row]
+        transform[row, 3] = translation[row]
         row += 1
-    result[3, 3] = wp.float64(1.0)
-    return result
+    transform[3, 3] = wp.float64(1.0)
+    return transform
 
 
 @wp.func
@@ -321,7 +338,7 @@ def _adjoint_inverse_entry(
     omega: wp.vec3d,
     translation: wp.vec3d,
     angle_sq: wp.float64,
-    forward: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
     row: int,
     column: int,
 ) -> wp.float64:
@@ -331,7 +348,7 @@ def _adjoint_inverse_entry(
         omega: Rotational exponential coordinate.
         translation: Translation of the SE(3) transformation.
         angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
         row: Adjoint row index.
         column: Adjoint column index.
 
@@ -340,9 +357,15 @@ def _adjoint_inverse_entry(
     """
     value = wp.float64(0.0)
     if row < 3 and column < 3:
-        value = _rotation_entry(omega, angle_sq, forward, column, row)
+        value = _rotation_entry(omega, angle_sq, exponential_coefficients, column, row)
     elif row >= 3 and column >= 3:
-        value = _rotation_entry(omega, angle_sq, forward, column - 3, row - 3)
+        value = _rotation_entry(
+            omega,
+            angle_sq,
+            exponential_coefficients,
+            column - 3,
+            row - 3,
+        )
     elif row >= 3 and column < 3:
         local_row = row - 3
         for k in range(3):
@@ -359,7 +382,16 @@ def _adjoint_inverse_entry(
                 skew = -translation[1]
             elif k == 2 and column == 1:
                 skew = translation[0]
-            value -= _rotation_entry(omega, angle_sq, forward, k, local_row) * skew
+            value -= (
+                _rotation_entry(
+                    omega,
+                    angle_sq,
+                    exponential_coefficients,
+                    k,
+                    local_row,
+                )
+                * skew
+            )
     return value
 
 
@@ -368,7 +400,7 @@ def _adjoint_inverse_action(
     omega: wp.vec3d,
     translation: wp.vec3d,
     angle_sq: wp.float64,
-    forward: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
     value: Vec6d,
 ) -> Vec6d:
     """Apply an inverse SE(3) adjoint without materializing the matrix.
@@ -377,7 +409,7 @@ def _adjoint_inverse_action(
         omega: Rotational exponential coordinate.
         translation: Translation of the SE(3) transformation.
         angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
         value: Spatial vector to transform.
 
     Returns:
@@ -392,7 +424,7 @@ def _adjoint_inverse_action(
                     omega,
                     translation,
                     angle_sq,
-                    forward,
+                    exponential_coefficients,
                     row,
                     column,
                 )
@@ -407,7 +439,7 @@ def _adjoint_inverse_transpose_action(
     omega: wp.vec3d,
     translation: wp.vec3d,
     angle_sq: wp.float64,
-    forward: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
     value: Vec6d,
 ) -> Vec6d:
     """Apply a transposed inverse SE(3) adjoint without a matrix.
@@ -419,7 +451,7 @@ def _adjoint_inverse_transpose_action(
         omega: Rotational exponential coordinate.
         translation: Translation of the SE(3) transformation.
         angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
         value: Spatial cotangent to transform.
 
     Returns:
@@ -435,7 +467,7 @@ def _adjoint_inverse_transpose_action(
                     omega,
                     translation,
                     angle_sq,
-                    forward,
+                    exponential_coefficients,
                     row,
                     column,
                 )

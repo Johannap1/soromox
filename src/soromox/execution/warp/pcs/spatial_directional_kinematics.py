@@ -94,8 +94,8 @@ def spatial_segment_pose_twist_kernel(
         omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
         linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
         angle_sq = wp.dot(omega, omega)
-        forward = _forward_coefficients(angle_sq)
-        translation = _translation(omega, linear, forward)
+        exponential_coefficients = _forward_coefficients(angle_sq)
+        translation = _translation(omega, linear, exponential_coefficients)
         partial_twist = _left_action(
             accumulated,
             accumulated_dot,
@@ -105,7 +105,7 @@ def spatial_segment_pose_twist_kernel(
             omega,
             translation,
             angle_sq,
-            forward,
+            exponential_coefficients,
             _load_spatial_vector3d(segment_twist, environment, segment) + partial_twist,
         )
         row = int(0)
@@ -187,8 +187,8 @@ def spatial_pose_twist_samples_kernel(
     omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
     angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     partial_twist = _left_action(
         accumulated,
         accumulated_dot,
@@ -198,7 +198,7 @@ def spatial_pose_twist_samples_kernel(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         _load_spatial_vector3d(segment_twist, environment, segment) + partial_twist,
     )
     pose = wp.mat44d()
@@ -276,8 +276,8 @@ def spatial_sample_vjp_kernel(
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
     angle_sq = wp.dot(omega, omega)
     coefficients = _left_coefficients(angle_sq)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     pose = wp.mat44d()
     row = int(0)
     while row < 4:
@@ -301,7 +301,7 @@ def spatial_sample_vjp_kernel(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         body_wrench,
     )
     row = int(0)
@@ -359,13 +359,13 @@ def spatial_segment_vjp_kernel(
         linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
         angle_sq = wp.dot(omega, omega)
         coefficients = _left_coefficients(angle_sq)
-        forward = _forward_coefficients(angle_sq)
-        translation = _translation(omega, linear, forward)
+        exponential_coefficients = _forward_coefficients(angle_sq)
+        translation = _translation(omega, linear, exponential_coefficients)
         source_wrench = _adjoint_inverse_transpose_action(
             omega,
             translation,
             angle_sq,
-            forward,
+            exponential_coefficients,
             _load_spatial_vector3d(segment_wrench, environment, segment + 1),
         )
         row = int(0)
@@ -428,8 +428,8 @@ def spatial_cooperative_segment_vjp_kernel(
         linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
         angle_sq = wp.dot(omega, omega)
         coefficients = _left_coefficients(angle_sq)
-        forward = _forward_coefficients(angle_sq)
-        translation = _translation(omega, linear, forward)
+        exponential_coefficients = _forward_coefficients(angle_sq)
+        translation = _translation(omega, linear, exponential_coefficients)
 
         source_value = wp.float64(0.0)
         if lane < SPATIAL_DIM:
@@ -440,7 +440,7 @@ def spatial_cooperative_segment_vjp_kernel(
                         omega,
                         translation,
                         angle_sq,
-                        forward,
+                        exponential_coefficients,
                         row,
                         lane,
                     )

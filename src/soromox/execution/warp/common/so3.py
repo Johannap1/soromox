@@ -12,7 +12,7 @@ wp.set_module_options({"enable_backward": False})
 def _rotation_entry(
     omega: wp.vec3d,
     angle_sq: wp.float64,
-    forward: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
     row: int,
     column: int,
 ) -> wp.float64:
@@ -21,31 +21,35 @@ def _rotation_entry(
     Args:
         omega: Rotational exponential coordinate.
         angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
         row: Matrix row index.
         column: Matrix column index.
 
     Returns:
         The selected rotation-matrix entry.
     """
-    delta = wp.float64(0.0)
+    identity_entry = wp.float64(0.0)
     if row == column:
-        delta = wp.float64(1.0)
-    skew = wp.float64(0.0)
+        identity_entry = wp.float64(1.0)
+    skew_entry = wp.float64(0.0)
     if row == 0 and column == 1:
-        skew = -omega[2]
+        skew_entry = -omega[2]
     elif row == 0 and column == 2:
-        skew = omega[1]
+        skew_entry = omega[1]
     elif row == 1 and column == 0:
-        skew = omega[2]
+        skew_entry = omega[2]
     elif row == 1 and column == 2:
-        skew = -omega[0]
+        skew_entry = -omega[0]
     elif row == 2 and column == 0:
-        skew = -omega[1]
+        skew_entry = -omega[1]
     elif row == 2 and column == 1:
-        skew = omega[0]
-    square = omega[row] * omega[column] - angle_sq * delta
-    return delta + forward[0] * skew + forward[1] * square
+        skew_entry = omega[0]
+    skew_square_entry = omega[row] * omega[column] - angle_sq * identity_entry
+    return (
+        identity_entry
+        + exponential_coefficients[0] * skew_entry
+        + exponential_coefficients[1] * skew_square_entry
+    )
 
 
 __all__ = ["_rotation_entry"]

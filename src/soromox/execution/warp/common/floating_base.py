@@ -38,38 +38,47 @@ def _spatial_root_jacobian_entry(
 
 @wp.kernel(enable_backward=False)
 def _prepend_zeros_kernel(
-    internal: wp.array2d[wp.float64],
+    values_internal: wp.array2d[wp.float64],
     prefix: int,
-    output: wp.array2d[wp.float64],
+    values: wp.array2d[wp.float64],
 ):
-    """Copy an internal generalized vector behind an exact zero prefix."""
+    """Copy an internal generalized vector behind an exact zero prefix.
+
+    Args:
+        values_internal: Batched internal generalized vectors.
+        prefix: Number of leading entries to set to zero.
+        values: Caller-owned augmented generalized vectors.
+
+    Returns:
+        None. One entry in ``values`` is written per thread.
+    """
     environment, column = wp.tid()
     value = wp.float64(0.0)
     if column >= prefix:
-        value = internal[environment, column - prefix]
-    output[environment, column] = value
+        value = values_internal[environment, column - prefix]
+    values[environment, column] = value
 
 
 def launch_prepend_zeros(
-    internal: wp.array2d[wp.float64],
+    values_internal: wp.array2d[wp.float64],
     prefix: int,
-    output: wp.array2d[wp.float64],
+    values: wp.array2d[wp.float64],
 ):
     """Launch a specialized zero-prefix copy into caller-owned storage.
 
     Args:
-        internal: Batched internal generalized vectors.
+        values_internal: Batched internal generalized vectors.
         prefix: Number of leading floating-base entries.
-        output: Batched total generalized-vector output.
+        values: Batched total generalized-vector output.
 
     Returns:
-        None. ``output`` is updated in place.
+        None. ``values`` is updated in place.
     """
     wp.launch(
         _prepend_zeros_kernel,
-        dim=output.shape,
-        inputs=[internal, prefix],
-        outputs=[output],
+        dim=values.shape,
+        inputs=[values_internal, prefix],
+        outputs=[values],
     )
 
 

@@ -48,14 +48,14 @@ def spatial_pose_step_entry(
     omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
     angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     value = wp.float64(0.0)
     if row < 3 and column < 3:
         k = int(0)
         while k < 3:
             value += base[environment, base_index, row, k] * _rotation_entry(
-                omega, angle_sq, forward, k, column
+                omega, angle_sq, exponential_coefficients, k, column
             )
             k += 1
     elif row < 3 and column == 3:
@@ -92,16 +92,23 @@ def spatial_operator_entry(
     omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
     angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     if not transported:
         return _adjoint_inverse_entry(
-            omega, translation, angle_sq, forward, row, column
+            omega,
+            translation,
+            angle_sq,
+            exponential_coefficients,
+            row,
+            column,
         )
     basis = Vec6d()
     basis[column] = wp.float64(1.0)
     tangent = _left_action(accumulated, basis, _left_coefficients(angle_sq))
-    tangent = _adjoint_inverse_action(omega, translation, angle_sq, forward, tangent)
+    tangent = _adjoint_inverse_action(
+        omega, translation, angle_sq, exponential_coefficients, tangent
+    )
     return tangent[row]
 
 
@@ -111,7 +118,7 @@ def propagate_spatial_jacobian_column(
     omega: wp.vec3d,
     translation: wp.vec3d,
     angle_sq: wp.float64,
-    forward: wp.vec3d,
+    exponential_coefficients: wp.vec3d,
     coefficients: wp.vec4d,
     distance: wp.float64,
     environment: int,
@@ -128,7 +135,7 @@ def propagate_spatial_jacobian_column(
         omega: Angular part of ``accumulated``.
         translation: SE(3) exponential translation for the step.
         angle_sq: Squared norm of ``omega``.
-        forward: Stable SE(3) exponential coefficients.
+        exponential_coefficients: Stable ``(sinc, cosc, tanc)`` coefficients.
         coefficients: Stable left-tangent coefficients.
         distance: Physical integration distance within the segment.
         environment: Environment index.
@@ -155,7 +162,7 @@ def propagate_spatial_jacobian_column(
         omega,
         translation,
         angle_sq,
-        forward,
+        exponential_coefficients,
         source,
     )
 
@@ -285,8 +292,8 @@ def spatial_segment_states_kernel(
         omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
         linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
         angle_sq = wp.dot(omega, omega)
-        forward = _forward_coefficients(angle_sq)
-        translation = _translation(omega, linear, forward)
+        exponential_coefficients = _forward_coefficients(angle_sq)
+        translation = _translation(omega, linear, exponential_coefficients)
         coefficients = _left_coefficients(angle_sq)
         row = int(0)
         while row < 4:
@@ -306,7 +313,7 @@ def spatial_segment_states_kernel(
                 omega,
                 translation,
                 angle_sq,
-                forward,
+                exponential_coefficients,
                 coefficients,
                 segment_lengths[segment],
                 environment,
@@ -570,8 +577,8 @@ def write_spatial_sample_jacobian(
     omega = wp.vec3d(accumulated[0], accumulated[1], accumulated[2])
     linear = wp.vec3d(accumulated[3], accumulated[4], accumulated[5])
     angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     coefficients = _left_coefficients(angle_sq)
     column = int(0)
     while column < segment_jacobian.shape[3]:
@@ -580,7 +587,7 @@ def write_spatial_sample_jacobian(
             omega,
             translation,
             angle_sq,
-            forward,
+            exponential_coefficients,
             coefficients,
             local_s,
             environment,
