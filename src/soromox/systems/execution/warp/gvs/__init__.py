@@ -1,4 +1,4 @@
-"""Public Warp-native GVS dynamics building blocks.
+"""Public Warp-native GVS kinematics and dynamics building blocks.
 
 The kernels and launch functions in this module operate entirely on
 ``warp.array`` objects. They do not require JAX and do not allocate output
@@ -9,8 +9,8 @@ dtypes, coordinate maps, and launch ordering described by each function.
 Soromox system users should normally call :meth:`GVS.dynamics_terms
 <soromox.systems.GVS.dynamics_terms>` or :meth:`GVS.forward_dynamics
 <soromox.systems.GVS.forward_dynamics>` instead. The lower-level API is intended
-for integration packages that need to compose the mechanics pipeline inside a
-larger Warp-native simulation loop.
+for integration packages that need to compose the kinematics and dynamics
+pipelines inside a larger Warp-native simulation loop.
 """
 
 from __future__ import annotations
@@ -20,20 +20,36 @@ from typing import Any
 
 __all__ = [
     "GVSOperandSource",
+    "GVSKinematicsOperands",
+    "GVSKinematicsShapes",
     "GVSOperands",
     "GVSPipelineShapes",
     "cell_terms_kernel",
     "cooperative_joint_terms_kernel",
     "joint_terms_kernel",
+    "gvs_cooperative_node_states_kernel",
+    "gvs_jacobian_samples_kernel",
+    "gvs_node_poses_kernel",
+    "gvs_node_states_kernel",
+    "gvs_pose_samples_kernel",
+    "gvs_samples_kernel",
     "launch_cell_terms",
     "launch_cooperative_joint_terms",
     "launch_joint_terms",
+    "launch_forward_kinematics",
+    "launch_forward_kinematics_and_jacobians",
+    "launch_inertial_jacobians",
+    "launch_gvs_forward_kinematics",
+    "launch_gvs_inertial_jacobians",
+    "launch_gvs_kinematics",
     "launch_persistent_chain",
     "persistent_chain_kernel",
 ]
 
 _PUBLIC_MODULES = {
     "GVSOperandSource": "operands",
+    "GVSKinematicsOperands": "operands",
+    "GVSKinematicsShapes": "operands",
     "GVSOperands": "operands",
     "GVSPipelineShapes": "operands",
     "cell_terms_kernel": "cell",
@@ -44,6 +60,18 @@ _PUBLIC_MODULES = {
     "launch_joint_terms": "common.joints",
     "launch_persistent_chain": "chain",
     "persistent_chain_kernel": "chain",
+    "gvs_cooperative_node_states_kernel": "kinematics",
+    "gvs_jacobian_samples_kernel": "kinematics",
+    "gvs_node_poses_kernel": "kinematics",
+    "gvs_node_states_kernel": "kinematics",
+    "gvs_pose_samples_kernel": "kinematics",
+    "gvs_samples_kernel": "kinematics",
+    "launch_forward_kinematics": "kinematics",
+    "launch_forward_kinematics_and_jacobians": "kinematics",
+    "launch_inertial_jacobians": "kinematics",
+    "launch_gvs_forward_kinematics": "kinematics",
+    "launch_gvs_inertial_jacobians": "kinematics",
+    "launch_gvs_kinematics": "kinematics",
 }
 
 

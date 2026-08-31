@@ -18,8 +18,11 @@ from soromox.systems.components import (
 )
 from soromox.systems.execution import (
     GVS_DYNAMICS,
+    GVS_KINEMATICS,
     ExecutionBackend,
     dispatch_dynamics_terms,
+    dispatch_kinematics,
+    dispatch_kinematics_abscissa_batched,
     evaluate_forward_dynamics,
 )
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
@@ -199,9 +202,7 @@ class GVS(SoftRobot):
     active_dof_map: Array  # Active-DOF basis for the padded coordinate space.
     # Active selectors by segment/block.
     active_dof_map_blocks: Array
-    scale_rotational_basis_by_length: (
-        bool  # If True, apply length scaling to angular strain contributions
-    )
+    scale_rotational_basis_by_length: bool = eqx.field(static=True)
 
     # Dynamic attributes
     segment_lengths: Array  # List of lengths for each link (num_segments, )
@@ -2404,6 +2405,66 @@ class GVS(SoftRobot):
         return segment_idx, s_local
 
     @eqx.filter_jit
+    def forward_kinematics(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute an SE(3) pose at one curvilinear abscissa.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Homogeneous transform with shape ``(4, 4)``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="pose",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
+
+    @eqx.filter_jit
+    def forward_kinematics_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute SE(3) poses at a batch of curvilinear abscissae.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Homogeneous transforms with shape ``(N, 4, 4)``.
+        """
+
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="pose",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
+
+    @eqx.filter_jit
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
         """
         Compute the forward kinematics of the robot at a point s along the robot.
@@ -2738,7 +2799,7 @@ class GVS(SoftRobot):
         return self._forward_kinematics_gauss(q_gathered)[:, -1]
 
     @eqx.filter_jit
-    def forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
+    def _forward_kinematics_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
         """
         Compute the forward kinematics of the robot at a batch of points along the backbone.
 
@@ -3646,7 +3707,7 @@ class GVS(SoftRobot):
         return vmap(body_single)(s_flat)
 
     @eqx.filter_jit
-    def jacobian_inertialframe(self, q: Array, s: Array) -> Array:
+    def _jacobian_inertialframe(self, q: Array, s: Array) -> Array:
         """
         Compute the Jacobian of the forward kinematics at a point s along the robot in the inertial frame.
 
@@ -3659,6 +3720,128 @@ class GVS(SoftRobot):
         """
         g_s, J_local = self._jacobian_bodyframe_terms(q, s)
         return self._body_jacobian_to_inertial(g_s, J_local)
+
+    @eqx.filter_jit
+    def jacobian_inertialframe(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute an inertial Jacobian at one curvilinear abscissa.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Inertial Jacobian with shape ``(6, D)``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="jacobian",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
+
+    @eqx.filter_jit
+    def jacobian_inertialframe_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Compute inertial Jacobians at a batch of curvilinear abscissae.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Inertial-frame Jacobians with shape ``(N, 6, D)``.
+        """
+
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="jacobian",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
+
+    @eqx.filter_jit
+    def forward_kinematics_and_jacobian_inertialframe(
+        self,
+        q: Array,
+        s: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array]:
+        """Compute an SE(3) pose and inertial Jacobian in one traversal.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s: Scalar curvilinear abscissa.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            A pose with shape ``(4, 4)`` and an inertial Jacobian with shape
+            ``(6, D)``.
+        """
+
+        return dispatch_kinematics(
+            self,
+            q,
+            s,
+            operation="both",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
+
+    @eqx.filter_jit
+    def forward_kinematics_and_jacobian_inertialframe_abscissa_batched(
+        self,
+        q: Array,
+        s_ps: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array]:
+        """Compute fused poses and Jacobians for an abscissa batch.
+
+        Args:
+            q: Active generalized coordinates with shape ``(D,)``.
+            s_ps: Curvilinear abscissae with shape ``(N,)``.
+            backend: Optional execution override. ``None`` uses the model's
+                configured backend.
+
+        Returns:
+            Poses with shape ``(N, 4, 4)`` and inertial Jacobians with shape
+            ``(N, 6, D)``.
+        """
+
+        return dispatch_kinematics_abscissa_batched(
+            self,
+            q,
+            s_ps,
+            operation="both",
+            backend=backend,
+            capabilities=GVS_KINEMATICS,
+            warp_supported=type(self) is GVS,
+        )
 
     @eqx.filter_jit
     def jacobian_and_arc_length_derivative_inertialframe(
@@ -3721,7 +3904,7 @@ class GVS(SoftRobot):
         This public adapter satisfies the SoftRobot interface while preserving
         the explicit body-frame and inertial-frame GVS Jacobian methods.
         """
-        return self.jacobian_inertialframe(q, s)
+        return self._jacobian_inertialframe(q, s)
 
     @eqx.filter_jit
     def jacobian_tips(self, q: Array) -> Array:
@@ -3742,7 +3925,7 @@ class GVS(SoftRobot):
         return vmap(self._body_jacobian_to_inertial)(g_tips, J_local_tips)
 
     @eqx.filter_jit
-    def jacobian_inertialframe_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
+    def _jacobian_inertialframe_abscissa_batched(self, q: Array, s_ps: Array) -> Array:
         """
         Compute the inertial-frame Jacobian at multiple arclength locations.
 
@@ -3753,8 +3936,10 @@ class GVS(SoftRobot):
         Returns:
             Array: Jacobians with shape (N, 6, num_active_strains).
         """
-        J_body = self.jacobian_bodyframe_abscissa_batched(q, s_ps)  # (N, 6, num_active_strains)
-        g_ps = self.forward_kinematics_abscissa_batched(q, s_ps)  # (N, 4, 4)
+        J_body = self.jacobian_bodyframe_abscissa_batched(
+            q, s_ps
+        )  # (N, 6, num_active_strains)
+        g_ps = self._forward_kinematics_abscissa_batched(q, s_ps)  # (N, 4, 4)
 
         return vmap(self._body_jacobian_to_inertial)(g_ps, J_body)
 
@@ -3776,7 +3961,7 @@ class GVS(SoftRobot):
             J_global (Array): inertial-frame Jacobians with shape
                 ``(N, 6, num_active_strains)``.
         """
-        return self.jacobian_inertialframe_abscissa_batched(q, s_ps)
+        return self._jacobian_inertialframe_abscissa_batched(q, s_ps)
 
     @eqx.filter_jit
     def _jacobian_time_derivative_gauss(
@@ -4295,7 +4480,7 @@ class GVS(SoftRobot):
         J_body, Jd_body = self.jacobian_and_time_derivative_bodyframe_abscissa_batched(
             q, qd, s_ps
         )
-        g_ps = self.forward_kinematics_abscissa_batched(q, s_ps)
+        g_ps = self._forward_kinematics_abscissa_batched(q, s_ps)
 
         return vmap(
             self._body_jacobian_time_derivative_to_inertial, in_axes=(0, 0, 0, None)
@@ -4341,7 +4526,9 @@ class GVS(SoftRobot):
             Tuple[Array, Array]: inertial-frame Jacobians and time derivatives.
             Each array has shape ``(N, 6, num_active_strains)``.
         """
-        return self.jacobian_and_time_derivative_inertialframe_abscissa_batched(q, qd, s_ps)
+        return self.jacobian_and_time_derivative_inertialframe_abscissa_batched(
+            q, qd, s_ps
+        )
 
     def _active_selector_blocks(self) -> Array:
         """

@@ -380,7 +380,9 @@ def test_batched_kinematics_and_jacobian_match_pointwise_evaluation(num_links):
     J_expected = robot.jacobian_tips(q)
     assert_allclose(J_batched, J_expected, rtol=Tolerance.rtol(), atol=Tolerance.atol())
 
-    J_batched, Jd_batched = robot.jacobian_and_time_derivative_abscissa_batched(q, qd, s_ps)
+    J_batched, Jd_batched = robot.jacobian_and_time_derivative_abscissa_batched(
+        q, qd, s_ps
+    )
     J_expected, Jd_expected = robot.jacobian_and_time_derivatives_tips(q, qd)
     assert_allclose(J_batched, J_expected, rtol=Tolerance.rtol(), atol=Tolerance.atol())
     assert_allclose(

@@ -580,7 +580,9 @@ def test_batched_methods(N):
     assert_allclose(J_batched, J_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
 
     # Jacobian and derivative batched
-    J_batched, Jd_batched = robot.jacobian_and_time_derivative_abscissa_batched(q, qd, s_ps)
+    J_batched, Jd_batched = robot.jacobian_and_time_derivative_abscissa_batched(
+        q, qd, s_ps
+    )
     J_tips, Jd_tips = robot.jacobian_and_time_derivatives_tips(q, qd)
     assert_allclose(J_batched, J_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())
     assert_allclose(Jd_batched, Jd_tips, rtol=Tolerance.rtol(), atol=Tolerance.atol())

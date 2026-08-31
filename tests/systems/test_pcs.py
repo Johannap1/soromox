@@ -906,8 +906,10 @@ def test_jacobian_and_time_derivative_bodyframe_abscissa_batched_matches_pointwi
     s_points = jnp.asarray(sample_arc_lengths(model), dtype=jnp.float64)
 
     for q, qd in ((zero_cfg, zero_vel), (q_random, qd_random)):
-        J_batch, Jd_batch = model.jacobian_and_time_derivative_bodyframe_abscissa_batched(
-            q, qd, s_points
+        J_batch, Jd_batch = (
+            model.jacobian_and_time_derivative_bodyframe_abscissa_batched(
+                q, qd, s_points
+            )
         )
 
         for idx, s_val in enumerate(s_points):
@@ -960,8 +962,10 @@ def test_jacobian_and_time_derivative_inertialframe_abscissa_batched_matches_poi
     s_points = jnp.asarray(sample_arc_lengths(model), dtype=jnp.float64)
 
     for q, qd in ((zero_cfg, zero_vel), (q_random, qd_random)):
-        J_batch, Jd_batch = model.jacobian_and_time_derivative_inertialframe_abscissa_batched(
-            q, qd, s_points
+        J_batch, Jd_batch = (
+            model.jacobian_and_time_derivative_inertialframe_abscissa_batched(
+                q, qd, s_points
+            )
         )
 
         for idx, s_val in enumerate(s_points):
@@ -979,6 +983,34 @@ def test_public_pcs_jacobian_wrappers_match_inertialframe_methods() -> None:
     qd = random_q(model, key_qd, scale=0.04)
     s = 0.6 * model.length
     s_ps = jnp.asarray(sample_arc_lengths(model), dtype=jnp.float64)
+
+    assert_allclose(
+        model.forward_kinematics_abscissa_batched(q, s_ps),
+        jax.vmap(model.forward_kinematics, in_axes=(None, 0))(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        model.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        jax.vmap(model.jacobian_inertialframe, in_axes=(None, 0))(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    poses, jacobians = (
+        model.forward_kinematics_and_jacobian_inertialframe_abscissa_batched(q, s_ps)
+    )
+    assert_allclose(
+        poses,
+        model.forward_kinematics_abscissa_batched(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        jacobians,
+        model.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
 
     assert_allclose(
         model.jacobian(q, s),
@@ -1904,7 +1936,9 @@ def test_strain_basis_consistency_jacobians_and_time_derivatives(num_segments: i
     Jb_batch_small, Jbd_batch_small = reduced._J_Jd_local_abscissa_batched(
         q_small, qd_small, s_points
     )
-    Jb_batch_full, Jbd_batch_full = full._J_Jd_local_abscissa_batched(q_full, qd_full, s_points)
+    Jb_batch_full, Jbd_batch_full = full._J_Jd_local_abscissa_batched(
+        q_full, qd_full, s_points
+    )
     assert Jb_batch_small.shape == (s_points.shape[0], 6, n_full_strains)
     assert Jbd_batch_small.shape == (s_points.shape[0], 6, n_full_strains)
     assert Jb_batch_full.shape == (s_points.shape[0], 6, n_full_strains)

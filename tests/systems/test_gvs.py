@@ -1555,6 +1555,34 @@ def test_public_gvs_jacobian_adapters_match_inertialframe_methods() -> None:
     s_ps = sample_arc_lengths(robot)
 
     assert_allclose(
+        robot.forward_kinematics_abscissa_batched(q, s_ps),
+        jax.vmap(robot.forward_kinematics, in_axes=(None, 0))(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        robot.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        jax.vmap(robot.jacobian_inertialframe, in_axes=(None, 0))(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    poses, jacobians = (
+        robot.forward_kinematics_and_jacobian_inertialframe_abscissa_batched(q, s_ps)
+    )
+    assert_allclose(
+        poses,
+        robot.forward_kinematics_abscissa_batched(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        jacobians,
+        robot.jacobian_inertialframe_abscissa_batched(q, s_ps),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
+    assert_allclose(
         robot.jacobian(q, s),
         robot.jacobian_inertialframe(q, s),
         rtol=RTOL,

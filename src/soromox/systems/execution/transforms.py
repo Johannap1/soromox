@@ -1,4 +1,4 @@
-"""JAX transformation rules shared by optional dynamics executors."""
+"""JAX transformation rules shared by optional execution backends."""
 
 from __future__ import annotations
 
@@ -11,14 +11,293 @@ import jax.numpy as jnp
 from jax import Array
 
 from soromox.systems.execution.types import (
+    AbscissaBatchedKinematicsEvaluator,
     DynamicsEvaluator,
     DynamicsModel,
     DynamicsTerms,
     ExecutionBackend,
     ForwardDynamicsModel,
+    KinematicsEvaluator,
+    KinematicsModel,
+    KinematicsOperation,
+    KinematicsResult,
 )
 
 BatchExecutor = Callable[[DynamicsModel, Array, Array], DynamicsTerms]
+KinematicsBatchExecutor = Callable[
+    [KinematicsModel, Array, Array, KinematicsOperation], KinematicsResult
+]
+
+
+@jax.custom_batching.custom_vmap
+def _evaluate_forward_kinematics_primal(
+    model: KinematicsModel, q: Array, s: Array
+) -> Array:
+    """Evaluate the scalar protected pose implementation."""
+
+    return model._forward_kinematics(q, s)
+
+
+@_evaluate_forward_kinematics_primal.def_vmap
+def _evaluate_forward_kinematics_vmap(
+    axis_size: int,
+    in_batched: tuple[Any, bool, bool],
+    model: KinematicsModel,
+    q: Array,
+    s: Array,
+) -> tuple[Array, bool]:
+    """Use the model's specialized traversal for spatial vectorization."""
+
+    model_batched, q_batched, s_batched = in_batched
+    if any(jax.tree.leaves(model_batched)):
+        raise ValueError("Batching over kinematics model parameters is unsupported.")
+    if not q_batched and not s_batched:
+        result = model._forward_kinematics(q, s)
+    elif not q_batched and s_batched:
+        result = model._forward_kinematics_abscissa_batched(q, s)
+    elif q_batched and not s_batched:
+        result = jax.vmap(model._forward_kinematics, in_axes=(0, None))(q, s)
+    else:
+        result = jax.vmap(model._forward_kinematics)(q, s)
+    return result, q_batched or s_batched
+
+
+@eqx.filter_custom_jvp
+def evaluate_forward_kinematics(model: KinematicsModel, q: Array, s: Array) -> Array:
+    """Evaluate one forward-kinematics request with its established JVP.
+
+    Args:
+        model: System implementing the neutral kinematics contract.
+        q: Generalized coordinates for one environment.
+        s: One backbone coordinate.
+
+    Returns:
+        The model-specific pose at ``s``.
+    """
+
+    return _evaluate_forward_kinematics_primal(model, q, s)
+
+
+@evaluate_forward_kinematics.def_jvp
+def _evaluate_forward_kinematics_jvp(
+    primals: tuple[KinematicsModel, Array, Array],
+    tangents: tuple[Any, Array | None, Array | None],
+) -> tuple[Array, Array]:
+    """Route pose derivatives through the model's established JAX rule."""
+
+    model, q, s = primals
+    _model_tangent, qd, sd = tangents
+    return model._forward_kinematics_jvp(q, s, qd, sd)
+
+
+@jax.custom_batching.custom_vmap
+def _evaluate_inertial_jacobian_primal(
+    model: KinematicsModel, q: Array, s: Array
+) -> Array:
+    """Evaluate one inertial Jacobian with specialized spatial batching.
+
+    Args:
+        model: System implementing the neutral kinematics contract.
+        q: Generalized coordinates for one environment.
+        s: One backbone coordinate.
+
+    Returns:
+        The inertial-frame Jacobian at ``s``.
+    """
+
+    return model._jacobian_inertialframe(q, s)
+
+
+@_evaluate_inertial_jacobian_primal.def_vmap
+def _evaluate_inertial_jacobian_vmap(
+    axis_size: int,
+    in_batched: tuple[Any, bool, bool],
+    model: KinematicsModel,
+    q: Array,
+    s: Array,
+) -> tuple[Array, bool]:
+    """Use the model's specialized traversal for spatial vectorization."""
+
+    model_batched, q_batched, s_batched = in_batched
+    if any(jax.tree.leaves(model_batched)):
+        raise ValueError("Batching over kinematics model parameters is unsupported.")
+    if not q_batched and not s_batched:
+        result = model._jacobian_inertialframe(q, s)
+    elif not q_batched and s_batched:
+        result = model._jacobian_inertialframe_abscissa_batched(q, s)
+    elif q_batched and not s_batched:
+        result = jax.vmap(model._jacobian_inertialframe, in_axes=(0, None))(q, s)
+    else:
+        result = jax.vmap(model._jacobian_inertialframe)(q, s)
+    return result, q_batched or s_batched
+
+
+@eqx.filter_custom_jvp
+def evaluate_inertial_jacobian(model: KinematicsModel, q: Array, s: Array) -> Array:
+    """Evaluate one inertial Jacobian through the differentiable JAX path."""
+
+    return _evaluate_inertial_jacobian_primal(model, q, s)
+
+
+@evaluate_inertial_jacobian.def_jvp
+def _evaluate_inertial_jacobian_jvp(
+    primals: tuple[KinematicsModel, Array, Array],
+    tangents: tuple[Any, Array | None, Array | None],
+) -> tuple[Array, Array]:
+    """Differentiate the model's established scalar JAX Jacobian."""
+
+    return eqx.filter_jvp(
+        lambda model, q, s: model._jacobian_inertialframe(q, s),
+        primals,
+        tangents,
+    )
+
+
+def _reference_kinematics(
+    model: KinematicsModel,
+    q: Array,
+    s: Array,
+    operation: KinematicsOperation,
+) -> KinematicsResult:
+    """Evaluate the requested differentiable scalar JAX kinematics result."""
+
+    if operation == "pose":
+        return evaluate_forward_kinematics(model, q, s)
+    if operation == "jacobian":
+        return evaluate_inertial_jacobian(model, q, s)
+    return (
+        evaluate_forward_kinematics(model, q, s),
+        evaluate_inertial_jacobian(model, q, s),
+    )
+
+
+def make_kinematics_evaluators(
+    execute_batch: KinematicsBatchExecutor,
+    *,
+    family_name: str,
+    operation: KinematicsOperation,
+) -> tuple[KinematicsEvaluator, AbscissaBatchedKinematicsEvaluator]:
+    """Adapt a canonical ``(E,D)``/``(E,N)`` executor to public JAX semantics."""
+
+    def slice_environment_sample(result: KinematicsResult) -> KinematicsResult:
+        return jax.tree.map(lambda value: value[0, 0], result)
+
+    def slice_environment(result: KinematicsResult) -> KinematicsResult:
+        return jax.tree.map(lambda value: value[0], result)
+
+    @jax.custom_batching.custom_vmap
+    def scalar_primal(model: KinematicsModel, q: Array, s: Array) -> KinematicsResult:
+        result = execute_batch(model, q[None, :], s.reshape(1, 1), operation)
+        return slice_environment_sample(result)
+
+    @scalar_primal.def_vmap
+    def scalar_vmap_rule(
+        axis_size: int,
+        in_batched: tuple[Any, bool, bool],
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+    ) -> tuple[KinematicsResult, Any]:
+        model_batched, q_batched, s_batched = in_batched
+        if any(jax.tree.leaves(model_batched)):
+            raise ValueError(
+                f"Batching over {family_name} model parameters is not supported."
+            )
+        if q_batched:
+            if not s_batched:
+                s = jnp.broadcast_to(s, (axis_size,))
+            result = execute_batch(model, q, s[:, None], operation)
+            result = jax.tree.map(lambda value: value[:, 0], result)
+        else:
+            # Keep the spatial batch behind its own custom batching boundary.
+            # An enclosing environment vmap can then merge q's mapped axis
+            # into the same canonical ``(E,D)``/``(E,N)`` executor call.
+            result = abscissa_batched_primal(model, q, s)
+        return result, jax.tree.map(lambda _: True, result)
+
+    @eqx.filter_custom_jvp
+    def scalar_evaluator(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> KinematicsResult:
+        return scalar_primal(model, q, s)
+
+    @scalar_evaluator.def_jvp
+    def scalar_jvp(
+        primals: tuple[KinematicsModel, Array, Array],
+        tangents: tuple[Any, Array | None, Array | None],
+    ) -> tuple[KinematicsResult, KinematicsResult]:
+        model, q, s = primals
+        _model_tangent, qd, sd = tangents
+        if operation == "pose":
+            return model._forward_kinematics_jvp(q, s, qd, sd)
+        if operation == "jacobian":
+            return eqx.filter_jvp(
+                lambda model_, q_, s_: model_._jacobian_inertialframe(q_, s_),
+                primals,
+                tangents,
+            )
+        pose, pose_tangent = model._forward_kinematics_jvp(q, s, qd, sd)
+        jacobian, jacobian_tangent = eqx.filter_jvp(
+            lambda model_, q_, s_: model_._jacobian_inertialframe(q_, s_),
+            primals,
+            tangents,
+        )
+        return (pose, jacobian), (pose_tangent, jacobian_tangent)
+
+    @jax.custom_batching.custom_vmap
+    def abscissa_batched_primal(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> KinematicsResult:
+        return slice_environment(
+            execute_batch(model, q[None, :], s[None, :], operation)
+        )
+
+    @abscissa_batched_primal.def_vmap
+    def abscissa_batched_vmap_rule(
+        axis_size: int,
+        in_batched: tuple[Any, bool, bool],
+        model: KinematicsModel,
+        q: Array,
+        s: Array,
+    ) -> tuple[KinematicsResult, Any]:
+        model_batched, q_batched, s_batched = in_batched
+        if any(jax.tree.leaves(model_batched)):
+            raise ValueError(
+                f"Batching over {family_name} model parameters is not supported."
+            )
+        if not q_batched:
+            q = jnp.broadcast_to(q, (axis_size, *q.shape))
+        if not s_batched:
+            s = jnp.broadcast_to(s, (axis_size, *s.shape))
+        result = execute_batch(model, q, s, operation)
+        return result, jax.tree.map(lambda _: True, result)
+
+    @eqx.filter_custom_jvp
+    def abscissa_batched_evaluator(
+        model: KinematicsModel, q: Array, s: Array
+    ) -> KinematicsResult:
+        return abscissa_batched_primal(model, q, s)
+
+    @abscissa_batched_evaluator.def_jvp
+    def abscissa_batched_jvp(
+        primals: tuple[KinematicsModel, Array, Array],
+        tangents: tuple[Any, Array | None, Array | None],
+    ) -> tuple[KinematicsResult, KinematicsResult]:
+        def jax_abscissa_batched(
+            model_: KinematicsModel, q_: Array, s_: Array
+        ) -> KinematicsResult:
+            if operation == "pose":
+                return model_._forward_kinematics_abscissa_batched(q_, s_)
+            if operation == "jacobian":
+                return model_._jacobian_inertialframe_abscissa_batched(q_, s_)
+            return (
+                model_._forward_kinematics_abscissa_batched(q_, s_),
+                model_._jacobian_inertialframe_abscissa_batched(q_, s_),
+            )
+
+        return eqx.filter_jvp(jax_abscissa_batched, primals, tangents)
+
+    return scalar_evaluator, abscissa_batched_evaluator
 
 
 def make_dynamics_evaluator(
@@ -269,6 +548,8 @@ def _assemble_forward_dynamics(
 
 __all__ = [
     "BatchExecutor",
+    "KinematicsBatchExecutor",
     "evaluate_forward_dynamics",
     "make_dynamics_evaluator",
+    "make_kinematics_evaluators",
 ]

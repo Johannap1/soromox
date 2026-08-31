@@ -13,6 +13,9 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added fused Warp forward-kinematics and inertial-Jacobian execution for
+  `GVS`, `PCS`, and `PlanarPCS`, including spatial, environment, and combined
+  batches through the explicit `*_abscissa_batched` methods and `jax.vmap`.
 - Added optional Warp dynamics backends for `GVS`, `PCS`, and `PlanarPCS`,
   including automatic GPU selection, JAX-routed differentiation, and reusable
   Warp-native execution APIs; see
@@ -33,6 +36,19 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Performance
 
+- Added fused Warp kinematics kernels and measured 324 matched warmed cases per
+  device across two- and eight-segment `PlanarPCS`, `PCS`, and `GVS` models,
+  1/16/256 environments, and 1/8/64 abscissae. On an RTX 5090, Warp improved
+  the geometric mean over JAX by 2.79×; the eight-segment, 256-environment,
+  64-abscissa PCS and GVS Jacobians improved 4.73× (1.596 to 0.337 ms) and
+  12.67× (7.706 to 0.608 ms). On an Intel Core Ultra 9 285K, the overall
+  geometric mean was 1.00× and large PCS cases ranged from 0.57–0.95×,
+  supporting the existing JAX-on-CPU `auto` policy.
+  Measurements used FP64, JAX 0.11.0, Warp 1.16.0, separate first-call timing,
+  two warmups, and the median of nine GPU or seven CPU synchronized repeats.
+  An Nsight Systems trace of the large fused PCS case confirmed two Warp
+  launches per call: approximately 69 microseconds for the cooperative
+  recurrence and 233 microseconds for sample evaluation.
 - Accelerated batched FP64 continuum dynamics on an RTX 5090 with Warp. For
   four-segment models at batch 256, order-1 GVS dynamics terms improved 3.02×
   (2.224 to 0.735 ms) and forward dynamics 2.40× (2.482 to 1.034 ms), while

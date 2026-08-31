@@ -351,9 +351,11 @@ class ISupportViserRenderer(ViserRenderer):
     def _sample_world_poses(self, q: Array, curves: np.ndarray) -> np.ndarray:
         s_points = jnp.asarray(self._sample_s)
         poses = np.array(
-            jax.vmap(lambda q_i: self.robot.forward_kinematics_abscissa_batched(q_i, s_points))(
-                q
-            ),
+            jax.vmap(
+                lambda q_i: self.robot.forward_kinematics_abscissa_batched(
+                    q_i, s_points
+                )
+            )(q),
             copy=True,
         )
         base_origin = np.asarray(self.robot.g0, dtype=np.float64)[:3, 3]

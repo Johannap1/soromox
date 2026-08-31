@@ -1,9 +1,9 @@
 # Execution Backends
 
 For most applications, leave `backend="auto"` unchanged. A supported model then
-uses the accelerated Warp dynamics implementation on a GPU and the JAX/XLA
-implementation on CPU, while retaining the same system methods and numerical
-outputs. Set the option explicitly only when comparing implementations,
+uses the accelerated Warp kinematics and dynamics implementations on a GPU and
+the JAX/XLA implementations on CPU, while retaining the same system methods and
+numerical outputs. Set the option explicitly only when comparing implementations,
 reproducing a benchmark, or requiring a particular execution path.
 
 ```python
@@ -25,7 +25,7 @@ robot = PlanarPCS.from_links(
 )
 ```
 
-The setting currently affects selected continuum-system dynamics operations.
+The setting affects selected continuum-system kinematics and dynamics operations.
 
 ## Choosing a backend
 
@@ -33,8 +33,8 @@ The `backend` constructor argument accepts three values:
 
 | Value | Behavior |
 |---|---|
-| `"auto"` | Uses Warp for supported primal dynamics on a GPU and JAX/XLA otherwise. This is the default. |
-| `"jax"` | Always uses the reference JAX/XLA dynamics implementation. |
+| `"auto"` | Uses Warp for supported primal kinematics and dynamics on a GPU and JAX/XLA otherwise. This is the default. |
+| `"jax"` | Always uses the reference JAX/XLA implementation. |
 | `"warp"` | Requests the Warp implementation where the system, quadrature rule, and device support it. |
 
 Automatic selection has no batch-size, model-order, or GPU-model crossover.
@@ -63,9 +63,9 @@ pip install "soromox[warp]"
 
 | System | Warp support | Requirements |
 |---|---|---|
-| `GVS` | Dynamics on GPU; explicit Warp execution is also available on CPU | FP64 state arrays |
-| `PCS` | Dynamics on GPU | Exactly five Gauss points and FP64 state arrays |
-| `PlanarPCS` | Dynamics on GPU | Exactly five Gauss points and FP64 state arrays |
+| `PlanarPCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `PCS` | Kinematics and dynamics on GPU; explicit Warp kinematics is also available on CPU | Dynamics requires exactly five Gauss points; Warp requires FP64 arrays |
+| `GVS` | Kinematics and dynamics on GPU; explicit Warp execution is also available on CPU | FP64 arrays |
 
 Other systems, including `PlanarHSA`, continue to use JAX/XLA. For PCS models
 with a quadrature rule other than five Gauss points, `"auto"` falls back to
@@ -79,12 +79,21 @@ The selected dynamics backend is used by:
 - `rollout_to(...)` and `rollout_closed_loop_to(...)`, through their calls to
   `forward_dynamics`.
 
+The selected kinematics backend is used by:
+
+- `forward_kinematics(q, s)` and
+  `forward_kinematics_abscissa_batched(q, s_ps)`;
+- `jacobian_inertialframe(q, s)` and
+  `jacobian_inertialframe_abscissa_batched(q, s_ps)`;
+- `forward_kinematics_and_jacobian_inertialframe(...)` and its
+  `*_abscissa_batched` counterpart, which compute both results in one Warp
+  traversal.
+
 The setting does **not** change direct calls to `inertia_matrix`,
-`coriolis_matrix`, `gravitational_force`, kinematics, Jacobians, energy
-functions, constitutive forces, actuation, or rendering. Those methods remain
-JAX operations unless their own API documentation says otherwise. To evaluate
-backend-accelerated inertia, Coriolis/centrifugal, and gravity terms together,
-call `dynamics_terms`.
+`coriolis_matrix`, `gravitational_force`, body-frame Jacobians, Jacobian
+derivatives, energy functions, constitutive forces, actuation, or rendering.
+Those methods remain JAX operations. To evaluate backend-accelerated inertia,
+Coriolis/centrifugal, and gravity terms together, call `dynamics_terms`.
 
 ## Model-level and per-call selection
 
@@ -97,15 +106,17 @@ yd = robot.forward_dynamics(t, y)
 trajectory = robot.rollout_to(initial_state, t1=1.0)
 ```
 
-`dynamics_terms` and `forward_dynamics` additionally accept per-call overrides.
-This is useful for validation and benchmarking without constructing another
-model:
+The accelerated kinematics and dynamics methods additionally accept per-call
+overrides. This is useful for validation and benchmarking without constructing
+another model:
 
 ```python
 B_jax, Cqd_jax, G_jax = robot.dynamics_terms(q, qd, backend="jax")
 B_warp, Cqd_warp, G_warp = robot.dynamics_terms(q, qd, backend="warp")
 yd_jax = robot.forward_dynamics(t, y, backend="jax")
 yd_warp = robot.forward_dynamics(t, y, backend="warp")
+pose_jax = robot.forward_kinematics(q, s, backend="jax")
+pose_warp = robot.forward_kinematics(q, s, backend="warp")
 ```
 
 The rollout helpers use the model-level setting so every evaluation in an
@@ -131,11 +142,56 @@ B_batch, Cqd_batch, G_batch = jax.vmap(robot.dynamics_terms)(q_batch, qd_batch)
 The mapped call is combined into one batch-shaped Warp pipeline. It does not
 launch an independent one-environment pipeline for every batch item.
 
+Kinematics keeps scalar and abscissa-batched methods distinct. The scalar
+methods accept one configuration and one abscissa. Use the explicit
+`*_abscissa_batched` methods for one configuration and multiple abscissae:
+
+```python
+poses = robot.forward_kinematics_abscissa_batched(q, s_ps)
+jacobians = robot.jacobian_inertialframe_abscissa_batched(q, s_ps)
+```
+
+Normal JAX transformations cover spatial, environment, pairwise, and combined
+batches without broadening the single-point method's input contract:
+
+```python
+# Multiple abscissae for one configuration: N
+poses_spatial = jax.vmap(
+    robot.forward_kinematics,
+    in_axes=(None, 0),
+)(q, s_ps)
+
+# Multiple configurations at one shared scalar abscissa: E
+poses_environments = jax.vmap(
+    robot.forward_kinematics,
+    in_axes=(0, None),
+)(q_batch, s)
+
+# Pairwise configurations and scalar abscissae: E
+poses_pairwise = jax.vmap(robot.forward_kinematics)(q_batch, s_batch)
+
+# Cartesian configurations by shared abscissae: E x N
+poses_cartesian = jax.vmap(
+    robot.forward_kinematics_abscissa_batched,
+    in_axes=(0, None),
+)(q_batch, s_ps)
+
+# A different abscissa batch for every configuration: E x N
+poses_per_environment = jax.vmap(
+    robot.forward_kinematics_abscissa_batched,
+)(q_batch, s_per_environment)
+```
+
+Spatial JAX `vmap` calls use each system's specialized abscissa traversal. Warp
+maps are combined into one canonical environment-by-abscissa executor call,
+including nested scalar `vmap` expressions for Cartesian batches.
+
 ## Differentiation
 
 JAX transformations always differentiate the JAX implementation, even when
-the model uses Warp for ordinary primal GPU calls. This applies directly to
-`model.dynamics_terms` as well as to complete `forward_dynamics` evaluations.
+the model uses Warp for ordinary primal GPU calls. This applies to accelerated
+kinematics and Jacobians as well as `model.dynamics_terms` and complete
+`forward_dynamics` evaluations.
 
 ```python
 import jax

@@ -173,13 +173,13 @@ robot = PCS.from_links([LinkSpec.circular(...)], backend="auto")
 ```
 
 `backend="auto"` is already the default, so it can normally be omitted. It
-keeps dynamics on JAX/XLA on CPU and selects Warp for supported GPU dynamics.
-The choice follows normal calls to `dynamics_terms()`, `forward_dynamics()`, and
-the rollout helpers; kinematics and other methods remain on JAX. A direct query
-can be compared with `robot.dynamics_terms(q, qd, backend="jax")` without
-rebuilding the model. See [Execution Backends](execution-backends.md) for the
-supported systems, automatic-selection rules, differentiation behavior, and
-performance settings.
+keeps supported operations on JAX/XLA on CPU and selects Warp for supported GPU
+kinematics and dynamics. The choice follows normal calls to
+`forward_kinematics()`, `dynamics_terms()`, `forward_dynamics()`, and the
+corresponding batched methods. A direct query can be compared with
+`robot.dynamics_terms(q, qd, backend="jax")` without rebuilding the model. See
+[Execution Backends](execution-backends.md) for the supported systems,
+automatic-selection rules, differentiation behavior, and performance settings.
 
 **Key Benefits:**
 
@@ -283,7 +283,7 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
     # Note: Damping helps stabilize simulations and represents material dissipation.
 
     # Initialize the PCS robot
-    # "auto" uses Warp for supported GPU dynamics and JAX otherwise.
+    # "auto" uses Warp for supported GPU kinematics and dynamics, and JAX otherwise.
     # It is the default, but is shown explicitly here for clarity.
     robot = PlanarPCS.from_links(links, backend="auto")
 
@@ -298,7 +298,7 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
     backbone_shape = robot.forward_kinematics_abscissa_batched(q, s_values)
 
     # Extract positions for plotting
-    # forward_kinematics returns [theta, px, py] for planar systems
+    # The batched method returns [theta, px, py] at each abscissa.
     x_positions = backbone_shape[:, 1]  # X coordinates
     y_positions = backbone_shape[:, 2]  # Y coordinates
 
