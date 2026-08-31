@@ -11,8 +11,8 @@ from numpy.testing import assert_allclose
 
 from soromox.systems.execution import (
     GVS_DYNAMICS,
+    PCS_DYNAMICS,
     PCS_KINEMATICS,
-    DynamicsCapabilities,
     ExecutionBackend,
     dispatch_dynamics_terms,
     dispatch_kinematics,
@@ -317,6 +317,54 @@ def test_explicit_warp_reports_unsupported_configuration(
         )
 
 
+@pytest.mark.parametrize("device", ["cpu", "tpu"])
+def test_explicit_warp_reports_unsupported_device(
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never silently replace an explicit CUDA-only Warp request with JAX."""
+
+    monkeypatch.setattr(
+        "soromox.systems.execution.dispatch.jax.default_backend",
+        lambda: device,
+    )
+    model = _probe(backend="warp")
+    state = jnp.zeros((model.num_dofs,), dtype=jnp.float64)
+
+    with pytest.raises(NotImplementedError, match=f"active {device.upper()} device"):
+        dispatch_dynamics_terms(
+            model,
+            state,
+            state,
+            backend=None,
+            capabilities=PCS_DYNAMICS,
+        )
+
+
+def test_auto_falls_back_for_unsupported_cpu_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep CPU fallback exclusive to automatic backend selection."""
+
+    monkeypatch.setattr(
+        "soromox.systems.execution.dispatch.jax.default_backend",
+        lambda: "cpu",
+    )
+    model = _probe(backend="auto")
+    state = jnp.linspace(-0.1, 0.1, model.num_dofs, dtype=jnp.float64)
+    expected = model._assemble_dynamics_terms(state, state)
+    actual = dispatch_dynamics_terms(
+        model,
+        state,
+        state,
+        backend=None,
+        capabilities=PCS_DYNAMICS,
+    )
+
+    for actual_term, expected_term in zip(actual, expected, strict=True):
+        assert_allclose(actual_term, expected_term)
+
+
 def test_auto_falls_back_for_unsupported_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -342,31 +390,45 @@ def test_auto_falls_back_for_unsupported_configuration(
         assert_allclose(actual_term, expected_term)
 
 
-def test_required_quadrature_is_checked_before_executor_loading(
+@pytest.mark.parametrize("gauss_points", [1, 3, 5, 7, 9])
+@pytest.mark.parametrize("configured_backend", ["auto", "warp"])
+def test_pcs_dispatch_accepts_runtime_quadrature_counts(
+    configured_backend: ExecutionBackend,
+    gauss_points: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Report the five-point PCS restriction without importing Warp."""
+    """Route every positive PCS quadrature count through the Warp executor."""
+
+    from soromox.systems.execution.warp import loader
 
     monkeypatch.setattr(
         "soromox.systems.execution.dispatch.jax.default_backend",
         lambda: "gpu",
     )
-    capabilities = DynamicsCapabilities(
-        family_name="test PCS",
-        warp_executor="pcs",
-        required_num_gauss_points=5,
-    )
-    model = _probe(backend="warp", gauss_points=3)
+    model = _probe(backend=configured_backend, gauss_points=gauss_points)
     state = jnp.zeros((model.num_dofs,), dtype=jnp.float64)
 
-    with pytest.raises(NotImplementedError, match="exactly 5 Gauss points"):
-        dispatch_dynamics_terms(
-            model,
-            state,
-            state,
-            backend=None,
-            capabilities=capabilities,
+    def fake_batch(model_, q, qd):
+        del qd
+        batch_size = q.shape[0]
+        marker = jnp.asarray(model_.num_gauss_points, dtype=q.dtype)
+        return (
+            jnp.full((batch_size, model_.num_dofs, model_.num_dofs), marker),
+            jnp.full((batch_size, model_.num_dofs), marker),
+            jnp.full((batch_size, model_.num_dofs), marker),
         )
+
+    monkeypatch.setattr(loader, "_execute_pcs_batch", fake_batch)
+    actual = dispatch_dynamics_terms(
+        model,
+        state,
+        state,
+        backend=None,
+        capabilities=PCS_DYNAMICS,
+    )
+
+    for term in actual:
+        assert_allclose(term, gauss_points)
 
 
 def test_kinematics_jax_spatial_vmap_uses_specialized_model_path() -> None:
@@ -470,7 +532,6 @@ def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
     model = _KinematicsProbe(backend="warp")
     q = jnp.arange(12, dtype=jnp.float64).reshape(4, 3) / 10.0
     s = jnp.linspace(0.0, 1.0, 6, dtype=jnp.float64)
-    observed_shapes: list[tuple[int, int]] = []
 
     def fake_batch(
         model: _KinematicsProbe,
@@ -479,11 +540,8 @@ def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
         operation: str,
     ) -> Array:
         del operation
-        jax.debug.callback(
-            lambda shape: observed_shapes.append((int(shape[0]), int(shape[1]))),
-            jnp.asarray([q.shape[0], s.shape[1]]),
-        )
-        return jnp.zeros((q.shape[0], s.shape[1], 3), dtype=q.dtype)
+        marker = 100 * q.shape[0] + s.shape[1]
+        return jnp.full((q.shape[0], s.shape[1], 3), marker, dtype=q.dtype)
 
     monkeypatch.setattr(loader, "_execute_pcs_kinematics_batch", fake_batch)
     monkeypatch.setattr(
@@ -498,7 +556,7 @@ def test_kinematics_explicit_cartesian_batch_reaches_one_warp_executor(
     jax.block_until_ready(result)
 
     assert result.shape == (4, 6, 3)
-    assert observed_shapes == [(4, 6)]
+    assert_allclose(result, 406.0)
 
 
 @pytest.mark.parametrize(
@@ -527,7 +585,6 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
     s = jnp.linspace(0.0, 1.0, 6, dtype=jnp.float64)
     point_method = getattr(model, point_method_name)
     batch_method = getattr(model, batch_method_name)
-    observed_shapes: list[tuple[int, int]] = []
 
     def fake_batch(
         model: _KinematicsProbe,
@@ -536,10 +593,7 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
         operation: str,
     ) -> Array:
         del model
-        jax.debug.callback(
-            lambda shape: observed_shapes.append((int(shape[0]), int(shape[1]))),
-            jnp.asarray([q.shape[0], s.shape[1]]),
-        )
+        marker = 100 * q.shape[0] + s.shape[1]
         result_shape = (q.shape[0], s.shape[1])
         if operation == "pose":
             result_shape = (*result_shape, 3)
@@ -547,7 +601,7 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
             result_shape = (*result_shape, 3, q.shape[1])
         else:
             raise AssertionError(f"Unexpected operation {operation!r}.")
-        return jnp.zeros(result_shape, dtype=q.dtype)
+        return jnp.full(result_shape, marker, dtype=q.dtype)
 
     monkeypatch.setattr(loader, "_execute_pcs_kinematics_batch", fake_batch)
     monkeypatch.setattr(
@@ -557,45 +611,39 @@ def test_public_kinematics_vmaps_reach_batch_shaped_warp_executors(
 
     spatial = jax.vmap(lambda value: point_method(q[0], value))(s)
     jax.block_until_ready(spatial)
-    assert observed_shapes == [(1, 6)]
+    assert_allclose(spatial, 106.0)
 
-    observed_shapes.clear()
     environments = jax.vmap(lambda value: point_method(value, s[0]))(q)
     jax.block_until_ready(environments)
-    assert observed_shapes == [(4, 1)]
+    assert_allclose(environments, 401.0)
 
-    observed_shapes.clear()
     pairwise = jax.vmap(point_method)(q, s[: q.shape[0]])
     jax.block_until_ready(pairwise)
     assert pairwise.shape == (4, *trailing_shape)
-    assert observed_shapes == [(4, 1)]
+    assert_allclose(pairwise, 401.0)
 
-    observed_shapes.clear()
     non_pairwise = jax.vmap(point_method, in_axes=(0, None))(q, s[0])
     jax.block_until_ready(non_pairwise)
     assert non_pairwise.shape == (4, *trailing_shape)
-    assert observed_shapes == [(4, 1)]
+    assert_allclose(non_pairwise, 401.0)
 
-    observed_shapes.clear()
     explicit_cartesian = jax.vmap(
         batch_method,
         in_axes=(0, None),
     )(q, s)
     jax.block_until_ready(explicit_cartesian)
     assert explicit_cartesian.shape == (4, 6, *trailing_shape)
-    assert observed_shapes == [(4, 6)]
+    assert_allclose(explicit_cartesian, 406.0)
 
-    observed_shapes.clear()
     per_environment_s = jnp.stack([s, s[::-1], s, s[::-1]])
     per_environment = jax.vmap(batch_method)(q, per_environment_s)
     jax.block_until_ready(per_environment)
     assert per_environment.shape == (4, 6, *trailing_shape)
-    assert observed_shapes == [(4, 6)]
+    assert_allclose(per_environment, 406.0)
 
-    observed_shapes.clear()
     nested_cartesian = jax.vmap(
         lambda value: jax.vmap(lambda sample: point_method(value, sample))(s)
     )(q)
     jax.block_until_ready(nested_cartesian)
     assert nested_cartesian.shape == (4, 6, *trailing_shape)
-    assert observed_shapes == [(4, 6)]
+    assert_allclose(nested_cartesian, 406.0)

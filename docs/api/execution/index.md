@@ -2,7 +2,8 @@
 
 The `soromox.systems.execution` package defines the backend names and optional
 tuning parameters used by supported system classes. The user-facing workflow is
-described in [Execution Backends](../../user-guide/execution-backends.md).
+described in
+[Execution Devices and Backends](../../user-guide/execution-devices-and-backends.md).
 
 !!! note "Use the system methods in normal applications"
     Most users should not call classes or functions in this package directly.
@@ -13,9 +14,9 @@ described in [Execution Backends](../../user-guide/execution-backends.md).
 
 ## Public configuration
 
-`ExecutionBackend` is the accepted backend-name type. `PCSBackendParams` groups
-optional PlanarPCS and PCS launch tuning rather than adding backend-specific
-keywords to each system constructor.
+`ExecutionBackend` is the accepted backend-name type. `GVSBackendParams` and
+`PCSBackendParams` group family-specific launch tuning rather than adding
+backend-specific keywords to each system constructor.
 
 ```python
 from soromox.systems import PCS, PCSBackendParams
@@ -34,7 +35,10 @@ robot = PCS.from_links(
       heading_level: 2
       members:
         - ExecutionBackend
+        - GVSBackendParams
         - PCSBackendParams
+        - DEFAULT_GVS_BLOCK_DIM
+        - DEFAULT_GVS_LARGE_BLOCK_DIM
         - DEFAULT_PLANAR_PCS_BLOCK_DIM
         - DEFAULT_PCS_BLOCK_DIM
 

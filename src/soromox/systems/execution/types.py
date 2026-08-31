@@ -10,8 +10,10 @@ from jax import Array
 ExecutionBackend = Literal["auto", "jax", "warp"]
 WarpExecutorKey = Literal["gvs", "pcs"]
 DynamicsTerms = tuple[Array, Array, Array]
+DynamicsActuationTerms = tuple[Array, Array, Array, Array]
 KinematicsOperation = Literal["pose", "jacobian", "both"]
 KinematicsResult = Array | tuple[Array, Array]
+ActuationOperation = Literal["matrix", "force"]
 
 
 class DynamicsModel(Protocol):
@@ -105,17 +107,30 @@ class ForwardDynamicsModel(DynamicsModel, Protocol):
 
         ...
 
-    def actuation_force(self, q: Array, u: Array, *, qd: Array) -> Array:
+    def actuation_force(
+        self,
+        q: Array,
+        u: Array,
+        *,
+        qd: Array,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
         """Return the generalized actuator force.
 
         Args:
             q: Generalized coordinates for one environment.
             u: Actuator inputs.
             qd: Generalized velocities for the same environment.
+            backend: Optional per-call backend override.
 
         Returns:
             Generalized actuator force vector.
         """
+
+        ...
+
+    def _actuation_force(self, q: Array, u: Array, qd: Array) -> Array:
+        """Return the differentiable JAX generalized actuator force."""
 
         ...
 
@@ -153,6 +168,21 @@ class DynamicsEvaluator(Protocol):
         Returns:
             Inertia, Coriolis/centrifugal, and gravity terms ``(B, Cqd, G)``.
         """
+
+        ...
+
+
+class DynamicsActuationEvaluator(Protocol):
+    """Scalar dynamics-and-actuation evaluator backed by one batched executor."""
+
+    def __call__(
+        self,
+        model: ForwardDynamicsModel,
+        q: Array,
+        qd: Array,
+        u: Array,
+    ) -> DynamicsActuationTerms:
+        """Evaluate inertia, convective, gravity, and actuator-force terms."""
 
         ...
 
@@ -214,6 +244,42 @@ class AbscissaBatchedKinematicsEvaluator(Protocol):
         ...
 
 
+class ActuationModel(Protocol):
+    """Structural contract for transform-aware actuation execution."""
+
+    backend: ExecutionBackend
+    num_dofs: int
+    num_actuators: int
+
+    def _actuation_matrix(self, q: Array) -> Array:
+        """Return the differentiable scalar JAX transmission matrix."""
+
+        ...
+
+    def _actuation_force(self, q: Array, u: Array, qd: Array) -> Array:
+        """Return the differentiable scalar JAX generalized actuator force."""
+
+        ...
+
+
+class ActuationMatrixEvaluator(Protocol):
+    """Scalar matrix evaluator backed by one canonical batched executor."""
+
+    def __call__(self, model: ActuationModel, q: Array) -> Array:
+        """Return one transmission matrix with shape ``(D, A)``."""
+
+        ...
+
+
+class ActuationForceEvaluator(Protocol):
+    """Scalar fused-force evaluator backed by one canonical batched executor."""
+
+    def __call__(self, model: ActuationModel, q: Array, u: Array, qd: Array) -> Array:
+        """Return one generalized actuator force with shape ``(D,)``."""
+
+        ...
+
+
 @dataclass(frozen=True)
 class DynamicsCapabilities:
     """Describe optional dynamics support for one system family.
@@ -222,16 +288,17 @@ class DynamicsCapabilities:
         family_name: Human-readable family name used in validation errors.
         warp_executor: Lazy-loader key for the family's Warp implementation.
         warp_cpu_supported: Whether the Warp executor may run when JAX's default
-            backend is CPU. When false, automatic and explicit selection fall
-            back to JAX on CPU.
-        required_num_gauss_points: Exact quadrature size required by Warp, or
-            ``None`` when the executor is shape-generic in quadrature count.
+            backend is CPU. When false, automatic selection falls back to JAX
+            and an explicit Warp request raises an error on CPU.
+        fused_threadlike_force_enabled: Whether eligible linear-threadlike
+            forward dynamics may combine dynamics and direct-effort actuation
+            in one family executor invocation.
     """
 
     family_name: str
     warp_executor: WarpExecutorKey
     warp_cpu_supported: bool = False
-    required_num_gauss_points: int | None = None
+    fused_threadlike_force_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,9 +317,31 @@ class KinematicsCapabilities:
     warp_cpu_supported: bool = True
 
 
+@dataclass(frozen=True)
+class ActuationCapabilities:
+    """Record benchmark-gated high-level threadlike Warp support.
+
+    The low-level Warp-native operand and launcher API is independent of these
+    flags and remains available even when a public operation is disabled.
+    """
+
+    family_name: str
+    warp_executor: WarpExecutorKey
+    matrix_enabled: bool
+    force_enabled: bool
+    warp_cpu_supported: bool = False
+
+
 __all__ = [
     "AbscissaBatchedKinematicsEvaluator",
+    "ActuationCapabilities",
+    "ActuationForceEvaluator",
+    "ActuationMatrixEvaluator",
+    "ActuationModel",
+    "ActuationOperation",
     "DynamicsCapabilities",
+    "DynamicsActuationEvaluator",
+    "DynamicsActuationTerms",
     "DynamicsEvaluator",
     "DynamicsModel",
     "DynamicsTerms",

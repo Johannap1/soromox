@@ -17,9 +17,14 @@ from soromox.systems.components import (
     IsotropicMaterialParams,
 )
 from soromox.systems.execution import (
+    GVS_ACTUATION,
     GVS_DYNAMICS,
     GVS_KINEMATICS,
     ExecutionBackend,
+    GVSBackendParams,
+    default_gvs_block_dim,
+    dispatch_actuation_force,
+    dispatch_actuation_matrix,
     dispatch_dynamics_terms,
     dispatch_kinematics,
     dispatch_kinematics_abscissa_batched,
@@ -121,6 +126,9 @@ class GVS(SoftRobot):
             uses one full-width reduction branch.
         active_dof_map: Basis matrix mapping active DOFs into the full padded
             joint/link coordinate space.
+        backend_params: Optional tuning parameters for the GVS execution
+            backend. The default uses 128 cooperative threads for models with
+            at most 64 active coordinates and 192 for larger models.
         scale_rotational_basis_by_length: If True, apply scaling to the angular component of the strain basis matrix for improved numerical stability.
         segment_lengths, segment_end_positions: Length of each link, and cumulative link lengths.
         num_integration_points: Number of integration/evaluation points for each link.
@@ -195,6 +203,7 @@ class GVS(SoftRobot):
     active_dof_prefixes: tuple[int, ...] = eqx.field(static=True)
 
     backend: ExecutionBackend = eqx.field(static=True, default="auto")
+    backend_params: GVSBackendParams = eqx.field(static=True)
 
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
@@ -282,6 +291,7 @@ class GVS(SoftRobot):
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
         num_dynamics_prefix_buckets: int = _DEFAULT_NUM_DYNAMICS_PREFIX_BUCKETS,
         backend: ExecutionBackend = "auto",
+        backend_params: GVSBackendParams | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize a GVS robot from typed parameters and static structure.
@@ -305,8 +315,12 @@ class GVS(SoftRobot):
                 full-width reduction branch.
             backend: Preferred execution backend for accelerated GVS methods.
                 ``"auto"`` selects Warp on GPU and JAX on CPU. Currently the
-                Warp implementation covers dynamics; other methods remain in
-                JAX. Transformations that request derivatives always use JAX.
+                Warp implementation covers supported kinematics and dynamics
+                operations. Transformations that request derivatives always
+                use JAX.
+            backend_params: Optional tuning parameters for accelerated GVS
+                execution. The default block size is selected from the model's
+                active coordinate count.
             **kwargs: Additional keyword arguments forwarded to
                 :class:`BaseContinuumSoftRobot`.
 
@@ -329,6 +343,10 @@ class GVS(SoftRobot):
             raise ValueError(
                 f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
             )
+        if backend_params is not None and not isinstance(
+            backend_params, GVSBackendParams
+        ):
+            raise TypeError("backend_params must be a GVSBackendParams instance.")
         structure = _resolve_structure(params, structure)
         super().__init__(base_pose=params.base_pose, **kwargs)
         self.params = params
@@ -347,6 +365,11 @@ class GVS(SoftRobot):
             g=params.gravity,
             p0=params.base_pose,
         )
+        if backend_params is None:
+            backend_params = GVSBackendParams(
+                warp_block_dim=default_gvs_block_dim(self.num_dofs)
+            )
+        self.backend_params = backend_params
         self._configure_actuation(actuators, passive_elements)
         self.precompute()
 
@@ -5619,6 +5642,29 @@ class GVS(SoftRobot):
 
         return jnp.sum(vmap(U_G_i)(jnp.arange(self.num_segments)))
 
+    def actuation_matrix(
+        self, q: Array, *, backend: ExecutionBackend | None = None
+    ) -> Array:
+        """Return the actuator matrix through the selected execution backend."""
+
+        return dispatch_actuation_matrix(
+            self, q, backend=backend, capabilities=GVS_ACTUATION
+        )
+
+    def actuation_force(
+        self,
+        q: Array,
+        u: Array,
+        qd: Array | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Return generalized actuator force through the selected backend."""
+
+        return dispatch_actuation_force(
+            self, q, u, qd, backend=backend, capabilities=GVS_ACTUATION
+        )
+
     def _threadlike_local_basis(
         self,
         routing: ThreadlikeRouting,
@@ -5799,4 +5845,6 @@ class GVS(SoftRobot):
             ValueError: If ``actuation_args`` does not contain one or two
                 elements.
         """
-        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)
+        return evaluate_forward_dynamics(
+            self, t, y, actuation_args, backend, GVS_DYNAMICS
+        )

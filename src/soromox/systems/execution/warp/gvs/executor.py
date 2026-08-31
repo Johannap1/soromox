@@ -89,7 +89,7 @@ def execute_dynamics_terms(
     General-joint and spatially varying cell operators are evaluated in
     parallel first. One persistent cooperative block per environment then walks
     the serial segment chain, retains recurrence state on chip, accumulates the
-    five-point quadrature contributions, and writes only the final inertia,
+    quadrature contributions, and writes only the final inertia,
     convective-force, and gravity-force terms.
 
     Args:
@@ -163,6 +163,7 @@ def execute_dynamics_terms(
         jnp.asarray([num_cells], dtype=jnp.int32),
         jnp.asarray([num_quadrature], dtype=jnp.int32),
         jnp.asarray([operands.block_dim], dtype=jnp.int32),
+        operands.block_dim,
         output_dims=output_dims,
     )
     return outputs[-3], outputs[-2], outputs[-1]

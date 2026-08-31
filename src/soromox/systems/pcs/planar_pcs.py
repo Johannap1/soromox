@@ -23,8 +23,11 @@ from soromox.systems.execution import (
     DEFAULT_PLANAR_PCS_BLOCK_DIM,
     PCS_DYNAMICS,
     PCS_KINEMATICS,
+    PLANAR_PCS_ACTUATION,
     ExecutionBackend,
     PCSBackendParams,
+    dispatch_actuation_force,
+    dispatch_actuation_matrix,
     dispatch_dynamics_terms,
     dispatch_kinematics,
     dispatch_kinematics_abscissa_batched,
@@ -726,11 +729,11 @@ class PlanarPCS(SoftRobot):
     ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
         """Build compact state-independent planar dynamics operands.
 
-        The arrays encode the active strain selection, the five-point
-        quadrature grid, diagonal mass action, packed inertia layout, and base-
-        frame gravity. They are cached on the model and shared by the JAX and
-        Warp dynamics implementations, so backend execution does not repeat
-        this structural preprocessing.
+        The arrays encode the active strain selection, quadrature grid,
+        diagonal mass action, packed inertia layout, and base-frame gravity.
+        They are cached on the model and shared by the JAX and Warp dynamics
+        implementations, so backend execution does not repeat this structural
+        preprocessing.
 
         Args:
             M_segments: Local planar spatial-inertia matrices with shape
@@ -2860,6 +2863,34 @@ class PlanarPCS(SoftRobot):
         """Return body strain energy plus installed passive-element energy."""
         return 0.5 * q @ self.K_active @ q + self.passive_elastic_energy(q)
 
+    def actuation_matrix(
+        self, q: Array, *, backend: ExecutionBackend | None = None
+    ) -> Array:
+        """Return the actuator matrix through the selected execution backend."""
+
+        return dispatch_actuation_matrix(
+            self, q, backend=backend, capabilities=PLANAR_PCS_ACTUATION
+        )
+
+    def actuation_force(
+        self,
+        q: Array,
+        u: Array,
+        qd: Array | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Return generalized actuator force through the selected backend."""
+
+        return dispatch_actuation_force(
+            self,
+            q,
+            u,
+            qd,
+            backend=backend,
+            capabilities=PLANAR_PCS_ACTUATION,
+        )
+
     def _threadlike_local_basis(
         self,
         segment_index: Array,
@@ -3382,11 +3413,11 @@ class PlanarPCS(SoftRobot):
         """Assemble planar PCS dynamics terms for one or many environments.
 
         ``backend=None`` uses the model's configured :attr:`backend`. Warp is
-        selected only for forward-only GPU execution with exactly five Gauss
-        points; CPU execution, other quadrature counts, and all forward- or
-        reverse-mode differentiation use the JAX implementation. Applying
-        :func:`jax.vmap` to scalar calls invokes one batch-shaped Warp pipeline
-        rather than mapping independent batch-one launches.
+        selected for forward-only GPU execution with any positive quadrature
+        count; CPU execution and all forward- or reverse-mode differentiation
+        use the JAX implementation. Applying :func:`jax.vmap` to scalar calls
+        invokes one batch-shaped Warp pipeline rather than mapping independent
+        batch-one launches.
 
         The Warp implementation uses FP64 SE(2) constant-strain operators and
         one persistent cooperative chain block per environment. Its generated
@@ -3409,8 +3440,6 @@ class PlanarPCS(SoftRobot):
         Raises:
             ValueError: If the backend or input shapes are invalid, or a Warp
                 batch is empty.
-            NotImplementedError: If Warp is explicitly requested with a
-                quadrature rule other than five Gauss points.
             TypeError: If Warp is selected for non-FP64 states.
             ImportError: If Warp is selected but ``warp-lang`` is unavailable.
         """
@@ -3514,4 +3543,6 @@ class PlanarPCS(SoftRobot):
             ValueError: If ``actuation_args`` does not contain one or two
                 elements.
         """
-        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)
+        return evaluate_forward_dynamics(
+            self, t, y, actuation_args, backend, PCS_DYNAMICS
+        )

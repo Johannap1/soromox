@@ -21,10 +21,13 @@ from soromox.systems.components import (
 )
 from soromox.systems.execution import (
     DEFAULT_PCS_BLOCK_DIM,
+    PCS_ACTUATION,
     PCS_DYNAMICS,
     PCS_KINEMATICS,
     ExecutionBackend,
     PCSBackendParams,
+    dispatch_actuation_force,
+    dispatch_actuation_matrix,
     dispatch_dynamics_terms,
     dispatch_kinematics,
     dispatch_kinematics_abscissa_batched,
@@ -748,11 +751,11 @@ class PCS(SoftRobot):
     ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array]:
         """Build compact state-independent spatial dynamics operands.
 
-        The arrays encode the active strain selection, the five-point
-        quadrature grid, diagonal mass action, packed inertia layout, and base-
-        frame gravity. They are cached on the model and shared by the JAX and
-        Warp dynamics implementations, so backend execution does not repeat
-        this structural preprocessing.
+        The arrays encode the active strain selection, quadrature grid,
+        diagonal mass action, packed inertia layout, and base-frame gravity.
+        They are cached on the model and shared by the JAX and Warp dynamics
+        implementations, so backend execution does not repeat this structural
+        preprocessing.
 
         Args:
             M_segments: Local spatial-inertia matrices with shape
@@ -2993,6 +2996,29 @@ class PCS(SoftRobot):
         """Return body strain energy plus installed passive-element energy."""
         return 0.5 * q @ self.K_active @ q + self.passive_elastic_energy(q)
 
+    def actuation_matrix(
+        self, q: Array, *, backend: ExecutionBackend | None = None
+    ) -> Array:
+        """Return the actuator matrix through the selected execution backend."""
+
+        return dispatch_actuation_matrix(
+            self, q, backend=backend, capabilities=PCS_ACTUATION
+        )
+
+    def actuation_force(
+        self,
+        q: Array,
+        u: Array,
+        qd: Array | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> Array:
+        """Return generalized actuator force through the selected backend."""
+
+        return dispatch_actuation_force(
+            self, q, u, qd, backend=backend, capabilities=PCS_ACTUATION
+        )
+
     def _threadlike_local_basis(
         self,
         segment_index: Array,
@@ -3575,11 +3601,11 @@ class PCS(SoftRobot):
         """Assemble spatial PCS dynamics terms for one or many environments.
 
         ``backend=None`` uses the model's configured :attr:`backend`. Warp is
-        selected only for forward-only GPU execution with exactly five Gauss
-        points; CPU execution, other quadrature counts, and all forward- or
-        reverse-mode differentiation use the JAX implementation. Applying
-        :func:`jax.vmap` to scalar calls invokes one batch-shaped Warp pipeline
-        rather than mapping independent batch-one launches.
+        selected for forward-only GPU execution with any positive quadrature
+        count; CPU execution and all forward- or reverse-mode differentiation
+        use the JAX implementation. Applying :func:`jax.vmap` to scalar calls
+        invokes one batch-shaped Warp pipeline rather than mapping independent
+        batch-one launches.
 
         The Warp implementation uses FP64 local constant-strain operators and
         one persistent cooperative chain block per environment. Its generated
@@ -3602,8 +3628,6 @@ class PCS(SoftRobot):
         Raises:
             ValueError: If the backend or input shapes are invalid, or a Warp
                 batch is empty.
-            NotImplementedError: If Warp is explicitly requested with a
-                quadrature rule other than five Gauss points.
             TypeError: If Warp is selected for non-FP64 states.
             ImportError: If Warp is selected but ``warp-lang`` is unavailable.
         """
@@ -3707,4 +3731,6 @@ class PCS(SoftRobot):
             ValueError: If ``actuation_args`` does not contain one or two
                 elements.
         """
-        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)
+        return evaluate_forward_dynamics(
+            self, t, y, actuation_args, backend, PCS_DYNAMICS
+        )

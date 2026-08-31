@@ -21,26 +21,36 @@ def test_gvs_public_names_are_discoverable_without_loading_warp() -> None:
         "GVSKinematicsShapes",
         "GVSOperands",
         "GVSPipelineShapes",
+        "GVSThreadlikeOperands",
+        "GVSThreadlikeShapes",
         "cell_terms_kernel",
         "cooperative_joint_terms_kernel",
         "gvs_cooperative_node_states_kernel",
+        "gvs_dynamics_and_threadlike_actuation_force",
         "joint_terms_kernel",
         "gvs_jacobian_samples_kernel",
         "gvs_node_poses_kernel",
         "gvs_node_states_kernel",
         "gvs_pose_samples_kernel",
         "gvs_samples_kernel",
+        "gvs_threadlike_force_kernel",
+        "gvs_threadlike_force_block_kernel",
+        "gvs_threadlike_matrix_kernel",
         "launch_cell_terms",
         "launch_cooperative_joint_terms",
         "launch_joint_terms",
         "launch_forward_kinematics",
         "launch_forward_kinematics_and_jacobians",
         "launch_gvs_forward_kinematics",
+        "launch_gvs_dynamics_and_threadlike_actuation_force",
         "launch_gvs_inertial_jacobians",
         "launch_gvs_kinematics",
+        "launch_gvs_threadlike_actuation_force",
+        "launch_gvs_threadlike_actuation_matrix",
         "launch_inertial_jacobians",
         "launch_persistent_chain",
         "persistent_chain_kernel",
+        "prepare_gvs_threadlike_strain_kernel",
     }
     assert expected == set(gvs.__all__)
     assert expected <= set(dir(gvs))
@@ -59,6 +69,9 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         gvs_node_states_kernel,
         gvs_pose_samples_kernel,
         gvs_samples_kernel,
+        gvs_threadlike_force_block_kernel,
+        gvs_threadlike_force_kernel,
+        gvs_threadlike_matrix_kernel,
         joint_terms_kernel,
         launch_cell_terms,
         launch_cooperative_joint_terms,
@@ -67,10 +80,13 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         launch_gvs_forward_kinematics,
         launch_gvs_inertial_jacobians,
         launch_gvs_kinematics,
+        launch_gvs_threadlike_actuation_force,
+        launch_gvs_threadlike_actuation_matrix,
         launch_inertial_jacobians,
         launch_joint_terms,
         launch_persistent_chain,
         persistent_chain_kernel,
+        prepare_gvs_threadlike_strain_kernel,
     )
 
     launchers = (
@@ -84,6 +100,8 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         launch_cooperative_joint_terms,
         launch_cell_terms,
         launch_persistent_chain,
+        launch_gvs_threadlike_actuation_matrix,
+        launch_gvs_threadlike_actuation_force,
     )
     kernels = (
         gvs_cooperative_node_states_kernel,
@@ -96,6 +114,10 @@ def test_public_gvs_launch_functions_have_documented_warp_contracts() -> None:
         cooperative_joint_terms_kernel,
         cell_terms_kernel,
         persistent_chain_kernel,
+        prepare_gvs_threadlike_strain_kernel,
+        gvs_threadlike_matrix_kernel,
+        gvs_threadlike_force_kernel,
+        gvs_threadlike_force_block_kernel,
     )
 
     for launcher in launchers:

@@ -11,17 +11,27 @@ from soromox.systems.execution.transforms import (
     evaluate_inertial_jacobian,
 )
 from soromox.systems.execution.types import (
+    ActuationCapabilities,
+    ActuationModel,
+    DynamicsActuationTerms,
     DynamicsCapabilities,
     DynamicsModel,
     DynamicsTerms,
     ExecutionBackend,
+    ForwardDynamicsModel,
     KinematicsCapabilities,
     KinematicsModel,
     KinematicsOperation,
     KinematicsResult,
 )
+from soromox.systems.execution.warp.actuation.threadlike import (
+    supports_linear_threadlike_force,
+    supports_linear_threadlike_matrix,
+)
 from soromox.systems.execution.warp.loader import (
     get_abscissa_batched_kinematics_evaluator,
+    get_actuation_evaluator,
+    get_dynamics_actuation_evaluator,
     get_dynamics_evaluator,
     get_kinematics_evaluator,
 )
@@ -30,7 +40,7 @@ from soromox.systems.execution.warp.loader import (
 def _select_backend(
     model: DynamicsModel,
     requested: ExecutionBackend | None,
-    capabilities: DynamicsCapabilities | KinematicsCapabilities,
+    capabilities: DynamicsCapabilities | KinematicsCapabilities | ActuationCapabilities,
     *,
     warp_supported: bool,
 ) -> ExecutionBackend:
@@ -49,7 +59,7 @@ def _select_backend(
     Raises:
         ValueError: If the requested or configured backend name is invalid.
         NotImplementedError: If Warp was requested explicitly for an unsupported
-            quadrature rule or model instance.
+            device or model instance.
     """
 
     configured = model.backend if requested is None else requested
@@ -58,31 +68,23 @@ def _select_backend(
             f"backend must be one of 'auto', 'jax', or 'warp', got {requested!r}."
         )
 
+    device = jax.default_backend()
     selected: ExecutionBackend = configured
     if selected == "auto":
-        selected = "warp" if jax.default_backend() == "gpu" else "jax"
-    if (
-        selected == "warp"
-        and jax.default_backend() != "gpu"
-        and not capabilities.warp_cpu_supported
-    ):
+        selected = "warp" if device == "gpu" else "jax"
+    warp_device_supported = device == "gpu" or (
+        device == "cpu" and capabilities.warp_cpu_supported
+    )
+    if selected == "warp" and not warp_device_supported:
+        if configured == "warp":
+            raise NotImplementedError(
+                f"The Warp {capabilities.family_name} executor is not supported "
+                f"on the active {device.upper()} device."
+            )
         selected = "jax"
     if model.num_dofs == 0:
         selected = "jax"
 
-    required_points = getattr(capabilities, "required_num_gauss_points", None)
-    actual_points = getattr(model, "num_gauss_points", None)
-    if (
-        selected == "warp"
-        and required_points is not None
-        and actual_points != required_points
-    ):
-        if configured == "warp":
-            raise NotImplementedError(
-                f"The Warp {capabilities.family_name} executor "
-                f"requires exactly {required_points} Gauss points."
-            )
-        selected = "jax"
     if selected == "warp" and not warp_supported:
         if configured == "warp":
             raise NotImplementedError(
@@ -91,6 +93,133 @@ def _select_backend(
             )
         selected = "jax"
     return selected
+
+
+def _explicit_backend(
+    model: ActuationModel, requested: ExecutionBackend | None
+) -> ExecutionBackend:
+    """Return the configured name before automatic device resolution."""
+
+    return model.backend if requested is None else requested
+
+
+def dispatch_actuation_matrix(
+    model: ActuationModel,
+    q: Array,
+    *,
+    backend: ExecutionBackend | None,
+    capabilities: ActuationCapabilities,
+) -> Array:
+    """Dispatch one scalar linear-threadlike actuation-matrix request."""
+
+    q = jnp.asarray(q)
+    if q.shape != (model.num_dofs,):
+        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    eligible = supports_linear_threadlike_matrix(model)
+    configured = _explicit_backend(model, backend)
+    if configured == "warp" and not eligible:
+        raise NotImplementedError(
+            f"Warp {capabilities.family_name} actuation_matrix requires only "
+            "built-in linear ThreadlikeActuator transmissions."
+        )
+    if configured == "warp" and eligible and not capabilities.matrix_enabled:
+        raise NotImplementedError(
+            f"High-level Warp {capabilities.family_name} actuation_matrix "
+            "dispatch did not pass the GPU production gate; only the public "
+            "low-level Warp-native threadlike integration API is available."
+        )
+    selected = _select_backend(
+        model,
+        backend,
+        capabilities,
+        warp_supported=eligible and capabilities.matrix_enabled,
+    )
+    if selected == "jax":
+        return model._actuation_matrix(q)
+    evaluator = get_actuation_evaluator(capabilities.warp_executor, "matrix")
+    return evaluator(model, q)  # type: ignore[operator]
+
+
+def dispatch_actuation_force(
+    model: ActuationModel,
+    q: Array,
+    u: Array,
+    qd: Array | None,
+    *,
+    backend: ExecutionBackend | None,
+    capabilities: ActuationCapabilities,
+) -> Array:
+    """Dispatch one scalar fused linear-threadlike generalized-force request."""
+
+    q = jnp.asarray(q)
+    u = jnp.asarray(u)
+    if q.shape != (model.num_dofs,):
+        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if u.shape != (model.num_actuators,):
+        raise ValueError(f"u must have shape ({model.num_actuators},), got {u.shape}.")
+    if qd is None:
+        qd = jnp.zeros_like(q)
+    else:
+        qd = jnp.asarray(qd)
+        if qd.shape != q.shape:
+            raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
+
+    eligible = supports_linear_threadlike_force(model)
+    configured = _explicit_backend(model, backend)
+    if configured == "warp" and not eligible:
+        raise NotImplementedError(
+            f"Warp {capabilities.family_name} actuation_force requires only "
+            "built-in linear ThreadlikeActuator transmissions with DirectEffort."
+        )
+    if configured == "warp" and eligible and not capabilities.force_enabled:
+        raise NotImplementedError(
+            f"High-level Warp {capabilities.family_name} actuation_force "
+            "dispatch did not pass the GPU production gate; only the public "
+            "low-level Warp-native threadlike integration API is available."
+        )
+    selected = _select_backend(
+        model,
+        backend,
+        capabilities,
+        warp_supported=eligible and capabilities.force_enabled,
+    )
+    if selected == "jax":
+        return model._actuation_force(q, u, qd)
+    evaluator = get_actuation_evaluator(capabilities.warp_executor, "force")
+    return evaluator(model, q, u, qd)  # type: ignore[operator]
+
+
+def dispatch_fused_dynamics_actuation_force(
+    model: ForwardDynamicsModel,
+    q: Array,
+    qd: Array,
+    u: Array,
+    *,
+    backend: ExecutionBackend | None,
+    capabilities: DynamicsCapabilities,
+) -> DynamicsActuationTerms | None:
+    """Use a benchmark-qualified fused Warp primal when it is eligible.
+
+    Returning ``None`` preserves the independently dispatched dynamics and
+    actuation paths. An explicit Warp request therefore continues to permit
+    JAX actuation for custom transmissions or effort laws.
+    """
+
+    if (
+        not capabilities.fused_threadlike_force_enabled
+        or not supports_linear_threadlike_force(model)
+    ):
+        return None
+    selected = _select_backend(
+        model,
+        backend,
+        capabilities,
+        warp_supported=True,
+    )
+    if selected != "warp":
+        return None
+    evaluator = get_dynamics_actuation_evaluator(capabilities.warp_executor)
+    return evaluator(model, q, qd, u)
 
 
 def dispatch_dynamics_terms(
@@ -130,7 +259,7 @@ def dispatch_dynamics_terms(
         ValueError: If either state has an invalid shape, their shapes differ,
             or the backend name is invalid.
         NotImplementedError: If Warp is explicitly requested for an unsupported
-            quadrature rule or model instance.
+            device or model instance.
         ImportError: If Warp is selected but the optional dependency is absent.
         TypeError: If the selected Warp executor does not support the state
             dtype.
@@ -315,6 +444,8 @@ def dispatch_kinematics_abscissa_batched(
 
 
 __all__ = [
+    "dispatch_actuation_force",
+    "dispatch_actuation_matrix",
     "dispatch_dynamics_terms",
     "dispatch_kinematics",
     "dispatch_kinematics_abscissa_batched",
