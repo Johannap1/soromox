@@ -84,6 +84,10 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Breaking changes
 
+- Changed all SoRoMoX quaternion coordinates to the scalar-last Hamilton
+  convention `[qx, qy, qz, qw]`, including spatial base poses, operational-space
+  poses, floating-base state, and JAX and Warp execution. Code that constructs
+  or indexes quaternions directly must use the new coordinate order.
 - Replaced the ambiguous `SoftRobot.num_dofs` attribute with explicit
   `num_internal_dofs`, `num_coordinates`, and `num_velocities` dimensions.
   Code that allocates configurations, velocities, or internal controller state
