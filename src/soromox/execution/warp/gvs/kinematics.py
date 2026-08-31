@@ -9,10 +9,10 @@ from soromox.execution.warp.common.se3 import (
     Vec6d,
     _ad_action,
     _adjoint_inverse_action,
+    _exponential_transform,
     _forward_coefficients,
     _left_action,
     _left_coefficients,
-    _rotation_entry,
     _translation,
 )
 
@@ -65,35 +65,6 @@ def _relative_pose_from_inverse_adjoint(
     result[0, 3] = p_hat[2, 1]
     result[1, 3] = p_hat[0, 2]
     result[2, 3] = p_hat[1, 0]
-    result[3, 3] = wp.float64(1.0)
-    return result
-
-
-@wp.func
-def _relative_pose_from_magnus(magnus: Vec6d) -> wp.mat44d:
-    """Evaluate an SE(3) exponential from one Magnus vector.
-
-    Args:
-        magnus: Integrated six-dimensional strain.
-
-    Returns:
-        Relative homogeneous transform ``exp(magnus)``.
-    """
-
-    omega = wp.vec3d(magnus[0], magnus[1], magnus[2])
-    linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
-    angle_sq = wp.dot(omega, omega)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
-    result = wp.mat44d()
-    row = int(0)
-    while row < 3:
-        column = int(0)
-        while column < 3:
-            result[row, column] = _rotation_entry(omega, angle_sq, forward, row, column)
-            column += 1
-        result[row, 3] = translation[row]
-        row += 1
     result[3, 3] = wp.float64(1.0)
     return result
 
@@ -708,7 +679,7 @@ def gvs_pose_samples_kernel(
         row += 1
     coefficient = wp.sqrt(wp.float64(3.0)) * ds * ds / wp.float64(12.0)
     magnus = ds * wp.float64(0.5) * (xi1 + xi2) + coefficient * _ad_action(xi1, xi2)
-    pose = base_pose * _relative_pose_from_magnus(magnus)
+    pose = base_pose * _exponential_transform(magnus)
     row = int(0)
     while row < 4:
         column = int(0)
@@ -970,7 +941,7 @@ def gvs_jacobian_samples_kernel(
         row += 1
     coefficient = wp.sqrt(wp.float64(3.0)) * ds * ds / wp.float64(12.0)
     magnus = ds * wp.float64(0.5) * (xi1 + xi2) + coefficient * _ad_action(xi1, xi2)
-    pose = base_pose * _relative_pose_from_magnus(magnus)
+    pose = base_pose * _exponential_transform(magnus)
     write_gvs_sample_jacobian(
         environment,
         sample,
@@ -1128,7 +1099,7 @@ def gvs_samples_kernel(
     magnus = ds * wp.float64(0.5) * (xi1 + xi2) + commutator_coefficient * _ad_action(
         xi1, xi2
     )
-    relative = _relative_pose_from_magnus(magnus)
+    relative = _exponential_transform(magnus)
     pose = base_pose * relative
     row = int(0)
     while row < 4:

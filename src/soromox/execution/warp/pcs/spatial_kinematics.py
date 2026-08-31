@@ -12,9 +12,9 @@ from soromox.execution.warp.common.se3 import (
     _forward_coefficients,
     _left_action,
     _left_coefficients,
-    _rotation_entry,
     _translation,
 )
+from soromox.execution.warp.common.so3 import _rotation_entry
 
 wp.set_module_options({"enable_backward": False})
 

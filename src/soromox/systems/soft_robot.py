@@ -1619,65 +1619,66 @@ class SoftRobot(DynamicalSystem):
             World-frame Jacobians with matching leading dimensions and
             ``num_velocities`` columns.
         """
-        spatial_dimension = 3 if self.is_planar else 6
-        transform_dimension = 3 if self.is_planar else 4
         leading_shape = relative_transforms.shape[:-2]
-        transforms_flat = relative_transforms.reshape(
-            -1, transform_dimension, transform_dimension
-        )
-        jacobians_internal_flat = jacobians_internal.reshape(
-            -1, spatial_dimension, self.num_internal_dofs
-        )
-
-        adjoint_inverse = se2.adjoint_inverse if self.is_planar else se3.adjoint_inverse
-        relative_adjoint_inverses = vmap(adjoint_inverse)(transforms_flat)
-        root_jacobian = self._floating_base_body_jacobian(q)
-        jacobians_base_body = jnp.einsum(
-            "nij,jk->nik", relative_adjoint_inverses, root_jacobian
-        )
-
         base_transform = self.base_transform_from_configuration(q)
-        base_rotation = (
-            base_transform[:2, :2] if self.is_planar else base_transform[:3, :3]
-        )
-        world_transforms = jnp.einsum("ij,njk->nik", base_transform, transforms_flat)
+        linear_dimension = 2 if self.is_planar else 3
+        base_rotation = base_transform[:linear_dimension, :linear_dimension]
+        relative_positions = relative_transforms[
+            ..., :linear_dimension, linear_dimension
+        ]
+        world_offsets = jnp.einsum("ij,...j->...i", base_rotation, relative_positions)
+
         if self.is_planar:
-            base_rotation_action = jnp.zeros((3, 3), dtype=q.dtype)
-            base_rotation_action = base_rotation_action.at[0, 0].set(1.0)
-            base_rotation_action = base_rotation_action.at[1:, 1:].set(base_rotation)
-            world_rotation_actions = jnp.zeros(
-                (world_transforms.shape[0], 3, 3), dtype=q.dtype
+            jacobians_base = jnp.zeros(
+                (*leading_shape, 3, 3), dtype=jacobians_internal.dtype
             )
-            world_rotation_actions = world_rotation_actions.at[:, 0, 0].set(1.0)
-            world_rotation_actions = world_rotation_actions.at[:, 1:, 1:].set(
-                world_transforms[:, :2, :2]
+            jacobians_base = jacobians_base.at[..., 0, 0].set(1.0)
+            jacobians_base = jacobians_base.at[..., 1, 0].set(-world_offsets[..., 1])
+            jacobians_base = jacobians_base.at[..., 2, 0].set(world_offsets[..., 0])
+            jacobians_base = jacobians_base.at[..., 1, 1].set(1.0)
+            jacobians_base = jacobians_base.at[..., 2, 2].set(1.0)
+            jacobians_internal_world = jnp.concatenate(
+                [
+                    jacobians_internal[..., :1, :],
+                    jnp.einsum(
+                        "ij,...jk->...ik",
+                        base_rotation,
+                        jacobians_internal[..., 1:, :],
+                    ),
+                ],
+                axis=-2,
             )
         else:
-            base_rotation_action = jnp.zeros((6, 6), dtype=q.dtype)
-            base_rotation_action = base_rotation_action.at[:3, :3].set(base_rotation)
-            base_rotation_action = base_rotation_action.at[3:, 3:].set(base_rotation)
-            world_rotation_actions = jnp.zeros(
-                (world_transforms.shape[0], 6, 6), dtype=q.dtype
+            jacobians_base = jnp.broadcast_to(
+                jnp.eye(6, dtype=jacobians_internal.dtype), (*leading_shape, 6, 6)
             )
-            world_rotation_actions = world_rotation_actions.at[:, :3, :3].set(
-                world_transforms[:, :3, :3]
+            rx, ry, rz = (
+                world_offsets[..., 0],
+                world_offsets[..., 1],
+                world_offsets[..., 2],
             )
-            world_rotation_actions = world_rotation_actions.at[:, 3:, 3:].set(
-                world_transforms[:, :3, :3]
+            jacobians_base = jacobians_base.at[..., 3, 1].set(rz)
+            jacobians_base = jacobians_base.at[..., 3, 2].set(-ry)
+            jacobians_base = jacobians_base.at[..., 4, 0].set(-rz)
+            jacobians_base = jacobians_base.at[..., 4, 2].set(rx)
+            jacobians_base = jacobians_base.at[..., 5, 0].set(ry)
+            jacobians_base = jacobians_base.at[..., 5, 1].set(-rx)
+            jacobians_internal_world = jnp.concatenate(
+                [
+                    jnp.einsum(
+                        "ij,...jk->...ik",
+                        base_rotation,
+                        jacobians_internal[..., :3, :],
+                    ),
+                    jnp.einsum(
+                        "ij,...jk->...ik",
+                        base_rotation,
+                        jacobians_internal[..., 3:, :],
+                    ),
+                ],
+                axis=-2,
             )
-
-        jacobians_base_world = jnp.einsum(
-            "nij,njk->nik", world_rotation_actions, jacobians_base_body
-        )
-        jacobians_internal_world = jnp.einsum(
-            "ij,njk->nik", base_rotation_action, jacobians_internal_flat
-        )
-        jacobians_world = jnp.concatenate(
-            [jacobians_base_world, jacobians_internal_world], axis=-1
-        )
-        return jacobians_world.reshape(
-            *leading_shape, spatial_dimension, self.num_velocities
-        )
+        return jnp.concatenate([jacobians_base, jacobians_internal_world], axis=-1)
 
     def _floating_world_positions(self, q: Array, relative_positions: Array) -> Array:
         """

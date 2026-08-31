@@ -261,14 +261,19 @@ def test_directional_gvs_products_match_dense_jacobians(
     assert_allclose(generalized_force.numpy(), 0.0, rtol=0.0, atol=0.0)
 
 
+@pytest.mark.parametrize("device_alias", ("cpu", "cuda:0"))
 def test_spatial_floating_directional_composition_matches_dense(
+    device_alias: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
     """Match common floating JVP/VJP composition to augmented Jacobians."""
 
     wp = pytest.importorskip("warp")
-    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / "floating-directional-cache"))
+    if device_alias == "cuda:0" and not wp.is_cuda_available():
+        pytest.skip("Floating directional CUDA composition requires CUDA.")
+    cache_name = f"floating-directional-cache-{device_alias.replace(':', '-')}"
+    monkeypatch.setenv("WARP_CACHE_PATH", str(tmp_path / cache_name))
     from soromox.execution.warp.common.floating_kinematics import (
         launch_spatial_floating_jacobian_composition,
         launch_spatial_floating_kinematics_jvp_composition,
@@ -276,7 +281,7 @@ def test_spatial_floating_directional_composition_matches_dense(
         launch_spatial_floating_vjp_composition,
     )
 
-    device = wp.get_device("cpu")
+    device = wp.get_device(device_alias)
     wp.set_device(device)
     batch_size, sample_count, internal_dofs = 2, 5, 7
     base_pose_host = np.asarray(
@@ -320,7 +325,7 @@ def test_spatial_floating_directional_composition_matches_dense(
         device=device,
     )
     launch_spatial_floating_jacobian_composition(
-        base_pose, relative_pose, internal_jacobian, full_jacobian
+        base_pose, relative_pose, internal_jacobian, 32, full_jacobian
     )
 
     full_velocity = _warp_array(wp, full_velocity_host, device=device)

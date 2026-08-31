@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from soromox.execution.warp.common.so3 import _rotation_entry
+
 
 Vec6d = wp.types.vector(length=6, dtype=wp.float64)
 SPATIAL_DIM = 6
@@ -270,46 +272,6 @@ def _forward_coefficients(angle_sq: wp.float64) -> wp.vec3d:
 
 
 @wp.func
-def _rotation_entry(
-    omega: wp.vec3d,
-    angle_sq: wp.float64,
-    forward: wp.vec3d,
-    row: int,
-    column: int,
-) -> wp.float64:
-    """Evaluate one entry of the SO(3) exponential rotation matrix.
-
-    Args:
-        omega: Rotational exponential coordinate.
-        angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
-        row: Matrix row index.
-        column: Matrix column index.
-
-    Returns:
-        The selected rotation-matrix entry.
-    """
-    delta = wp.float64(0.0)
-    if row == column:
-        delta = wp.float64(1.0)
-    skew = wp.float64(0.0)
-    if row == 0 and column == 1:
-        skew = -omega[2]
-    elif row == 0 and column == 2:
-        skew = omega[1]
-    elif row == 1 and column == 0:
-        skew = omega[2]
-    elif row == 1 and column == 2:
-        skew = -omega[0]
-    elif row == 2 and column == 0:
-        skew = -omega[1]
-    elif row == 2 and column == 1:
-        skew = omega[0]
-    square = omega[row] * omega[column] - angle_sq * delta
-    return delta + forward[0] * skew + forward[1] * square
-
-
-@wp.func
 def _translation(omega: wp.vec3d, linear: wp.vec3d, forward: wp.vec3d) -> wp.vec3d:
     """Evaluate the translational component of an SE(3) exponential.
 
@@ -324,6 +286,34 @@ def _translation(omega: wp.vec3d, linear: wp.vec3d, forward: wp.vec3d) -> wp.vec
     first = wp.cross(omega, linear)
     second = wp.cross(omega, first)
     return linear + forward[1] * first + forward[2] * second
+
+
+@wp.func
+def _exponential_transform(xi: Vec6d) -> wp.mat44d:
+    """Evaluate the homogeneous SE(3) exponential of a spatial coordinate.
+
+    Args:
+        xi: Angular-linear exponential coordinate.
+
+    Returns:
+        Homogeneous transform ``exp(xi)``.
+    """
+    omega = wp.vec3d(xi[0], xi[1], xi[2])
+    linear = wp.vec3d(xi[3], xi[4], xi[5])
+    angle_sq = wp.dot(omega, omega)
+    forward = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, forward)
+    result = wp.mat44d()
+    row = int(0)
+    while row < 3:
+        column = int(0)
+        while column < 3:
+            result[row, column] = _rotation_entry(omega, angle_sq, forward, row, column)
+            column += 1
+        result[row, 3] = translation[row]
+        row += 1
+    result[3, 3] = wp.float64(1.0)
+    return result
 
 
 @wp.func

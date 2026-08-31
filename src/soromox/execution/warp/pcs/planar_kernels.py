@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from soromox.execution.warp.common.se2 import _constant_strain_operators
 from soromox.execution.warp.common.storage import (
     _matrix_value,
     _vector_value,
@@ -15,204 +16,6 @@ from soromox.execution.warp.common.storage import (
 wp.set_module_options({"enable_backward": False})
 
 SPATIAL_DIM = 3
-
-
-@wp.func
-def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
-    """Evaluate stable scalar coefficients for planar exponential operators.
-
-    Args:
-        z: Integrated planar rotation.
-        cutoff: Magnitude below which a polynomial expansion is used.
-
-    Returns:
-        Stable ``(sinc, cosc, tanc)`` coefficients.
-    """
-    x = z * z
-    if wp.abs(z) <= cutoff:
-        return wp.vec3d(
-            wp.float64(1.0)
-            + x
-            * (
-                -wp.float64(1.0 / 6.0)
-                + x
-                * (
-                    wp.float64(1.0 / 120.0)
-                    + x * (-wp.float64(1.0 / 5040.0) + x * wp.float64(1.0 / 362880.0))
-                )
-            ),
-            wp.float64(0.5)
-            + x
-            * (
-                -wp.float64(1.0 / 24.0)
-                + x
-                * (
-                    wp.float64(1.0 / 720.0)
-                    + x * (-wp.float64(1.0 / 40320.0) + x * wp.float64(1.0 / 3628800.0))
-                )
-            ),
-            wp.float64(1.0 / 6.0)
-            + x
-            * (
-                -wp.float64(1.0 / 120.0)
-                + x
-                * (
-                    wp.float64(1.0 / 5040.0)
-                    + x
-                    * (-wp.float64(1.0 / 362880.0) + x * wp.float64(1.0 / 39916800.0))
-                )
-            ),
-        )
-    sine = wp.sin(z)
-    cosine = wp.cos(z)
-    return wp.vec3d(
-        sine / z,
-        (wp.float64(1.0) - cosine) / x,
-        (z - sine) / (x * z),
-    )
-
-
-@wp.func
-def _forward_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
-    """Evaluate derivatives of planar exponential coefficients.
-
-    Args:
-        z: Integrated planar rotation.
-        cutoff: Magnitude below which a polynomial expansion is used.
-
-    Returns:
-        Derivatives of ``(sinc, cosc, tanc)`` with respect to ``z**2``.
-    """
-    x = z * z
-    if wp.abs(z) <= cutoff:
-        return wp.vec3d(
-            -wp.float64(1.0 / 6.0)
-            + x
-            * (
-                wp.float64(1.0 / 60.0)
-                + x * (-wp.float64(1.0 / 1680.0) + x * wp.float64(1.0 / 90720.0))
-            ),
-            -wp.float64(1.0 / 24.0)
-            + x
-            * (
-                wp.float64(1.0 / 360.0)
-                + x * (-wp.float64(1.0 / 13440.0) + x * wp.float64(1.0 / 907200.0))
-            ),
-            -wp.float64(1.0 / 120.0)
-            + x
-            * (
-                wp.float64(1.0 / 2520.0)
-                + x * (-wp.float64(1.0 / 120960.0) + x * wp.float64(1.0 / 9979200.0))
-            ),
-        )
-    sine = wp.sin(z)
-    cosine = wp.cos(z)
-    return wp.vec3d(
-        (z * cosine - sine) / (wp.float64(2.0) * x * z),
-        (z * sine + wp.float64(2.0) * cosine - wp.float64(2.0))
-        / (wp.float64(2.0) * x * x),
-        (wp.float64(3.0) * sine - wp.float64(2.0) * z - z * cosine)
-        / (wp.float64(2.0) * x * x * z),
-    )
-
-
-@wp.func
-def _planar_operators(
-    xi: wp.vec3d,
-    xid: wp.vec3d,
-    s: wp.float64,
-    global_eps: wp.float64,
-    tangent_eps: wp.float64,
-) -> tuple[wp.mat33d, wp.mat33d, wp.vec3d, wp.vec3d]:
-    """Evaluate planar adjoint, tangent, and velocity recurrence operators.
-
-    Args:
-        xi: Constant planar strain of the current segment.
-        xid: Constant planar strain rate of the current segment.
-        s: Segment-local integration coordinate.
-        global_eps: Small-angle tolerance for the exponential adjoint.
-        tangent_eps: Small-angle tolerance for tangent derivatives.
-
-    Returns:
-        Inverse adjoint, left tangent, local velocity, and the tangent time-
-        derivative action on strain rate.
-    """
-    z = s * xi[0]
-    adjoint_cutoff = wp.max(wp.abs(s * global_eps), wp.float64(0.04964607461902946))
-    adjoint_coefficients = _forward_coefficients(z, adjoint_cutoff)
-    sinc_a = adjoint_coefficients[0]
-    cosc_a = adjoint_coefficients[1]
-    sine = wp.sin(z)
-    cosine = wp.cos(z)
-    q0 = s * (sinc_a * xi[2] + z * cosc_a * xi[1])
-    q1 = s * (-sinc_a * xi[1] + z * cosc_a * xi[2])
-
-    adjoint_inverse = wp.mat33d()
-    adjoint_inverse[0, 0] = wp.float64(1.0)
-    adjoint_inverse[1, 0] = -(cosine * q0 + sine * q1)
-    adjoint_inverse[1, 1] = cosine
-    adjoint_inverse[1, 2] = sine
-    adjoint_inverse[2, 0] = sine * q0 - cosine * q1
-    adjoint_inverse[2, 1] = -sine
-    adjoint_inverse[2, 2] = cosine
-
-    tangent_cutoff = wp.max(wp.abs(s * tangent_eps), wp.float64(0.07618835359095202))
-    coefficients = _forward_coefficients(z, tangent_cutoff)
-    derivatives = _forward_derivatives(z, tangent_cutoff)
-    sinc = coefficients[0]
-    cosc = coefficients[1]
-    tanc = coefficients[2]
-    accumulated_x = s * xi[1]
-    accumulated_y = s * xi[2]
-    lower0 = cosc * accumulated_y + z * tanc * accumulated_x
-    lower1 = -cosc * accumulated_x + z * tanc * accumulated_y
-    tangent = wp.mat33d()
-    tangent[0, 0] = s
-    tangent[1, 0] = s * lower0
-    tangent[1, 1] = s * sinc
-    tangent[1, 2] = -s * z * cosc
-    tangent[2, 0] = s * lower1
-    tangent[2, 1] = s * z * cosc
-    tangent[2, 2] = s * sinc
-
-    accumulated_dot_x = s * xid[1]
-    accumulated_dot_y = s * xid[2]
-    z_dot = s * xid[0]
-    x = z * z
-    sinc_dot = wp.float64(2.0) * z * derivatives[0] * z_dot
-    cosc_dot = wp.float64(2.0) * z * derivatives[1] * z_dot
-    z_cosc_dot = z_dot * (cosc + wp.float64(2.0) * x * derivatives[1])
-    z_tanc = z * tanc
-    z_tanc_dot = z_dot * (tanc + wp.float64(2.0) * x * derivatives[2])
-    lower_dot0 = (
-        cosc_dot * accumulated_y
-        + cosc * accumulated_dot_y
-        + z_tanc_dot * accumulated_x
-        + z_tanc * accumulated_dot_x
-    )
-    lower_dot1 = (
-        -cosc_dot * accumulated_x
-        - cosc * accumulated_dot_x
-        + z_tanc_dot * accumulated_y
-        + z_tanc * accumulated_dot_y
-    )
-    tangent_dot = wp.mat33d()
-    tangent_dot[1, 0] = s * lower_dot0
-    tangent_dot[1, 1] = s * sinc_dot
-    tangent_dot[1, 2] = -s * z_cosc_dot
-    tangent_dot[2, 0] = s * lower_dot1
-    tangent_dot[2, 1] = s * z_cosc_dot
-    tangent_dot[2, 2] = s * sinc_dot
-
-    transported_tangent = adjoint_inverse * tangent
-    local_velocity = transported_tangent * xid
-    transported_tangent_dot_velocity = adjoint_inverse * (tangent_dot * xid)
-    return (
-        adjoint_inverse,
-        transported_tangent,
-        local_velocity,
-        transported_tangent_dot_velocity,
-    )
 
 
 @wp.kernel(enable_backward=False)
@@ -273,7 +76,7 @@ def planar_local_operators_kernel(
         transported_tangent_value,
         local_velocity_value,
         transported_tangent_dot_velocity_value,
-    ) = _planar_operators(
+    ) = _constant_strain_operators(
         xi,
         xid,
         operator_points[segment, point],
