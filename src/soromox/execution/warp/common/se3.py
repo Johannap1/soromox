@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import warp as wp
 
+from soromox.execution.warp.common.so3 import _rotation_entry
+
 
 Vec6d = wp.types.vector(length=6, dtype=wp.float64)
 SPATIAL_DIM = 6
@@ -267,46 +269,6 @@ def _forward_coefficients(angle_sq: wp.float64) -> wp.vec3d:
         cosc = (wp.float64(1.0) - wp.cos(theta)) / angle_sq
         tanc = (theta - wp.sin(theta)) / (angle_sq * theta)
     return wp.vec3d(sinc, cosc, tanc)
-
-
-@wp.func
-def _rotation_entry(
-    omega: wp.vec3d,
-    angle_sq: wp.float64,
-    forward: wp.vec3d,
-    row: int,
-    column: int,
-) -> wp.float64:
-    """Evaluate one entry of the SO(3) exponential rotation matrix.
-
-    Args:
-        omega: Rotational exponential coordinate.
-        angle_sq: Squared norm of ``omega``.
-        forward: Stable exponential-map coefficients.
-        row: Matrix row index.
-        column: Matrix column index.
-
-    Returns:
-        The selected rotation-matrix entry.
-    """
-    delta = wp.float64(0.0)
-    if row == column:
-        delta = wp.float64(1.0)
-    skew = wp.float64(0.0)
-    if row == 0 and column == 1:
-        skew = -omega[2]
-    elif row == 0 and column == 2:
-        skew = omega[1]
-    elif row == 1 and column == 0:
-        skew = omega[2]
-    elif row == 1 and column == 2:
-        skew = -omega[0]
-    elif row == 2 and column == 0:
-        skew = -omega[1]
-    elif row == 2 and column == 1:
-        skew = omega[0]
-    square = omega[row] * omega[column] - angle_sq * delta
-    return delta + forward[0] * skew + forward[1] * square
 
 
 @wp.func

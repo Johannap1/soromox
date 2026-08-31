@@ -16,8 +16,8 @@ and include benchmark baseline and measurement context for performance claims.
 - Added optional floating-base configurations and dynamics across all system
   families, with runtime planar or quaternion base poses, unequal configuration
   and velocity dimensions, world-frame base velocities and wrenches, JAX
-  support for every model, and specialized Warp execution for `GVS`, `PCS`,
-  and `PlanarPCS`; see
+  support for every model, vectorized JAX floating-frame Jacobian composition,
+  and specialized Warp execution for `GVS`, `PCS`, and `PlanarPCS`; see
   [Floating-base systems](../user-guide/floating-base-systems.md).
 - Added fused Warp forward-kinematics and inertial-Jacobian execution for
   `GVS`, `PCS`, and `PlanarPCS`, including spatial, environment, and combined
@@ -75,11 +75,22 @@ and include benchmark baseline and measurement context for performance claims.
   GVS JVP/VJP improved 1.51–2.35×/1.19–1.38× and PCS improved
   4.07–6.97×/3.06–5.03×. Directional measurements used Warp 1.16.0, five
   warmups, and medians of seven runs with 20 synchronized iterations each;
-  see [PR #191](https://github.com/tud-phi/soromox/pull/191).
+  see [PR #191](https://github.com/tud-phi/soromox/pull/191). Optimizing the
+  floating-frame adapter further improved isolated CUDA dense-Jacobian
+  composition by 5.96–54.7×, pose composition by 2.18–3.47×, JVP composition
+  by 1.86–3.25×, and VJP composition by 1.13–1.80× across 1–256 environments
+  and 64 abscissae. Direct JAX CPU composition improved 1.06–1.70× across
+  1–1024 abscissae, and the complete four-segment PCS pose-plus-Jacobian call
+  improved 1.16× at 64 abscissae. These FP64 measurements used the same JAX
+  and Warp versions, one pinned Intel Core Ultra 9 285K core for JAX, and an
+  RTX 5090 for Warp.
 - Accelerated batched FP64 continuum dynamics on an RTX 5090 with Warp. For
   four-segment models at batch 256, order-1 GVS dynamics terms improved 3.02×
   (2.224 to 0.735 ms) and forward dynamics 2.40× (2.482 to 1.034 ms), while
   five-point PlanarPCS and PCS forward dynamics improved 2.21× and 1.66×.
+  Reusing each normalized floating-root rotation across velocity and gravity
+  products additionally reduced one-segment floating PCS and GVS dynamics-term
+  runtimes by 3.2–6.2% across batches 1 and 256.
   Warp is not a CPU optimization: single-environment order-5/9-point GVS terms
   were 2.46× slower (0.587 to 1.445 ms), so `backend="auto"` selects JAX on CPU;
   see [PR #177](https://github.com/tud-phi/soromox/pull/177).

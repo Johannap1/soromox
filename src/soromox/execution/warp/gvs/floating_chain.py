@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.execution.warp.common.floating_base import (
-    _quaternion_rotation_transpose_entry,
-    _spatial_root_jacobian_entry,
-)
+from soromox.execution.warp.common.floating_base import _spatial_root_jacobian_entry
+from soromox.execution.warp.common.rotations import _quaternion_rotation_matrix
 from soromox.execution.warp.common.se3 import Vec6d, _ad_action
 from soromox.execution.warp.common.spatial import _coadjoint_wrench
 from soromox.execution.warp.common.storage import (
@@ -135,24 +133,20 @@ def floating_persistent_chain_kernel(
         entry += lane_stride
     row = lane
     while row < SPATIAL_DIM:
+        rotation = _quaternion_rotation_matrix(base_pose, environment)
         root_velocity = wp.float64(0.0)
         column = int(0)
-        while column < base_dofs:
+        while column < 3:
             root_velocity += (
-                _spatial_root_jacobian_entry(base_pose, environment, row, column)
-                * velocity[environment, column]
+                rotation[column, row % 3]
+                * velocity[environment, (0 if row < 3 else 3) + column]
             )
             column += 1
         root_gravity = wp.float64(0.0)
         if row >= 3:
             column = int(0)
             while column < 3:
-                root_gravity += (
-                    _quaternion_rotation_transpose_entry(
-                        base_pose, environment, row - 3, column
-                    )
-                    * gravity_world[column + 3]
-                )
+                root_gravity += rotation[column, row - 3] * gravity_world[column + 3]
                 column += 1
         jacobian_dot_qd_first[state_base_row + row, 0] = wp.float64(0.0)
         jacobian_dot_qd_second[state_base_row + row, 0] = wp.float64(0.0)

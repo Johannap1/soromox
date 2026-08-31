@@ -86,6 +86,7 @@ def execute_kinematics(
             3 if operands.is_planar else 6,
             operands.num_velocities,
         )
+        composition_block = () if operands.is_planar else (operands.relative.block_dim,)
         if operation == "jacobian":
             callable_ = (
                 planar_floating_jacobian_composition
@@ -96,6 +97,7 @@ def execute_kinematics(
                 base_pose,
                 relative_pose,
                 internal_jacobian,
+                *composition_block,
                 output_dims={"jacobians": jacobian_shape},
             )[-1]
         pose_shape = (
@@ -112,6 +114,7 @@ def execute_kinematics(
             base_pose,
             relative_pose,
             internal_jacobian,
+            *composition_block,
             output_dims={"poses": pose_shape, "jacobians": jacobian_shape},
         )
         return outputs[-2], outputs[-1]

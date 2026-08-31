@@ -106,12 +106,14 @@ def execute_kinematics(
                 base_pose,
                 relative_pose,
                 internal_jacobian,
+                operands.relative.block_dim,
                 output_dims={"jacobians": jacobian_shape},
             )[-1]
         outputs = spatial_floating_kinematics_composition(
             base_pose,
             relative_pose,
             internal_jacobian,
+            operands.relative.block_dim,
             output_dims={"poses": pose_shape, "jacobians": jacobian_shape},
         )
         return outputs[-2], outputs[-1]

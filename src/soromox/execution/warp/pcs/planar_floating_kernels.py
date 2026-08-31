@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from soromox.execution.warp.common.floating_base import (
-    _planar_rotation_transpose_entry,
-)
+from soromox.execution.warp.common.so2 import _rotation_transpose_entry
 from soromox.execution.warp.common.storage import (
     _matrix_value,
     _vector_value,
@@ -107,7 +105,7 @@ def planar_floating_persistent_chain_kernel(
         if row == 0 and column == 0:
             value = wp.float64(1.0)
         elif row >= 1 and column >= 1 and column < base_dofs:
-            value = _planar_rotation_transpose_entry(theta, row - 1, column - 1)
+            value = _rotation_transpose_entry(theta, row - 1, column - 1)
         jacobian_first[state_base_row + row, column] = value
         jacobian_second[state_base_row + row, column] = wp.float64(0.0)
         entry += lane_stride
@@ -120,7 +118,7 @@ def planar_floating_persistent_chain_kernel(
             if row == 0 and column == 0:
                 root_jacobian = wp.float64(1.0)
             elif row >= 1 and column >= 1:
-                root_jacobian = _planar_rotation_transpose_entry(
+                root_jacobian = _rotation_transpose_entry(
                     theta, row - 1, column - 1
                 )
             root_velocity += root_jacobian * velocity[environment, column]
@@ -130,7 +128,7 @@ def planar_floating_persistent_chain_kernel(
             column = int(0)
             while column < 2:
                 root_gravity += (
-                    _planar_rotation_transpose_entry(theta, row - 1, column)
+                    _rotation_transpose_entry(theta, row - 1, column)
                     * gravity_world[column + 1]
                 )
                 column += 1
