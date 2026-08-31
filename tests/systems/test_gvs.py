@@ -1828,6 +1828,117 @@ def test_dynamics_terms_match_public_matrices(
         assert_allclose(G, robot.gravitational_force(q), rtol=RTOL, atol=ATOL)
 
 
+def test_dynamics_terms_accepts_batched_inputs() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+    key_q, key_qd = jax.random.split(jax.random.PRNGKey(6125))
+    q = jax.random.normal(key_q, (3, robot.num_dofs), dtype=jnp.float64) * 0.02
+    qd = jax.random.normal(key_qd, (3, robot.num_dofs), dtype=jnp.float64) * 0.04
+
+    expected = jax.vmap(robot.dynamics_terms)(q, qd)
+    actual = robot.dynamics_terms(q, qd, backend="jax")
+
+    for actual_term, expected_term in zip(actual, expected, strict=True):
+        assert_allclose(actual_term, expected_term, rtol=RTOL, atol=ATOL)
+
+
+def test_execution_runtime_maps_follow_serial_active_coordinate_prefixes() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+    expected_prefixes = jnp.cumsum(jnp.sum(robot.dofs_per_segment, axis=1))
+
+    assert_allclose(robot.active_dofs_per_segment, expected_prefixes)
+    for segment in range(robot.num_segments):
+        for block, (local_to_global, global_to_local) in enumerate(
+            (
+                (robot.joint_local_to_global, robot.joint_global_to_local),
+                (robot.link_local_to_global, robot.link_global_to_local),
+            )
+        ):
+            dofs = int(robot.dofs_per_segment[segment, block])
+            for local_column in range(robot.max_dof):
+                global_column = int(local_to_global[segment, local_column])
+                if local_column < dofs:
+                    assert global_column >= 0
+                    assert int(global_to_local[segment, global_column]) == local_column
+                else:
+                    assert global_column == -1
+
+
+def test_cached_dynamics_operands_reconstruct_dense_model_data() -> None:
+    robots = (
+        build_varied_basis_gvs(num_segments=3),
+        build_constant_strain_gvs(
+            num_segments=2,
+            max_dof=8,
+            scale_rotational_basis_by_length=True,
+        ),
+    )
+
+    for robot in robots:
+        expected_z1 = robot.B_Z1
+        expected_z2 = robot.B_Z2
+        if robot.scale_rotational_basis_by_length:
+            scales = robot.segment_lengths[:, None, None, None]
+            expected_z1 = expected_z1.at[:, :, :3].divide(scales)
+            expected_z2 = expected_z2.at[:, :, :3].divide(scales)
+
+        row_selectors = jax.nn.one_hot(
+            robot.link_basis_rows, 6, dtype=robot.B_Z1.dtype
+        ).transpose(0, 2, 1)
+        reconstructed_z1 = (
+            robot.scaled_B_Z1_values[:, :, None, :] * row_selectors[:, None, :, :]
+        )
+        reconstructed_z2 = (
+            robot.scaled_B_Z2_values[:, :, None, :] * row_selectors[:, None, :, :]
+        )
+
+        assert_allclose(reconstructed_z1, expected_z1, rtol=0.0, atol=0.0)
+        assert_allclose(reconstructed_z2, expected_z2, rtol=0.0, atol=0.0)
+        assert_allclose(
+            robot.cell_widths,
+            robot.integration_points[:, 1:] - robot.integration_points[:, :-1],
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inner_mass_diagonals,
+            jnp.diagonal(robot.inner_mass_matrices, axis1=-2, axis2=-1),
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inner_weighted_mass_diagonals,
+            robot.inner_integration_weights[..., None] * robot.inner_mass_diagonals,
+            rtol=0.0,
+            atol=0.0,
+        )
+        expected_upper_rows = onp.asarray(
+            [row for column in range(robot.num_dofs) for row in range(column + 1)],
+            dtype=onp.int32,
+        )
+        expected_upper_columns = onp.asarray(
+            [column for column in range(robot.num_dofs) for _ in range(column + 1)],
+            dtype=onp.int32,
+        )
+        assert_allclose(
+            robot.inertia_upper_rows,
+            expected_upper_rows,
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.inertia_upper_columns,
+            expected_upper_columns,
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            robot.gravity_base,
+            se3.adjoint_inverse(robot.g0) @ robot.g,
+            rtol=RTOL,
+            atol=ATOL,
+        )
+
+
 def test_cached_constant_matrices_refresh_after_update_params() -> None:
     selector_per_segment = (False, False, True, True, False, False)
     robot = build_constant_strain_gvs(
@@ -1877,6 +1988,18 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     assert_allclose(
         updated.inner_mass_matrices,
         updated.mass_matrices[:, 1 : updated.max_num_integration_points - 1],
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        updated.inner_mass_diagonals,
+        jnp.diagonal(updated.inner_mass_matrices, axis1=-2, axis2=-1),
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    assert_allclose(
+        updated.gravity_base,
+        se3.adjoint_inverse(updated.g0) @ updated.g,
         rtol=RTOL,
         atol=ATOL,
     )

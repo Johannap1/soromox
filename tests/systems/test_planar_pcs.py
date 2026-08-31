@@ -7,7 +7,12 @@ from jax import numpy as jnp
 from numpy.testing import assert_allclose
 from system_param_builders import planar_base_pose, planar_pcs_params
 
-from soromox.systems import CrossSectionGeometry, PlanarPCS, PlanarPCSStructure
+from soromox.systems import (
+    CrossSectionGeometry,
+    PCSBackendParams,
+    PlanarPCS,
+    PlanarPCSStructure,
+)
 from soromox.utils.geometry import poses
 from soromox.utils.integration import scale_interior_gaussian_quadrature
 from soromox.utils.lie_algebra import se2
@@ -396,6 +401,7 @@ def test_public_planar_pcs_accessors_geometry() -> None:
     q = jnp.zeros((int(model.num_active_strains.item()),), dtype=jnp.float64)
 
     assert model.is_planar is True
+    assert model.backend_params.warp_block_dim == 128
     assert_allclose(model.length, jnp.sum(params.link.length), rtol=RTOL, atol=ATOL)
     assert_allclose(model.segment_length, params.link.length, rtol=RTOL, atol=ATOL)
 
@@ -412,6 +418,16 @@ def test_public_planar_pcs_accessors_geometry() -> None:
         rtol=RTOL,
         atol=ATOL,
     )
+
+
+def test_planar_pcs_backend_params_override() -> None:
+    _, params = make_planar_pcs(num_segments=1)
+    configured = PlanarPCS(
+        params=params,
+        backend_params=PCSBackendParams(warp_block_dim=64),
+    )
+
+    assert configured.backend_params.warp_block_dim == 64
 
 
 @pytest.mark.parametrize("num_segments", [1, 2, 3])
@@ -1663,6 +1679,7 @@ def test_cached_constant_matrices_refresh_after_update_params_planar():
     expected_K = updated.B_xi.T @ expected_K_full @ updated.B_xi
     expected_D_full = updated.D_full
     expected_D = updated.B_xi.T @ expected_D_full @ updated.B_xi
+    expected_runtime_arrays = updated._dynamics_runtime_arrays(expected_M)
 
     assert_allclose(updated.M_segments, expected_M, rtol=RTOL, atol=ATOL)
     assert_allclose(updated.K_full, expected_K_full, rtol=RTOL, atol=ATOL)
@@ -1673,6 +1690,27 @@ def test_cached_constant_matrices_refresh_after_update_params_planar():
     assert_allclose(
         updated.damping_matrix(jnp.zeros(updated.num_dofs)),
         expected_D,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+    for actual, expected in zip(
+        (
+            updated.active_strain_indices,
+            updated.active_strain_scales,
+            updated.active_dof_ends,
+            updated.dynamics_local_points,
+            updated.weighted_mass_diagonals,
+            updated.inertia_upper_rows,
+            updated.inertia_upper_columns,
+            updated.gravity_base,
+        ),
+        expected_runtime_arrays,
+        strict=True,
+    ):
+        assert_allclose(actual, expected, rtol=RTOL, atol=ATOL)
+    assert not jnp.allclose(
+        model.weighted_mass_diagonals,
+        updated.weighted_mass_diagonals,
         rtol=RTOL,
         atol=ATOL,
     )

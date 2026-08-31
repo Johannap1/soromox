@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from collections import defaultdict
 
 import jax.numpy as jnp
 import pytest
@@ -35,6 +37,68 @@ def test_active_cpu_affinity_is_compact(monkeypatch: pytest.MonkeyPatch) -> None
 def test_invalid_timing_options_are_rejected(option: str, value: str) -> None:
     with pytest.raises(SystemExit):
         benchmark.parse_args([option, value])
+
+
+@pytest.mark.parametrize("backend", ["auto", "jax", "warp"])
+def test_backend_option_is_parsed(backend: str) -> None:
+    args = benchmark.parse_args(["--backend", backend])
+
+    assert args.backend == backend
+
+
+def test_invalid_backend_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(["--backend", "cuda"])
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "dynamics_terms",
+        "forward_dynamics",
+        "rollout_to",
+        "rollout_closed_loop_to",
+        "rollout_discrete_closed_loop_to",
+    ],
+)
+def test_backend_metadata_includes_dynamics_and_rollout_methods(method: str) -> None:
+    registry = benchmark._build_system_registry()
+
+    assert benchmark._execution_backend_applies(registry["gvs"], method)
+
+
+def test_backend_metadata_excludes_jax_only_methods_and_systems() -> None:
+    registry = benchmark._build_system_registry()
+
+    assert not benchmark._execution_backend_applies(registry["gvs"], "inertia_matrix")
+    assert not benchmark._execution_backend_applies(
+        registry["pendulum"], "forward_dynamics"
+    )
+
+
+def test_csv_records_execution_backend_metadata(tmp_path) -> None:
+    path = tmp_path / "results.csv"
+    benchmark._write_csv([defaultdict(str)], path)
+
+    header = path.read_text(encoding="utf-8").splitlines()[0].split(",")
+
+    assert "device" in header
+    assert "backend" in header
+    assert "resolved_backend" in header
+    assert "backend_applies" in header
+    assert "warp_version" in header
+
+
+def test_json_records_resolved_backend(tmp_path) -> None:
+    path = tmp_path / "results.json"
+    benchmark._write_json(
+        [{"device": "gpu", "backend": "auto", "resolved_backend": "warp"}],
+        path,
+    )
+
+    rows = json.loads(path.read_text(encoding="utf-8"))
+
+    assert rows[0]["resolved_backend"] == "warp"
 
 
 def test_measure_jitted_call_supports_warmup_duration() -> None:

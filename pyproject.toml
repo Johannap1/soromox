@@ -128,6 +128,12 @@ dependencies = [
 cuda13 = [
     "jax[cuda13]>=0.10.0; sys_platform == 'linux'",
     "torch>=2.13.0; sys_platform == 'linux'",
+    # Warp 1.16 adds CPU support for the JAX FFI callables used by GVS.
+    "warp-lang>=1.16.0; sys_platform == 'linux'",
+]
+# The production GVS executor relies on CPU JAX FFI support added in Warp 1.16.
+warp = [
+    "warp-lang>=1.16.0",
 ]
 dev = [
     "bump2version",
@@ -147,6 +153,7 @@ docs = [
     "zensical",
     "mkdocstrings",
     "mkdocstrings-python",
+    "warp-lang>=1.16.0",
     # The configured section-index plugin is handled by Zensical's compatibility layer.
     # Do not add mkdocs-section-index unless we intentionally reintroduce the MkDocs plugin runtime.
 ]
@@ -212,6 +219,7 @@ test = [
     "tox",
     "trimesh",
     "viser",
+    "warp-lang>=1.16.0",
 ]
 all = [
     "bump2version",
@@ -245,6 +253,7 @@ all = [
     "tox",
     "trimesh",
     "viser",
+    "warp-lang>=1.16.0",
 ]
 
 # List URLs that are relevant to your project

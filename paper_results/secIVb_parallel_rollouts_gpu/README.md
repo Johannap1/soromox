@@ -16,7 +16,12 @@ Pass `--device cpu` explicitly to benchmark the same workload on the CPU.
 Every generator run writes `data/benchmark_results.csv` by default. Pass
 `--csv PATH` to override the destination. The CSV records the source revision
 and dirty state, software versions, FP64 mode, UTC timestamp, and
-accelerator/runtime identity needed to interpret results across machines.
+accelerator/runtime identity needed to interpret results across machines. Use
+`--backend jax` or
+`--backend warp` to select the dynamics implementation for GVS, PCS, and
+PlanarPCS. Run each backend in a separate process for a controlled comparison;
+JAX-only systems continue to use JAX. The CSV records the requested backend,
+the backend resolved for each system, and whether backend selection applies.
 
 Install dependencies and confirm that JAX sees the intended GPU:
 

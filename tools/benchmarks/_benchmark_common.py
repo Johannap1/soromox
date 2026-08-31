@@ -20,6 +20,7 @@ from soromox.systems import (
     PCS,
     ArticulatedSoftRobot,
     ArticulatedSoftRobotParams,
+    ExecutionBackend,
     GVSSegment,
     JointSpec,
     LinkSpec,
@@ -87,6 +88,7 @@ def benchmark_environment_metadata(device: jax.Device) -> dict[str, Any]:
         "soromox_version": _distribution_version("soromox"),
         "jax_version": jax.__version__,
         "jaxlib_version": _distribution_version("jaxlib"),
+        "warp_version": _distribution_version("warp-lang"),
         "x64_enabled": bool(jax.config.x64_enabled),
         "device_kind": device_kind,
         "device_id": f"{device.platform}:{device_kind or 'unknown'}:{device.id}",
@@ -99,12 +101,13 @@ def benchmark_environment_metadata(device: jax.Device) -> dict[str, Any]:
 class SystemConfig:
     """Factory plus context builder for a Soromox system."""
 
-    factory: Callable[[int], Any]
+    factory: Callable[..., Any]
     size_label: str
     build_context: Callable[[Any], MutableMapping[str, Array]]
-    gauss_factory: Callable[[int, int], Any] | None = None
+    gauss_factory: Callable[..., Any] | None = None
     default_gauss_points: int | None = None
     min_gauss_points: int = 1
+    supports_backend: bool = False
 
     @property
     def supports_gauss_points(self) -> bool:
@@ -211,7 +214,12 @@ def _articulated_soft_robot_context(
     return ctx
 
 
-def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
+def _planar_pcs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    backend: ExecutionBackend = "auto",
+) -> PlanarPCS:
     return PlanarPCS.from_links(
         [
             LinkSpec.circular(
@@ -228,6 +236,7 @@ def _planar_pcs_factory(num_segments: int, gauss_points: int = 5) -> PlanarPCS:
         base_pose=jnp.array([jnp.pi / 2, 0.0, 0.0]),
         gravity=jnp.array([0.0, 9.81]),
         structure=PlanarPCSStructure(num_gauss_points=gauss_points),
+        backend=backend,
     )
 
 
@@ -254,7 +263,12 @@ def _planar_pcs_context(system: PlanarPCS) -> MutableMapping[str, Array]:
     return ctx
 
 
-def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
+def _pcs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    backend: ExecutionBackend = "auto",
+) -> PCS:
     return PCS.from_links(
         [
             LinkSpec.circular(
@@ -271,6 +285,7 @@ def _pcs_factory(num_segments: int, gauss_points: int = 5) -> PCS:
         base_pose=jnp.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         gravity=jnp.array([0.0, 0.0, -9.81]),
         structure=PCSStructure(num_gauss_points=gauss_points),
+        backend=backend,
     )
 
 
@@ -322,7 +337,12 @@ def _gvs_segment(strain_basis_order: int, gauss_points: int) -> GVSSegment:
     )
 
 
-def _gvs_factory(num_segments: int, gauss_points: int = 5) -> GVS:
+def _gvs_factory(
+    num_segments: int,
+    gauss_points: int = 5,
+    *,
+    backend: ExecutionBackend = "auto",
+) -> GVS:
     segments: list[GVSSegment] = []
     for _ in range(num_segments):
         segments.append(_gvs_segment(strain_basis_order=0, gauss_points=gauss_points))
@@ -330,10 +350,16 @@ def _gvs_factory(num_segments: int, gauss_points: int = 5) -> GVS:
     return GVS.from_segments(
         segments=segments,
         gravity=jnp.array([0.0, 0.0, 9.81]),
+        backend=backend,
     )
 
 
-def _gvs_basis_order_factory(strain_basis_order: int, gauss_points: int = 5) -> GVS:
+def _gvs_basis_order_factory(
+    strain_basis_order: int,
+    gauss_points: int = 5,
+    *,
+    backend: ExecutionBackend = "auto",
+) -> GVS:
     return GVS.from_segments(
         segments=[
             _gvs_segment(
@@ -342,6 +368,7 @@ def _gvs_basis_order_factory(strain_basis_order: int, gauss_points: int = 5) -> 
             )
         ],
         gravity=jnp.array([0.0, 0.0, 9.81]),
+        backend=backend,
     )
 
 
@@ -355,6 +382,7 @@ def get_gvs_basis_order_system_config() -> SystemConfig:
         gauss_factory=_gvs_basis_order_factory,
         default_gauss_points=5,
         min_gauss_points=5,
+        supports_backend=True,
     )
 
 
@@ -394,6 +422,7 @@ def get_system_registry() -> Mapping[str, SystemConfig]:
             build_context=_planar_pcs_context,
             gauss_factory=_planar_pcs_factory,
             default_gauss_points=5,
+            supports_backend=True,
         ),
         "pcs": SystemConfig(
             factory=_pcs_factory,
@@ -401,6 +430,7 @@ def get_system_registry() -> Mapping[str, SystemConfig]:
             build_context=_pcs_context,
             gauss_factory=_pcs_factory,
             default_gauss_points=5,
+            supports_backend=True,
         ),
         "gvs": SystemConfig(
             factory=_gvs_factory,
@@ -409,6 +439,7 @@ def get_system_registry() -> Mapping[str, SystemConfig]:
             gauss_factory=_gvs_factory,
             default_gauss_points=5,
             min_gauss_points=5,
+            supports_backend=True,
         ),
     }
 
@@ -492,6 +523,29 @@ def add_gauss_point_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_backend_arg(parser: argparse.ArgumentParser) -> None:
+    """Attach the shared system-execution backend argument to a parser.
+
+    Args:
+        parser: Argument parser used by a benchmark command.
+
+    Returns:
+        None. The ``--backend`` option is added to ``parser`` in place.
+    """
+
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "jax", "warp"),
+        default="auto",
+        help=(
+            "Execution backend for supported GVS, PCS, and PlanarPCS dynamics "
+            "(default: auto). Systems without an alternative backend continue "
+            "to use JAX. Run different backends in separate processes for "
+            "controlled comparisons."
+        ),
+    )
+
+
 def normalize_gauss_point_values(
     values: Sequence[int] | None,
 ) -> list[int] | None:
@@ -521,17 +575,72 @@ def build_system_with_gauss_points(
     config: Any,
     size: int,
     gauss_points: int | None,
+    *,
+    backend: ExecutionBackend = "auto",
 ) -> Any:
-    """Build a configured benchmark system, optionally overriding quadrature."""
+    """Build a benchmark system with optional quadrature and backend overrides.
+
+    The backend keyword is forwarded only to configurations that declare
+    ``supports_backend``. JAX-only systems therefore remain constructible when
+    a heterogeneous benchmark sweep requests Warp for the supported continuum
+    systems.
+
+    Args:
+        config: System configuration containing normal and optional
+            Gauss-point factories.
+        size: Link count, segment count, or other configured size value.
+        gauss_points: Optional Gauss-point override.
+        backend: Requested execution backend for supported systems.
+
+    Returns:
+        Constructed benchmark system.
+
+    Raises:
+        ValueError: If a Gauss-point override is requested for a system that
+            does not support quadrature sweeps.
+    """
+
+    factory_kwargs = (
+        {"backend": backend} if getattr(config, "supports_backend", False) else {}
+    )
 
     if gauss_points is None:
-        return config.factory(size)
+        return config.factory(size, **factory_kwargs)
     if not getattr(config, "supports_gauss_points", False):
         raise ValueError(
             f"{getattr(config, 'size_label', 'system')} does not support "
             "Gaussian quadrature point sweeps."
         )
-    return config.gauss_factory(size, gauss_points)
+    return config.gauss_factory(size, gauss_points, **factory_kwargs)
+
+
+def resolve_execution_backend(
+    system: Any,
+    *,
+    platform: str | None = None,
+) -> str:
+    """Resolve the backend that a constructed system will use for dynamics.
+
+    Args:
+        system: Constructed benchmark system. Systems without a ``backend``
+            attribute are treated as JAX-only.
+        platform: Optional active JAX platform used to resolve ``"auto"``.
+            Defaults to :func:`jax.default_backend`.
+
+    Returns:
+        ``"jax"`` or ``"warp"``.
+
+    Raises:
+        ValueError: If a system exposes an unknown configured backend.
+    """
+
+    configured = getattr(system, "backend", "jax")
+    if configured == "auto":
+        active_platform = jax.default_backend() if platform is None else platform
+        return "warp" if active_platform == "gpu" else "jax"
+    if configured not in ("jax", "warp"):
+        raise ValueError(f"Unknown configured execution backend {configured!r}.")
+    return str(configured)
 
 
 def system_gauss_point_metadata(system: Any) -> tuple[int | None, int | None]:

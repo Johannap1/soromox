@@ -29,6 +29,7 @@ def test_output_paths_default_to_case_data_directory():
 
     assert args.csv == benchmark.DATA_DIR / "benchmark_results.csv"
     assert args.device == "gpu"
+    assert args.backend == "auto"
 
 
 def test_csv_output_path_can_be_overridden(tmp_path):
@@ -64,6 +65,18 @@ def test_missing_gpu_emits_actionable_warning(monkeypatch):
     assert device is None
 
 
+@pytest.mark.parametrize("backend", ["auto", "jax", "warp"])
+def test_backend_option_is_parsed(backend):
+    args = benchmark.parse_args(["--backend", backend])
+
+    assert args.backend == backend
+
+
+def test_invalid_backend_is_rejected():
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(["--backend", "cuda"])
+
+
 def test_csv_records_environment_metadata(tmp_path):
     path = tmp_path / "results.csv"
     benchmark._write_csv([{}], path)
@@ -73,3 +86,7 @@ def test_csv_records_environment_metadata(tmp_path):
     assert "git_revision" in header
     assert "jax_version" in header
     assert "device_id" in header
+    assert "backend" in header
+    assert "resolved_backend" in header
+    assert "backend_applies" in header
+    assert "warp_version" in header

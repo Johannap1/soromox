@@ -169,8 +169,17 @@ from soromox.systems import (
 robot = ArticulatedSoftRobot(params=ArticulatedSoftRobotParams(...))
 
 # For soft continuum robots (PCS and GVS)
-robot = PCS.from_links([LinkSpec.circular(...)])
+robot = PCS.from_links([LinkSpec.circular(...)], backend="auto")
 ```
+
+`backend="auto"` is already the default, so it can normally be omitted. It
+keeps dynamics on JAX/XLA on CPU and selects Warp for supported GPU dynamics.
+The choice follows normal calls to `dynamics_terms()`, `forward_dynamics()`, and
+the rollout helpers; kinematics and other methods remain on JAX. A direct query
+can be compared with `robot.dynamics_terms(q, qd, backend="jax")` without
+rebuilding the model. See [Execution Backends](execution-backends.md) for the
+supported systems, automatic-selection rules, differentiation behavior, and
+performance settings.
 
 **Key Benefits:**
 
@@ -274,7 +283,9 @@ Ready for something more advanced? Let's simulate a soft continuum robot:
     # Note: Damping helps stabilize simulations and represents material dissipation.
 
     # Initialize the PCS robot
-    robot = PlanarPCS.from_links(links)
+    # "auto" uses Warp for supported GPU dynamics and JAX otherwise.
+    # It is the default, but is shown explicitly here for clarity.
+    robot = PlanarPCS.from_links(links, backend="auto")
 
     # Define configuration (strains)
     # Each segment has 3 strain components: [curvature, shear_x, shear_y]

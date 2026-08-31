@@ -16,6 +16,12 @@ from soromox.systems.components import (
     CrossSectionGeometry,
     IsotropicMaterialParams,
 )
+from soromox.systems.execution import (
+    GVS_DYNAMICS,
+    ExecutionBackend,
+    dispatch_dynamics_terms,
+    evaluate_forward_dynamics,
+)
 from soromox.systems.gvs._assembly import assign_gvs_runtime_arrays
 from soromox.systems.gvs._runtime import SegmentRuntimeData
 from soromox.systems.gvs.construction import (
@@ -185,6 +191,8 @@ class GVS(SoftRobot):
     num_dynamics_prefix_buckets: int = eqx.field(static=True)
     active_dof_prefixes: tuple[int, ...] = eqx.field(static=True)
 
+    backend: ExecutionBackend = eqx.field(static=True, default="auto")
+
     Z1: float = eqx.field(static=True, default=0.5 - math.sqrt(3) / 6)
     Z2: float = eqx.field(static=True, default=0.5 + math.sqrt(3) / 6)
 
@@ -208,9 +216,16 @@ class GVS(SoftRobot):
     inner_integration_weights: Array
     mass_matrices: Array
     inner_mass_matrices: Array
+    # Model-invariant operands reused by the batched Warp dynamics backend.
+    cell_widths: Array
     link_basis_rows: Array
     scaled_B_Z1_values: Array
     scaled_B_Z2_values: Array
+    inner_mass_diagonals: Array
+    inner_weighted_mass_diagonals: Array
+    gravity_base: Array
+    inertia_upper_rows: Array
+    inertia_upper_columns: Array
 
     B_joint: Array
     B_Xs: Array
@@ -233,6 +248,12 @@ class GVS(SoftRobot):
     material_damping_operator: Array
     gather_indices: Array  # Indices for active-to-padded coordinate gather
     gather_mask: Array  # Valid-entry mask for active-to-padded coordinate gather
+    # Runtime-shaped maps consumed by the optional Warp dynamics backend.
+    joint_local_to_global: Array
+    joint_global_to_local: Array
+    link_local_to_global: Array
+    link_global_to_local: Array
+    active_dofs_per_segment: Array
 
     g0: Array  # Initial base pose (4,4)
     g: Array  # Gravity vector (6,)
@@ -259,6 +280,7 @@ class GVS(SoftRobot):
         actuators: Actuator | tuple[Actuator, ...] | None = None,
         passive_elements: PassiveElement | tuple[PassiveElement, ...] | None = (),
         num_dynamics_prefix_buckets: int = _DEFAULT_NUM_DYNAMICS_PREFIX_BUCKETS,
+        backend: ExecutionBackend = "auto",
         **kwargs: Any,
     ) -> None:
         """Initialize a GVS robot from typed parameters and static structure.
@@ -280,6 +302,10 @@ class GVS(SoftRobot):
                 arithmetic, but add compiled branches and can increase JAX
                 compilation time. The default is 4; a value of 1 uses one
                 full-width reduction branch.
+            backend: Preferred execution backend for accelerated GVS methods.
+                ``"auto"`` selects Warp on GPU and JAX on CPU. Currently the
+                Warp implementation covers dynamics; other methods remain in
+                JAX. Transformations that request derivatives always use JAX.
             **kwargs: Additional keyword arguments forwarded to
                 :class:`BaseContinuumSoftRobot`.
 
@@ -298,11 +324,16 @@ class GVS(SoftRobot):
             raise TypeError("num_dynamics_prefix_buckets must be an integer.")
         if num_dynamics_prefix_buckets < 1:
             raise ValueError("num_dynamics_prefix_buckets must be positive.")
+        if backend not in ("auto", "jax", "warp"):
+            raise ValueError(
+                f"backend must be one of 'auto', 'jax', or 'warp', got {backend!r}."
+            )
         structure = _resolve_structure(params, structure)
         super().__init__(base_pose=params.base_pose, **kwargs)
         self.params = params
         self.structure = structure
         self.num_dynamics_prefix_buckets = num_dynamics_prefix_buckets
+        self.backend = backend
         self.scale_rotational_basis_by_length = bool(
             structure.scale_rotational_basis_by_length
         )
@@ -883,6 +914,19 @@ class GVS(SoftRobot):
         start_indices = start_indices_flat.reshape(self.num_segments, 2)
         gather_indices = start_indices[..., None] + jnp.arange(self.max_dof)
         gather_mask = jnp.arange(self.max_dof) < self.dofs_per_segment[..., None]
+        local_to_global = jnp.where(gather_mask, gather_indices, -1).astype(jnp.int32)
+        global_columns = jnp.arange(self.num_dofs, dtype=jnp.int32)[None, None, :]
+        local_columns = jnp.arange(self.max_dof, dtype=jnp.int32)[None, :, None]
+
+        def invert_local_map(local_map: Array) -> Array:
+            matches = local_map[:, :, None] == global_columns
+            return jnp.max(jnp.where(matches, local_columns, -1), axis=1)
+
+        joint_local_to_global = local_to_global[:, 0]
+        link_local_to_global = local_to_global[:, 1]
+        active_dofs_per_segment = jnp.cumsum(
+            jnp.sum(self.dofs_per_segment, axis=1), dtype=jnp.int32
+        )
 
         young_operator, shear_operator, damping_operator = (
             material_operators_from_params(self.params, self.structure)
@@ -896,16 +940,20 @@ class GVS(SoftRobot):
                 self.num_segments, 2, self.max_dof, self.num_dofs
             ),
         )
-        object.__setattr__(
-            self,
-            "inner_integration_weights",
+        inner_integration_weights = (
             self.integration_weights[:, 1 : self.max_num_integration_points - 1]
-            * self.segment_lengths[:, None],
+            * self.segment_lengths[:, None]
         )
+        inner_mass_matrices = self.mass_matrices[
+            :, 1 : self.max_num_integration_points - 1
+        ]
+        inner_mass_diagonals = jnp.diagonal(inner_mass_matrices, axis1=-2, axis2=-1)
+        object.__setattr__(self, "inner_integration_weights", inner_integration_weights)
+        object.__setattr__(self, "inner_mass_matrices", inner_mass_matrices)
         object.__setattr__(
             self,
-            "inner_mass_matrices",
-            self.mass_matrices[:, 1 : self.max_num_integration_points - 1],
+            "cell_widths",
+            self.integration_points[:, 1:] - self.integration_points[:, :-1],
         )
         link_basis_rows, scaled_B_Z1_values, scaled_B_Z2_values = (
             self._compact_link_basis_operands(self.segment_lengths)
@@ -913,8 +961,38 @@ class GVS(SoftRobot):
         object.__setattr__(self, "link_basis_rows", link_basis_rows)
         object.__setattr__(self, "scaled_B_Z1_values", scaled_B_Z1_values)
         object.__setattr__(self, "scaled_B_Z2_values", scaled_B_Z2_values)
+        object.__setattr__(self, "inner_mass_diagonals", inner_mass_diagonals)
+        object.__setattr__(
+            self,
+            "inner_weighted_mass_diagonals",
+            inner_integration_weights[..., None] * inner_mass_diagonals,
+        )
+        object.__setattr__(self, "gravity_base", se3.adjoint_inverse(self.g0) @ self.g)
+        upper_rows = tuple(
+            row for column in range(self.num_dofs) for row in range(column + 1)
+        )
+        upper_columns = tuple(
+            column for column in range(self.num_dofs) for _ in range(column + 1)
+        )
+        object.__setattr__(
+            self, "inertia_upper_rows", jnp.asarray(upper_rows, dtype=jnp.int32)
+        )
+        object.__setattr__(
+            self,
+            "inertia_upper_columns",
+            jnp.asarray(upper_columns, dtype=jnp.int32),
+        )
         object.__setattr__(self, "gather_indices", gather_indices)
         object.__setattr__(self, "gather_mask", gather_mask)
+        object.__setattr__(self, "joint_local_to_global", joint_local_to_global)
+        object.__setattr__(
+            self, "joint_global_to_local", invert_local_map(joint_local_to_global)
+        )
+        object.__setattr__(self, "link_local_to_global", link_local_to_global)
+        object.__setattr__(
+            self, "link_global_to_local", invert_local_map(link_local_to_global)
+        )
+        object.__setattr__(self, "active_dofs_per_segment", active_dofs_per_segment)
         object.__setattr__(self, "young_stiffness_operator", young_operator)
         object.__setattr__(self, "shear_stiffness_operator", shear_operator)
         object.__setattr__(self, "material_damping_operator", damping_operator)
@@ -1182,6 +1260,9 @@ class GVS(SoftRobot):
                 model.link_basis_rows,
                 model.scaled_B_Z1_values,
                 model.scaled_B_Z2_values,
+                model.inner_mass_diagonals,
+                model.inner_weighted_mass_diagonals,
+                model.gravity_base,
                 model.young_stiffness_operator,
                 model.shear_stiffness_operator,
                 model.material_damping_operator,
@@ -1202,6 +1283,27 @@ class GVS(SoftRobot):
                 link_basis_rows,
                 scaled_B_Z1_values,
                 scaled_B_Z2_values,
+                jnp.diagonal(
+                    updated_self.mass_matrices[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ],
+                    axis1=-2,
+                    axis2=-1,
+                ),
+                (
+                    updated_self.integration_weights[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ]
+                    * updated_self.segment_lengths[:, None]
+                )[..., None]
+                * jnp.diagonal(
+                    updated_self.mass_matrices[
+                        :, 1 : updated_self.max_num_integration_points - 1
+                    ],
+                    axis1=-2,
+                    axis2=-1,
+                ),
+                se3.adjoint_inverse(updated_self.g0) @ updated_self.g,
                 young_operator,
                 shear_operator,
                 damping_operator,
@@ -4590,8 +4692,65 @@ class GVS(SoftRobot):
 
         return weights, g_quads, J_quads, Jd_or_Jd_qd_quads
 
+    # The selected implementations own their JIT boundaries. Keeping this
+    # transform-aware dispatcher outside ``filter_jit`` lets JVP and transpose
+    # rules select JAX before a forward-only Warp primal is staged.
+    def dynamics_terms(
+        self,
+        q: Array,
+        qd: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> tuple[Array, Array, Array]:
+        """Assemble single- or multi-environment forward-dynamics terms.
+
+        With ``"warp"``, all general-joint and spatially varying link Lie terms
+        are prepared by runtime-shaped kernels. One persistent cooperative block
+        per environment then traverses the serial chain and assembles ``B``,
+        ``C @ qd``, and ``G`` using each segment's active coordinate prefix.
+        Generated Warp source is independent of the batch size, number of
+        segments, basis order, quadrature count, and supported joint family.
+
+        ``backend=None`` uses the model's configured ``backend``.
+        ``"auto"`` selects Warp on GPU and JAX on CPU, without a model-order or
+        batch-size crossover policy. Forward- and reverse-mode differentiation
+        always use the JAX assembly, including when primal execution selects
+        Warp. Applying :func:`jax.vmap` to scalar calls invokes the batch-shaped
+        Warp pipeline once rather than mapping batch-one kernel launches.
+
+        Warp is an optional dependency. Install ``soromox[warp]`` before
+        explicitly requesting that backend. The current kernels use FP64 to
+        preserve the numerical behavior of GVS dynamics.
+
+        Args:
+            q: Active generalized coordinates with shape ``(num_dofs,)`` or
+                ``(batch_size, num_dofs)``.
+            qd: Generalized velocities with the same shape as ``q``.
+            backend: Optional per-call override: ``"auto"``, ``"jax"``, or
+                ``"warp"``.
+
+        Returns:
+            ``(B, Cqd, G)`` with the same optional leading batch dimension as
+            the inputs.
+
+        Raises:
+            ValueError: If the backend or input shapes are invalid, or an empty
+                batch is sent to Warp.
+            TypeError: If Warp is requested for non-FP64 inputs.
+            ImportError: If Warp is requested but not installed.
+        """
+        return dispatch_dynamics_terms(
+            self,
+            q,
+            qd,
+            backend=backend,
+            capabilities=GVS_DYNAMICS,
+        )
+
     @eqx.filter_jit
-    def dynamics_terms(self, q: Array, qd: Array) -> tuple[Array, Array, Array]:
+    def _assemble_dynamics_terms(
+        self, q: Array, qd: Array
+    ) -> tuple[Array, Array, Array]:
         """
         Assemble forward-dynamics terms with fixed-shape segment recurrences.
 
@@ -5424,49 +5583,33 @@ class GVS(SoftRobot):
             params.end_segment_index_array,
         )
 
-    @eqx.filter_jit
     def forward_dynamics(
-        self, t: Array, y: Array, actuation_args: tuple | None = None
+        self,
+        t: Array,
+        y: Array,
+        actuation_args: tuple | None = None,
+        *,
+        backend: ExecutionBackend | None = None,
     ) -> Array:
-        """
-        Forward dynamics function.
+        """Compute the time derivative of a GVS state.
 
         Args:
-            t (Array): Current time.
-            y (Array): State vector containing configuration and velocity.
-                Shape is (2 * num_strains,).
-            actuation_args (Tuple, optional): Additional arguments for the actuation mapping function.
-                Default is None.
+            t: Current integration time. GVS dynamics are autonomous, so the
+                value is accepted for solver compatibility but is not otherwise
+                used.
+            y: State vector ``[q, qd]`` with shape ``(2 * self.num_dofs,)``.
+            actuation_args: Optional tuple containing the actuation input ``u``
+                and, optionally, an external generalized force ``tau_ext``. A
+                one-element tuple is interpreted as ``(u,)`` and a two-element
+                tuple as ``(u, tau_ext)``. Missing values default to zero.
+            backend: Optional execution-backend override for the inertia,
+                Coriolis, and gravity terms. ``None`` uses :attr:`backend`.
 
         Returns:
-            yd (Array): Time derivative of the state vector.
+            State derivative ``[qd, qdd]`` with the same shape as ``y``.
+
+        Raises:
+            ValueError: If ``actuation_args`` does not contain one or two
+                elements.
         """
-        # Split the state vector into configuration and velocity
-        q, qd = jnp.split(y, 2)
-
-        # split the actuation arguments if provided
-        if actuation_args is None:
-            u, tau_ext = None, None
-        elif len(actuation_args) == 1:
-            u = actuation_args[0]
-            tau_ext = None
-        elif len(actuation_args) == 2:
-            u, tau_ext = actuation_args
-        else:
-            raise ValueError("actuation_args must be a tuple of length 1 or 2.")
-
-        if u is None:
-            u = jnp.zeros((self.num_actuators,))
-        if tau_ext is None:
-            tau_ext = jnp.zeros((q.shape[-1],))
-
-        B, Cqd, G = self.dynamics_terms(q, qd)
-        tau_el = self.elastic_force(q)
-        tau_u = self.actuation_force(q, u, qd=qd)
-
-        rhs = tau_u + tau_ext - Cqd - G - tau_el - self.damping_matrix(q) @ qd
-        qdd = self._solve_inertia(B, rhs)
-
-        yd = jnp.concatenate([qd, qdd])
-
-        return yd
+        return evaluate_forward_dynamics(self, t, y, actuation_args, backend)

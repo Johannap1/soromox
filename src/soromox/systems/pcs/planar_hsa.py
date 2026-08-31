@@ -8,6 +8,10 @@ from jax import Array, lax, vmap
 from jax import numpy as jnp
 
 from soromox.systems.components import CrossSectionGeometry
+from soromox.systems.execution import (
+    DEFAULT_PLANAR_PCS_BLOCK_DIM,
+    PCSBackendParams,
+)
 from soromox.systems.pcs.params import PlanarHSAParams
 from soromox.systems.pcs.planar_pcs import PlanarPCS
 from soromox.systems.pcs.structures import PlanarHSAStructure
@@ -166,6 +170,10 @@ class PlanarHSA(PlanarPCS):
             self, eps=structure.eps, base_pose=params.base_pose, **kwargs
         )
         self.params = params
+        self.backend = "jax"
+        self.backend_params = PCSBackendParams(
+            warp_block_dim=DEFAULT_PLANAR_PCS_BLOCK_DIM
+        )
 
         n_segments = int(params.length.shape[0])
         n_rods = int(params.rod_offset.shape[1])
@@ -189,15 +197,7 @@ class PlanarHSA(PlanarPCS):
         )
         self.L = jnp.asarray(params.length, dtype=jnp.float64)
         self.L_cum = jnp.cumsum(jnp.concatenate([jnp.zeros((1,)), self.L]))
-        self.r = None
-        self.rho = None
-        # PlanarHSA has its own mass and material caches, but these inherited
-        # PlanarPCS fields still need to be initialized so that the Equinox
-        # module has a complete and stable PyTree structure.
-        self.M_segments = None
-        self.young_stiffness_operator = None
-        self.shear_stiffness_operator = None
-        self.material_damping_operator = None
+        self._initialize_unavailable_planar_pcs_fields()
         self.scale_rotational_basis_by_length = False
 
         num_gauss_points = structure.num_gauss_points
@@ -237,6 +237,34 @@ class PlanarHSA(PlanarPCS):
         self._refresh_hsa_caches()
         self.actuators = ()
         self.passive_elements = ()
+
+    def _initialize_unavailable_planar_pcs_fields(self) -> None:
+        """Initialize inherited PlanarPCS-only fields as unavailable.
+
+        PlanarHSA reuses PlanarPCS kinematic infrastructure but owns different
+        material, mass, and dynamics caches. Equinox still requires every
+        inherited field to be initialized so the model has a stable PyTree
+        structure. Keeping the compatibility initialization in one method
+        avoids interleaving nonexistent PCS data with the HSA parameter setup.
+
+        Returns:
+            None. PCS-only fields are set to ``None`` in place.
+        """
+
+        self.r = None
+        self.rho = None
+        self.M_segments = None
+        self.young_stiffness_operator = None
+        self.shear_stiffness_operator = None
+        self.material_damping_operator = None
+        self.active_strain_indices = None
+        self.active_strain_scales = None
+        self.active_dof_ends = None
+        self.dynamics_local_points = None
+        self.weighted_mass_diagonals = None
+        self.inertia_upper_rows = None
+        self.inertia_upper_columns = None
+        self.gravity_base = None
 
     def _set_hsa_params(self, params: PlanarHSAParams) -> None:
         """Copy HSA-specific physical parameters to runtime JAX arrays."""

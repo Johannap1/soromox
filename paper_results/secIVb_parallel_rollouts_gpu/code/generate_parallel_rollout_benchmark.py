@@ -51,6 +51,7 @@ jax.config.update("jax_enable_x64", True)
 
 from soromox.systems import DynamicalSystem, SystemState  # noqa: E402
 from tools.benchmarks._benchmark_common import (  # noqa: E402
+    add_backend_arg,
     add_gauss_point_args,
     add_integration_args,
     add_system_selection_args,
@@ -62,6 +63,7 @@ from tools.benchmarks._benchmark_common import (  # noqa: E402
     get_system_registry,
     normalize_gauss_point_values,
     normalize_system_names,
+    resolve_execution_backend,
     system_gauss_point_metadata,
 )
 
@@ -232,6 +234,9 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "noise_scale",
         "warmup_runs",
         "timing_repeats",
+        "backend",
+        "resolved_backend",
+        "backend_applies",
         "device",
         "device_id",
         "timestamp_utc",
@@ -241,6 +246,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "soromox_version",
         "jax_version",
         "jaxlib_version",
+        "warp_version",
         "x64_enabled",
         "device_kind",
         "platform_version",
@@ -371,6 +377,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "CPU execution must be requested explicitly."
         ),
     )
+    add_backend_arg(parser)
     add_gauss_point_args(parser)
     add_integration_args(parser)
     parser.add_argument(
@@ -524,7 +531,13 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
         for size in size_values:
             for requested_gauss_points in gauss_values:
                 system = build_system_with_gauss_points(
-                    config, size, requested_gauss_points
+                    config,
+                    size,
+                    requested_gauss_points,
+                    backend=args.backend,
+                )
+                resolved_backend = resolve_execution_backend(
+                    system, platform=device.platform
                 )
                 ctx = config.build_context(system)
                 dof = int(ctx["q"].shape[0])
@@ -537,7 +550,10 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                         f"integration_points={integration_points}"
                     )
 
-                print(f"  -> {config.size_label}={size}, dof={dof}{gauss_note}")
+                print(
+                    f"  -> {config.size_label}={size}, dof={dof}{gauss_note}, "
+                    f"backend={resolved_backend}"
+                )
                 for batch in args.batch_sizes:
                     q_batch, key = _repeat_with_noise(
                         ctx["q"], batch, args.noise_scale, key
@@ -599,6 +615,9 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                             "noise_scale": args.noise_scale,
                             "warmup_runs": args.warmup_runs,
                             "timing_repeats": args.repeats,
+                            "backend": args.backend,
+                            "resolved_backend": resolved_backend,
+                            "backend_applies": config.supports_backend,
                             "device": device.platform,
                             **environment_metadata,
                         }
