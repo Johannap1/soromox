@@ -208,7 +208,11 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         Raises:
             ValueError: If the actuation matrix is not square or not invertible.
         """
-        robot = self.operational_space_dynamics.robot
+        robot = getattr(
+            self.operational_space_dynamics,
+            "fixed_base_robot",
+            self.operational_space_dynamics.robot,
+        )
         scenario, shape, rank = analyze_actuation_matrix(robot)
         n_dof, n_actuators = shape
 
@@ -255,11 +259,9 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         t = system_state.t
         y = system_state.y
 
-        # Extract configuration and velocity
-        q, qd = jnp.split(y, 2)
-
-        # Get operational space dynamics instance and robot
-        osd = self.operational_space_dynamics
+        osd, q, qd = self._controller_dynamics_and_state(
+            y, self.operational_space_dynamics
+        )
         # Get reference trajectory at current time
         # IMPORTANT: The reference trajectory should provide FULL poses (all points,
         # all dimensions), not task-selected pose components. Some components may be ignored
@@ -288,9 +290,10 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         xd = J @ qd  # Task-selected velocity
 
         # Configuration-space forces
-        tau_el = self.robot.elastic_force(q)  # Elastic force
-        D_config = self.robot.damping_matrix(q)  # Damping matrix
-        G = self.robot.gravitational_force(q)  # Gravitational force
+        robot = getattr(osd, "fixed_base_robot", osd.robot)
+        tau_el = robot.elastic_force(q)  # Elastic force
+        D_config = robot.damping_matrix(q)  # Damping matrix
+        G = robot.gravitational_force(q)  # Gravitational force
 
         # ===== Compute control torque components =====
 
@@ -352,7 +355,7 @@ class ImpedanceControlTracker(OperationalSpaceBaseController):
         )
 
         # Get the actuation matrix and compute actuator input
-        A = self.robot.actuation_matrix(q)
-        u_control = jnp.linalg.inv(A) @ tau_control
+        A = robot.actuation_matrix(q)
+        u_control = jnp.linalg.solve(A, tau_control)
 
         return u_control, None

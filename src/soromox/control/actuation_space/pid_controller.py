@@ -169,11 +169,10 @@ class PIDController(ActuationSpaceBaseController, ClosedFormModelBasedController
         """
         t = system_state.t
         y = system_state.y
-        asd = self.actuation_space_dynamics
+        asd, q, qd = self._controller_dynamics_and_state(
+            y, self.actuation_space_dynamics
+        )
         n_a = asd.n_actuated
-
-        # Split state into configuration and velocity
-        q, qd = jnp.split(y, 2)
 
         # Transform current state to actuation space
         y_act = asd.actuated_unactuated_coordinates(q)

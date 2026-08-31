@@ -11,7 +11,12 @@ from numpy.testing import assert_allclose
 
 from soromox.systems import ArticulatedSoftRobot, Pendulum, SoftRobot
 from soromox.utils.tolerance import Tolerance
-from system_param_builders import articulated_params, pendulum_params
+from system_param_builders import (
+    articulated_params,
+    pendulum_params,
+    planar_base_pose,
+    spatial_base_pose,
+)
 
 
 def make_articulated_robot(num_links: int = 2) -> ArticulatedSoftRobot:
@@ -36,12 +41,11 @@ def make_articulated_robot(num_links: int = 2) -> ArticulatedSoftRobot:
         center_of_mass_inertia=I_com,
         gravity=jnp.array([0.0, -9.81, 0.0]),
     )
-    return ArticulatedSoftRobot(params)
+    return ArticulatedSoftRobot(params, base_pose=spatial_base_pose())
 
 
 def _updated_articulated_params(params):
     return params.replace(
-        base_pose=params.base_pose.at[4].set(0.15),
         gravity=params.gravity.at[2].set(-9.7),
         mass=params.mass + 0.1,
         center_of_mass_inertia=1.02 * params.center_of_mass_inertia,
@@ -52,7 +56,7 @@ def _updated_articulated_params(params):
 def _articulated_parameter_summary(robot):
     return jnp.concatenate(
         [
-            robot.base_pose,
+            robot.fixed_base_pose,
             robot.g,
             robot.m,
             robot.I_com.reshape(-1),
@@ -130,7 +134,7 @@ def make_matching_pendulum(num_links: int = 2) -> Pendulum:
         center_of_mass_length=0.5 * L,
         gravity=jnp.array([0.0, -9.81]),
     )
-    return Pendulum(params)
+    return Pendulum(params, base_pose=planar_base_pose())
 
 
 def make_spatial_robot() -> ArticulatedSoftRobot:
@@ -159,7 +163,7 @@ def make_spatial_robot() -> ArticulatedSoftRobot:
         joint_stiffness=jnp.diag(jnp.array([0.2, 0.3, 0.4])),
         joint_damping=jnp.diag(jnp.array([0.01, 0.02, 0.03])),
     )
-    return ArticulatedSoftRobot(params)
+    return ArticulatedSoftRobot(params, base_pose=spatial_base_pose())
 
 
 def assert_finite(value, name: str) -> None:
@@ -170,7 +174,7 @@ def test_import_and_inheritance():
     robot = make_articulated_robot()
 
     assert isinstance(robot, SoftRobot)
-    assert robot.num_dofs == 2
+    assert robot.num_internal_dofs == 2
     assert robot.num_actuators == 2
     assert not robot.is_planar
 
@@ -393,8 +397,8 @@ def test_batched_kinematics_and_jacobian_match_pointwise_evaluation(num_links):
 @pytest.mark.parametrize("num_links", [2, 3])
 def test_forward_mode_automatic_differentiability_at_zero_configuration(num_links):
     robot = make_articulated_robot(num_links)
-    q = jnp.zeros((robot.num_dofs,), dtype=jnp.float64)
-    qd = jnp.zeros((robot.num_dofs,), dtype=jnp.float64)
+    q = jnp.zeros((robot.num_internal_dofs,), dtype=jnp.float64)
+    qd = jnp.zeros((robot.num_internal_dofs,), dtype=jnp.float64)
     u = jnp.zeros((robot.num_actuators,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
     s = robot.total_length
@@ -444,8 +448,8 @@ def test_forward_mode_automatic_differentiability_at_zero_configuration(num_link
 
 def test_reverse_mode_automatic_differentiability_at_zero_configuration():
     robot = make_spatial_robot()
-    q = jnp.zeros((robot.num_dofs,), dtype=jnp.float64)
-    qd = jnp.zeros((robot.num_dofs,), dtype=jnp.float64)
+    q = jnp.zeros((robot.num_internal_dofs,), dtype=jnp.float64)
+    qd = jnp.zeros((robot.num_internal_dofs,), dtype=jnp.float64)
     u = jnp.zeros((robot.num_actuators,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
     s = robot.total_length

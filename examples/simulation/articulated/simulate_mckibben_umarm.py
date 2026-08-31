@@ -42,7 +42,7 @@ def build_robot(params_path: Path | None = None) -> McKibbenActuatedUMArm:
     """Build the UMArm from repo-local or explicit cached parameters."""
     source_path = _repo_params_path() if params_path is None else params_path
     robot = McKibbenActuatedUMArm.from_cached_parameters(source_path)
-    return robot.update_params(base_pose=UMARM_Z_DOWN_BASE_POSE)
+    return robot.with_fixed_base_pose(UMARM_Z_DOWN_BASE_POSE)
 
 
 def pressure_input(robot: McKibbenActuatedUMArm) -> jax.Array:
@@ -61,7 +61,7 @@ def simulate(
     save_dt: float = 0.02,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Roll out the UMArm with a constant pressure input."""
-    q0 = jnp.zeros((robot.num_dofs,))
+    q0 = jnp.zeros((robot.num_coordinates,))
     q0 = q0.at[0].set(0.25)
     q0 = q0.at[4].set(-0.20)
     qd0 = jnp.zeros_like(q0)

@@ -50,12 +50,14 @@ def analyze_actuation_matrix(
         shape: The shape of the actuation matrix (n_dof, n_actuators).
         rank: The rank of the actuation matrix.
     """
-    num_dofs = robot.num_dofs
+    fixed_base_factory = getattr(robot, "_fixed_base_robot_at_pose", None)
+    fixed_base_robot = robot if fixed_base_factory is None else fixed_base_factory()
+    num_dofs = robot.num_internal_dofs
     num_actuators = robot.num_actuators
     q_test = jnp.zeros((num_dofs,))
 
     try:
-        A = robot.actuation_matrix(q_test)
+        A = fixed_base_robot.actuation_matrix(q_test)
         n_dof, n_act = A.shape
         rank = int(jnp.linalg.matrix_rank(A))
 

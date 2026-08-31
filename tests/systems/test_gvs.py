@@ -38,7 +38,6 @@ NUM_RANDOM_SAMPLES = 5
 def _updated_gvs_params(robot: GVS):
     params = robot.params
     return params.replace(
-        base_pose=params.base_pose.at[4].set(0.05),
         gravity=params.gravity.at[2].set(-9.7),
         link=params.link.replace(
             length=1.02 * params.link.length,
@@ -63,7 +62,7 @@ def _updated_gvs_params(robot: GVS):
 def _gvs_runtime_summary(robot: GVS):
     return jnp.concatenate(
         [
-            robot.base_pose,
+            robot.fixed_base_pose,
             robot.g,
             robot.segment_lengths,
             robot.mass_matrices.reshape(-1),
@@ -132,10 +131,12 @@ def build_matched_gvs_pcs(
     g = jnp.array([0.0, 0.0, -9.81])
 
     # initialize the GVS model
-    gvs_params, gvs_structure = gvs_params_from_segments(
-        segments, gravity=g, base_pose=spatial_base_pose()
+    gvs_params, gvs_structure = gvs_params_from_segments(segments, gravity=g)
+    robot_gvs = GVS(
+        params=gvs_params,
+        structure=gvs_structure,
+        base_pose=spatial_base_pose(),
     )
-    robot_gvs = GVS(params=gvs_params, structure=gvs_structure)
 
     # PCS definition through the same shared link specifications. This exercises
     # the common isotropic-material mapping rather than an explicit matrix path.
@@ -185,10 +186,10 @@ def test_gvs_same_structure_parameter_updates_compile_once():
 
 def test_gvs_compiled_partial_base_pose_updates_match_eager_forces():
     robot, _ = build_matched_gvs_pcs()
-    q = jnp.linspace(-0.02, 0.02, robot.num_dofs)
+    q = jnp.linspace(-0.02, 0.02, robot.num_internal_dofs)
     sqrt_half = jnp.sqrt(jnp.asarray(0.5, dtype=jnp.float64))
     base_poses = (
-        robot.params.base_pose,
+        robot.fixed_base_pose,
         jnp.array([sqrt_half, 0.0, sqrt_half, 0.0, 0.01, -0.02, 0.03]),
     )
     trace_count = {"value": 0}
@@ -196,11 +197,11 @@ def test_gvs_compiled_partial_base_pose_updates_match_eager_forces():
     @eqx.filter_jit
     def compiled_force(base_pose, configuration):
         trace_count["value"] += 1
-        return robot.update_params(base_pose=base_pose).potential_force(configuration)
+        return robot.with_fixed_base_pose(base_pose).potential_force(configuration)
 
     actual = tuple(compiled_force(base_pose, q) for base_pose in base_poses)
     expected = tuple(
-        robot.update_params(base_pose=base_pose).potential_force(q)
+        robot.with_fixed_base_pose(base_pose).potential_force(q)
         for base_pose in base_poses
     )
 
@@ -212,7 +213,7 @@ def test_gvs_compiled_partial_base_pose_updates_match_eager_forces():
 
 def test_gvs_closed_over_complete_params_validate_inside_compiled_evaluation():
     robot, _ = build_matched_gvs_pcs()
-    q = jnp.linspace(-0.02, 0.02, robot.num_dofs)
+    q = jnp.linspace(-0.02, 0.02, robot.num_internal_dofs)
 
     @eqx.filter_jit
     def compiled_force(configuration):
@@ -229,9 +230,9 @@ def test_gvs_compiled_partial_update_rejects_base_pose_shape_change():
 
     @eqx.filter_jit
     def compiled_base_pose(base_pose):
-        return robot.update_params(base_pose=base_pose).base_pose
+        return robot.with_fixed_base_pose(base_pose).fixed_base_pose
 
-    with pytest.raises(ValueError, match="base_pose must have shape"):
+    with pytest.raises(ValueError, match="pose must have shape"):
         compiled_base_pose(jnp.ones((6,), dtype=jnp.float64))
 
 
@@ -317,10 +318,11 @@ def test_params_from_segments_uses_spatial_environment_defaults():
         num_gauss_points=5,
     )
 
-    params, _ = GVS.params_from_segments([segment])
+    params, structure = GVS.params_from_segments([segment])
+    robot = GVS(params=params, structure=structure)
 
     assert_allclose(
-        params.base_pose,
+        robot.fixed_base_pose,
         jnp.array([jnp.sqrt(0.5), 0.0, -jnp.sqrt(0.5), 0.0, 0.0, 0.0, 0.0]),
     )
     assert_allclose(params.gravity, jnp.array([0.0, 0.0, -9.81]))
@@ -528,11 +530,10 @@ def build_constant_strain_gvs(
     params, structure = gvs_params_from_segments(
         segments,
         gravity=jnp.array([0.0, 0.0, -9.81]),
-        base_pose=spatial_base_pose(),
         max_dof=max_dof,
         scale_rotational_basis_by_length=scale_rotational_basis_by_length,
     )
-    return GVS(params=params, structure=structure)
+    return GVS(params=params, structure=structure, base_pose=spatial_base_pose())
 
 
 def test_gvs_dynamics_prefix_bucket_count_is_configurable() -> None:
@@ -541,14 +542,16 @@ def test_gvs_dynamics_prefix_bucket_count_is_configurable() -> None:
         params=default.params,
         structure=default.structure,
         num_dynamics_prefix_buckets=1,
+        base_pose=default.fixed_base_pose,
     )
     many_buckets = GVS(
         params=default.params,
         structure=default.structure,
         num_dynamics_prefix_buckets=16,
+        base_pose=default.fixed_base_pose,
     )
-    q = jnp.linspace(-0.02, 0.02, default.num_dofs)
-    qd = jnp.linspace(0.03, -0.03, default.num_dofs)
+    q = jnp.linspace(-0.02, 0.02, default.num_internal_dofs)
+    qd = jnp.linspace(0.03, -0.03, default.num_internal_dofs)
 
     assert default.num_dynamics_prefix_buckets == 4
     assert one_bucket.num_dynamics_prefix_buckets == 1
@@ -591,6 +594,7 @@ def test_gvs_backend_params_default_and_override() -> None:
         params=default.params,
         structure=default.structure,
         backend_params=GVSBackendParams(warp_block_dim=192),
+        base_pose=default.fixed_base_pose,
     )
 
     assert default.backend_params.warp_block_dim == 128
@@ -656,10 +660,9 @@ def test_gvs_segment_factories_match_explicit_constructor() -> None:
     params, structure = GVS.params_from_segments(
         segments,
         gravity=gravity,
-        base_pose=spatial_base_pose(),
         max_dof=6,
     )
-    explicit = GVS(params=params, structure=structure)
+    explicit = GVS(params=params, structure=structure, base_pose=spatial_base_pose())
     factory = GVS.from_segments(
         segments,
         gravity=gravity,
@@ -742,7 +745,7 @@ def tip_arc_lengths(robot: GVS) -> jnp.ndarray:
 
 
 def random_q(robot: GVS, key, scale: float = 0.05) -> jnp.ndarray:
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
     return scale * jax.random.normal(key, (dof,), dtype=jnp.float64)
 
 
@@ -814,7 +817,7 @@ def build_full_and_reduced_constant_strain_gvs(
         selector_per_segment=selector_per_segment,
         max_dof=6,
     )
-    B = jnp.zeros((int(full.num_dofs), int(reduced.num_dofs)))
+    B = jnp.zeros((int(full.num_internal_dofs), int(reduced.num_internal_dofs)))
     col = 0
     for segment_idx in range(num_segments):
         for component_idx, active in enumerate(selector_per_segment):
@@ -874,7 +877,7 @@ def gvs_jacobian_inertialframe_from_body(
 def _assert_gvs_pcs_coherence(num_segments: int) -> None:
     print("\nTesting GVS-PCS coherence for", num_segments, "segments")
     robot_gvs, robot_pcs = build_matched_gvs_pcs(num_segments)
-    n = int(robot_gvs.num_dofs)
+    n = int(robot_gvs.num_internal_dofs)
 
     zero_cfg = jnp.zeros((n,), dtype=jnp.float64)
     zero_vel = jnp.zeros((n,), dtype=jnp.float64)
@@ -1026,7 +1029,7 @@ def _assert_gvs_pcs_coherence(num_segments: int) -> None:
 
 def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
     robot = build_varied_basis_gvs(num_segments=3)
-    q = jnp.zeros((int(robot.num_dofs),), dtype=jnp.float64)
+    q = jnp.zeros((int(robot.num_internal_dofs),), dtype=jnp.float64)
 
     assert robot.is_planar is False
     assert_allclose(robot.length, jnp.sum(robot.segment_length), rtol=RTOL, atol=ATOL)
@@ -1078,7 +1081,7 @@ def test_public_gvs_accessors_geometry_and_actuation_matrix() -> None:
     assert_allclose(robot.D_full, robot._damping_full_matrix(), rtol=RTOL, atol=ATOL)
 
     A = robot.actuation_matrix(q)
-    assert A.shape == (robot.num_dofs, robot.num_actuators)
+    assert A.shape == (robot.num_internal_dofs, robot.num_actuators)
     assert_allclose(A, jnp.eye(robot.num_actuators), rtol=RTOL, atol=ATOL)
 
 
@@ -1396,7 +1399,7 @@ def test_jacobian_tips_matches_pointwise_and_gauss(num_segments: int):
 
     J_gauss_tips = jax.vmap(rotate_pair)(g_tips, J_local_gauss_tips)
 
-    assert J_tips.shape == (num_segments, 6, robot.num_dofs)
+    assert J_tips.shape == (num_segments, 6, robot.num_internal_dofs)
     assert_allclose(J_tips, J_expected, rtol=TIP_RTOL, atol=TIP_ATOL)
     assert_allclose(J_tips, J_gauss_tips, rtol=TIP_RTOL, atol=TIP_ATOL)
 
@@ -1506,7 +1509,7 @@ def test_jacobian_and_time_derivative_bodyframe_abscissa_batched_matches_pointwi
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
 
     zero_cfg = jnp.zeros((dof,), dtype=jnp.float64)
     zero_vel = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1536,7 +1539,7 @@ def test_jacobian_and_time_derivative_inertialframe_abscissa_batched_matches_poi
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
 
     zero_cfg = jnp.zeros((dof,), dtype=jnp.float64)
     zero_vel = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1854,7 +1857,7 @@ def test_dynamics_terms_match_public_matrices(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
 
     zero_q = jnp.zeros((dof,), dtype=jnp.float64)
     zero_qd = jnp.zeros((dof,), dtype=jnp.float64)
@@ -1874,8 +1877,11 @@ def test_dynamics_terms_match_public_matrices(
 def test_dynamics_terms_accepts_batched_inputs() -> None:
     robot = build_varied_basis_gvs(num_segments=3)
     key_q, key_qd = jax.random.split(jax.random.PRNGKey(6125))
-    q = jax.random.normal(key_q, (3, robot.num_dofs), dtype=jnp.float64) * 0.02
-    qd = jax.random.normal(key_qd, (3, robot.num_dofs), dtype=jnp.float64) * 0.04
+    q = jax.random.normal(key_q, (3, robot.num_internal_dofs), dtype=jnp.float64) * 0.02
+    qd = (
+        jax.random.normal(key_qd, (3, robot.num_internal_dofs), dtype=jnp.float64)
+        * 0.04
+    )
 
     expected = jax.vmap(robot.dynamics_terms)(q, qd)
     actual = robot.dynamics_terms(q, qd, backend="jax")
@@ -1955,11 +1961,19 @@ def test_cached_dynamics_operands_reconstruct_dense_model_data() -> None:
             atol=0.0,
         )
         expected_upper_rows = onp.asarray(
-            [row for column in range(robot.num_dofs) for row in range(column + 1)],
+            [
+                row
+                for column in range(robot.num_internal_dofs)
+                for row in range(column + 1)
+            ],
             dtype=onp.int32,
         )
         expected_upper_columns = onp.asarray(
-            [column for column in range(robot.num_dofs) for _ in range(column + 1)],
+            [
+                column
+                for column in range(robot.num_internal_dofs)
+                for _ in range(column + 1)
+            ],
             dtype=onp.int32,
         )
         assert_allclose(
@@ -2016,7 +2030,7 @@ def test_cached_constant_matrices_refresh_after_update_params() -> None:
     assert_allclose(
         updated.active_dof_map_blocks,
         updated.active_dof_map.reshape(
-            updated.num_segments, 2, updated.max_dof, updated.num_dofs
+            updated.num_segments, 2, updated.max_dof, updated.num_internal_dofs
         ),
         rtol=RTOL,
         atol=ATOL,
@@ -2065,16 +2079,19 @@ def test_active_dof_map_creation_matches_joint_and_link_dofs() -> None:
         int(robot.num_padded_dofs), tuple(active_indices)
     )
     expected_blocks = expected_map.reshape(
-        robot.num_segments, 2, robot.max_dof, robot.num_dofs
+        robot.num_segments, 2, robot.max_dof, robot.num_internal_dofs
     )
 
-    assert robot.active_dof_map.shape == (robot.num_padded_dofs, robot.num_dofs)
-    assert int(robot.num_dofs) == int(jnp.sum(robot.dofs_per_segment))
+    assert robot.active_dof_map.shape == (
+        robot.num_padded_dofs,
+        robot.num_internal_dofs,
+    )
+    assert int(robot.num_internal_dofs) == int(jnp.sum(robot.dofs_per_segment))
     assert_allclose(robot.active_dof_map, expected_map, rtol=0.0, atol=0.0)
     assert_allclose(robot.active_dof_map_blocks, expected_blocks, rtol=0.0, atol=0.0)
     assert_allclose(
         robot.active_dof_map.T @ robot.active_dof_map,
-        jnp.eye(robot.num_dofs),
+        jnp.eye(robot.num_internal_dofs),
         rtol=0.0,
         atol=0.0,
     )
@@ -2260,8 +2277,8 @@ def test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths(
         max_dof=8,
         scale_rotational_basis_by_length=True,
     )
-    q = jnp.linspace(-0.07, 0.08, robot.num_dofs, dtype=jnp.float64)
-    qd = jnp.linspace(0.05, -0.04, robot.num_dofs, dtype=jnp.float64)
+    q = jnp.linspace(-0.07, 0.08, robot.num_internal_dofs, dtype=jnp.float64)
+    qd = jnp.linspace(0.05, -0.04, robot.num_internal_dofs, dtype=jnp.float64)
     samples = jnp.array(
         [0.031, length, 0.0, 0.211, 0.031, length - 1e-7],
         dtype=jnp.float64,
@@ -2292,7 +2309,7 @@ def test_scaled_rotational_basis_batched_partial_cells_match_scalar_paths(
         )
     )
 
-    assert robot.max_dof > robot.num_dofs
+    assert robot.max_dof > robot.num_internal_dofs
     assert_allclose(
         robot.forward_kinematics_abscissa_batched(q, samples),
         expected_poses,
@@ -2460,7 +2477,7 @@ def test_constant_strain_material_damping_matches_pcs(num_segments: int) -> None
         num_segments=num_segments,
         material_damping_coefficient=material_damping_coefficient,
     )
-    q = jnp.zeros((robot_gvs.num_dofs,), dtype=jnp.float64)
+    q = jnp.zeros((robot_gvs.num_internal_dofs,), dtype=jnp.float64)
 
     link_block_indices = []
     for i in range(num_segments):
@@ -2486,7 +2503,7 @@ def test_forward_mode_automatic_differentiability_at_zero_configuration(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
     q = jnp.zeros((dof,), dtype=jnp.float64)
     qd = jnp.zeros((dof,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
@@ -2583,7 +2600,7 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration(
     num_segments: int,
 ) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
-    dof = int(robot.num_dofs)
+    dof = int(robot.num_internal_dofs)
     q = jnp.zeros((dof,), dtype=jnp.float64)
     qd = jnp.zeros((dof,), dtype=jnp.float64)
     y = jnp.concatenate([q, qd])
@@ -2679,7 +2696,7 @@ def test_reverse_mode_automatic_differentiability_at_zero_configuration(
 def test_gvs_autodiff_checks(num_segments: int) -> None:
     robot = build_varied_basis_gvs(num_segments=num_segments)
 
-    n = int(robot.num_dofs)
+    n = int(robot.num_internal_dofs)
     q = jnp.linspace(0.01, 0.01 * n, n, dtype=jnp.float64)
     qd = jnp.linspace(0.02, 0.02 * n, n, dtype=jnp.float64)
     s = jnp.sum(robot.length, dtype=jnp.float64) * 0.7

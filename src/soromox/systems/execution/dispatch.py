@@ -82,7 +82,7 @@ def _select_backend(
                 f"on the active {device.upper()} device."
             )
         selected = "jax"
-    if model.num_dofs == 0:
+    if model.num_velocities == 0:
         selected = "jax"
 
     if selected == "warp" and not warp_supported:
@@ -113,8 +113,10 @@ def dispatch_actuation_matrix(
     """Dispatch one scalar linear-threadlike actuation-matrix request."""
 
     q = jnp.asarray(q)
-    if q.shape != (model.num_dofs,):
-        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if q.shape != (model.num_coordinates,):
+        raise ValueError(
+            f"q must have shape ({model.num_coordinates},), got {q.shape}."
+        )
     eligible = supports_linear_threadlike_matrix(model)
     configured = _explicit_backend(model, backend)
     if configured == "warp" and not eligible:
@@ -153,16 +155,19 @@ def dispatch_actuation_force(
 
     q = jnp.asarray(q)
     u = jnp.asarray(u)
-    if q.shape != (model.num_dofs,):
-        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if q.shape != (model.num_coordinates,):
+        raise ValueError(
+            f"q must have shape ({model.num_coordinates},), got {q.shape}."
+        )
     if u.shape != (model.num_actuators,):
         raise ValueError(f"u must have shape ({model.num_actuators},), got {u.shape}.")
     if qd is None:
-        qd = jnp.zeros_like(q)
+        qd = jnp.zeros((model.num_velocities,), dtype=q.dtype)
     else:
         qd = jnp.asarray(qd)
-        if qd.shape != q.shape:
-            raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
+        expected_qd_shape = (model.num_velocities,)
+        if qd.shape != expected_qd_shape:
+            raise ValueError(f"qd must have shape {expected_qd_shape}, got {qd.shape}.")
 
     eligible = supports_linear_threadlike_force(model)
     configured = _explicit_backend(model, backend)
@@ -205,9 +210,8 @@ def dispatch_fused_dynamics_actuation_force(
     JAX actuation for custom transmissions or effort laws.
     """
 
-    if (
-        not capabilities.fused_threadlike_force_enabled
-        or not supports_linear_threadlike_force(model)
+    if not capabilities.fused_threadlike_force_enabled or not (
+        supports_linear_threadlike_force(model)
     ):
         return None
     selected = _select_backend(
@@ -241,9 +245,10 @@ def dispatch_dynamics_terms(
 
     Args:
         model: System implementing the neutral :class:`DynamicsModel` contract.
-        q: Generalized coordinates with shape ``(num_dofs,)`` or
-            ``(batch_size, num_dofs)``.
-        qd: Generalized velocities with the same shape and dtype as ``q``.
+        q: Generalized coordinates with shape ``(num_coordinates,)`` or
+            ``(batch_size, num_coordinates)``.
+        qd: Generalized velocities with shape ``(num_velocities,)`` or
+            ``(batch_size, num_velocities)`` and the same dtype as ``q``.
         backend: Optional per-call backend override. ``None`` uses the model's
             configured backend.
         capabilities: Static support declared for the system family.
@@ -256,8 +261,8 @@ def dispatch_dynamics_terms(
         dimension as the inputs.
 
     Raises:
-        ValueError: If either state has an invalid shape, their shapes differ,
-            or the backend name is invalid.
+        ValueError: If either state has an invalid shape, their leading batch
+            dimensions differ, or the backend name is invalid.
         NotImplementedError: If Warp is explicitly requested for an unsupported
             device or model instance.
         ImportError: If Warp is selected but the optional dependency is absent.
@@ -267,13 +272,17 @@ def dispatch_dynamics_terms(
 
     q = jnp.asarray(q)
     qd = jnp.asarray(qd)
-    if q.ndim not in (1, 2) or q.shape[-1:] != (model.num_dofs,):
+    if q.ndim not in (1, 2) or q.shape[-1:] != (model.num_coordinates,):
         raise ValueError(
-            "q must have shape (num_dofs,) or (batch_size, num_dofs); "
-            f"expected (..., {model.num_dofs}), got {q.shape}."
+            "q must have shape (num_coordinates,) or "
+            "(batch_size, num_coordinates); "
+            f"expected (..., {model.num_coordinates}), got {q.shape}."
         )
-    if qd.shape != q.shape:
-        raise ValueError(f"qd must have shape {q.shape}, got {qd.shape}.")
+    expected_velocity_shape = (*q.shape[:-1], model.num_velocities)
+    if qd.shape != expected_velocity_shape:
+        raise ValueError(
+            f"qd must have shape {expected_velocity_shape}, got {qd.shape}."
+        )
 
     selected = _select_backend(
         model,
@@ -291,13 +300,13 @@ def dispatch_dynamics_terms(
     return jax.vmap(warp_evaluator, in_axes=(None, 0, 0))(model, q, qd)
 
 
-def _reference_kinematics_result(
+def _kinematics_result(
     model: KinematicsModel,
     q: Array,
     s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
-    """Evaluate one kinematics request with the differentiable JAX reference."""
+    """Evaluate one kinematics request through the differentiable JAX path."""
 
     if operation == "pose":
         return evaluate_forward_kinematics(model, q, s)
@@ -309,21 +318,21 @@ def _reference_kinematics_result(
     )
 
 
-def _reference_kinematics_abscissa_batched_result(
+def _kinematics_abscissa_batched_result(
     model: KinematicsModel,
     q: Array,
     s: Array,
     operation: KinematicsOperation,
 ) -> KinematicsResult:
-    """Evaluate a spatial batch with the model's specialized JAX traversal."""
+    """Evaluate an absolute spatial batch with the specialized JAX traversal."""
 
     if operation == "pose":
-        return model._forward_kinematics_abscissa_batched(q, s)
+        return model._absolute_forward_kinematics_abscissa_batched(q, s)
     if operation == "jacobian":
-        return model._jacobian_inertialframe_abscissa_batched(q, s)
+        return model._absolute_inertial_jacobian_abscissa_batched(q, s)
     return (
-        model._forward_kinematics_abscissa_batched(q, s),
-        model._jacobian_inertialframe_abscissa_batched(q, s),
+        model._absolute_forward_kinematics_abscissa_batched(q, s),
+        model._absolute_inertial_jacobian_abscissa_batched(q, s),
     )
 
 
@@ -363,8 +372,10 @@ def dispatch_kinematics(
 
     q = jnp.asarray(q)
     s = jnp.asarray(s)
-    if q.shape != (model.num_dofs,):
-        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if q.shape != (model.num_coordinates,):
+        raise ValueError(
+            f"q must have shape ({model.num_coordinates},), got {q.shape}."
+        )
     if s.ndim != 0:
         raise ValueError(f"s must be scalar, got shape {s.shape}.")
 
@@ -376,7 +387,7 @@ def dispatch_kinematics(
     )
 
     if selected == "jax":
-        return _reference_kinematics_result(model, q, s, operation)
+        return _kinematics_result(model, q, s, operation)
 
     scalar_evaluator = get_kinematics_evaluator(capabilities.warp_executor, operation)
     return scalar_evaluator(model, q, s)
@@ -423,8 +434,10 @@ def dispatch_kinematics_abscissa_batched(
 
     q = jnp.asarray(q)
     s = jnp.asarray(s)
-    if q.shape != (model.num_dofs,):
-        raise ValueError(f"q must have shape ({model.num_dofs},), got {q.shape}.")
+    if q.shape != (model.num_coordinates,):
+        raise ValueError(
+            f"q must have shape ({model.num_coordinates},), got {q.shape}."
+        )
     if s.ndim != 1:
         raise ValueError(f"s must have shape (num_samples,), got {s.shape}.")
 
@@ -435,7 +448,7 @@ def dispatch_kinematics_abscissa_batched(
         warp_supported=warp_supported,
     )
     if selected == "jax":
-        return _reference_kinematics_abscissa_batched_result(model, q, s, operation)
+        return _kinematics_abscissa_batched_result(model, q, s, operation)
 
     abscissa_batched_evaluator = get_abscissa_batched_kinematics_evaluator(
         capabilities.warp_executor, operation

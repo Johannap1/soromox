@@ -13,6 +13,12 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
+- Added optional floating-base configurations and dynamics across all system
+  families, with runtime planar or quaternion base poses, unequal configuration
+  and velocity dimensions, world-frame base velocities and wrenches, JAX
+  support for every model, and specialized Warp execution for `GVS`, `PCS`,
+  and `PlanarPCS`; see
+  [Floating-base systems](../user-guide/floating-base-systems.md).
 - Added fused Warp forward-kinematics and inertial-Jacobian execution for
   `GVS`, `PCS`, and `PlanarPCS`, including spatial, environment, and combined
   batches through the explicit `*_abscissa_batched` methods and `jax.vmap`.
@@ -77,6 +83,14 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Breaking changes
 
+- Replaced the ambiguous `SoftRobot.num_dofs` attribute with explicit
+  `num_internal_dofs`, `num_coordinates`, and `num_velocities` dimensions.
+  Code that allocates configurations, velocities, or internal controller state
+  must now select the corresponding dimension explicitly.
+- Removed mounting poses from physical parameter PyTrees. Constructors retain
+  the `base_pose` argument for fixed mounting, models expose the resolved value
+  as `fixed_base_pose`, and `with_fixed_base_pose(...)` updates a fixed
+  mounting independently of `with_params(...)` and `update_params(...)`.
 - Renamed abscissa-only batch APIs to identify their mapped argument:
   `forward_kinematics_batched(...)` is now
   `forward_kinematics_abscissa_batched(...)`, `jacobian_batched(...)` is now
