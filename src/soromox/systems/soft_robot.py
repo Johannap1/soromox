@@ -984,15 +984,21 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None, Array | None],
     ) -> tuple[Array, Array]:
         robot, q, s = primals
-        _, qd, sd = tangents
+        robot_tangent, qd, sd = tangents
 
-        return robot._forward_kinematics_jvp(q, s, qd, sd)
+        return robot._forward_kinematics_jvp(q, s, qd, sd, model_tangent=robot_tangent)
 
     def _forward_kinematics_jvp(
-        self, q: Array, s: Array, qd: Array | None, sd: Array | None
+        self,
+        q: Array,
+        s: Array,
+        qd: Array | None,
+        sd: Array | None,
+        *,
+        model_tangent: Any = None,
     ) -> tuple[Array, Array]:
         """
-        Evaluate the FK custom-JVP tangent with the narrowest needed hooks.
+        Evaluate the complete FK custom JVP with the narrowest needed hooks.
 
         The arc-length-only tangent uses the analytical
         ``forward_kinematics_and_arc_length_derivative`` hook when available,
@@ -1001,27 +1007,41 @@ class SoftRobot(DynamicalSystem):
         intentionally use JAX autodiff through ``_forward_kinematics``. Earlier
         specialized FK velocity paths duplicated substantial kinematics code
         and did not show enough benchmark benefit to justify the maintenance
-        cost.
+        cost. ``model_tangent`` is optional for direct internal calls. Equinox
+        custom-JVP rules supply a model-shaped filtered tangent whose inactive
+        dynamic leaves are ``None``.
         """
         forward_kinematics = self._absolute_forward_kinematics
         if qd is not None:
             if sd is None:
-                return jvp(lambda q_: forward_kinematics(q_, s), (q,), (qd,))
-            return jvp(
-                lambda q_, s_: forward_kinematics(q_, s_),
-                (q, s),
-                (qd, sd),
-            )
-
-        if sd is None:
+                pose, pose_tangent = jvp(
+                    lambda q_: forward_kinematics(q_, s), (q,), (qd,)
+                )
+            else:
+                pose, pose_tangent = jvp(
+                    lambda q_, s_: forward_kinematics(q_, s_),
+                    (q, s),
+                    (qd, sd),
+                )
+        elif sd is None:
             pose = forward_kinematics(q, s)
-            return pose, jnp.zeros_like(pose)
+            pose_tangent = jnp.zeros_like(pose)
+        elif self.floating_base:
+            pose, pose_tangent = jvp(lambda s_: forward_kinematics(q, s_), (s,), (sd,))
+        else:
+            pose, poses = self.forward_kinematics_and_arc_length_derivative(q, s)
+            pose_tangent = poses * sd
 
-        if self.floating_base:
-            return jvp(lambda s_: forward_kinematics(q, s_), (s,), (sd,))
+        if model_tangent is not None and jax.tree.leaves(model_tangent):
+            _, model_pose_tangent = eqx.filter_jvp(
+                lambda robot: robot._absolute_forward_kinematics(q, s),
+                (self,),
+                (model_tangent,),
+            )
+            if model_pose_tangent is not None:
+                pose_tangent = pose_tangent + model_pose_tangent
 
-        pose, poses = self.forward_kinematics_and_arc_length_derivative(q, s)
-        return pose, poses * sd
+        return pose, pose_tangent
 
     def forward_kinematics_tips(self, q: Array) -> Array:
         """

@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax
 from jax import Array
 from jax import numpy as jnp
@@ -141,6 +142,12 @@ class _ToggleSentinelDefaultRobot(_PlanarDefaultRobot):
         return jnp.array([4.0, -2.0], dtype=q.dtype)
 
 
+class _ModelTangentDefaultRobot(_PlanarDefaultRobot):
+    def _forward_kinematics(self, q: Array, s: Array) -> Array:
+        pose = super()._forward_kinematics(q, s)
+        return pose.at[1:].add(self.L)
+
+
 def test_custom_jvp_global_toggle_context_manager_restores_state() -> None:
     set_custom_jvp_enabled(True)
     assert custom_jvp_enabled()
@@ -192,6 +199,28 @@ def test_custom_jvp_toggle_controls_public_forward_kinematics_arc_length_jvp() -
 
     _, expected = jax.jvp(lambda s_: robot._forward_kinematics(q, s_), (s,), (sd,))
     assert_allclose(posed, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_public_forward_kinematics_custom_jvp_preserves_model_tangent() -> None:
+    robot = _ModelTangentDefaultRobot()
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    s = jnp.array(0.8, dtype=jnp.float64)
+
+    def pose_sum(lengths: Array, *, public: bool) -> Array:
+        candidate = eqx.tree_at(lambda model: model.L, robot, lengths)
+        pose = (
+            candidate.forward_kinematics(q, s)
+            if public
+            else candidate._forward_kinematics(q, s)
+        )
+        return jnp.sum(pose)
+
+    with custom_jvp_mode(True):
+        actual = jax.grad(lambda lengths: pose_sum(lengths, public=True))(robot.L)
+    expected = jax.grad(lambda lengths: pose_sum(lengths, public=False))(robot.L)
+
+    assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    assert jnp.any(actual != 0.0)
 
 
 def test_custom_jvp_toggle_controls_public_gravity_energy_grad() -> None:

@@ -137,6 +137,9 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Fixed
 
+- Fixed forward-kinematics custom JVPs to preserve derivatives with respect to
+  dynamic model leaves, including fixed mounting poses updated inside compiled
+  functions, across JAX and accelerated execution paths.
 - Fixed GVS abscissa-batched partial-cell poses and inertial Jacobians so
   rotational strain-basis values consistently honor
   `scale_rotational_basis_by_length` for every supported basis family.
