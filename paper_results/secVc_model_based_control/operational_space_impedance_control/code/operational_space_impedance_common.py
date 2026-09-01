@@ -103,7 +103,7 @@ def build_problem(trajectory_config: TaskSpaceTrajectoryConfig) -> PCSImpedanceP
     """Build the fixed two-segment PCS robot and operational-space task."""
     num_segments = 2
     rho = 1070 * jnp.ones((num_segments,))
-    p0 = jnp.array([0.5, -0.5, 0.5, 0.5, 0.0, 0.0, 0.0])
+    base_pose = jnp.array([0.5, -0.5, 0.5, 0.5, 0.0, 0.0, 0.0])
     segment_lengths = 1e-1 * jnp.ones((num_segments,))
     damping_matrix = 1e-3 * jnp.diag(
         (
@@ -129,7 +129,7 @@ def build_problem(trajectory_config: TaskSpaceTrajectoryConfig) -> PCSImpedanceP
     ]
     robot = PCS.from_links(
         links,
-        base_pose=p0,
+        base_pose=base_pose,
         gravity=jnp.array([0.0, 0.0, -9.81]),
     )
     params = robot.params

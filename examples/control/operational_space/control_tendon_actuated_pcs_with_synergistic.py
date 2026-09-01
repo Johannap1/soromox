@@ -52,7 +52,7 @@ def main(
     rho = 1070 * jnp.ones((num_segments,))  # Volumetric density [kg/m^3]
 
     # Define the initial scalar-last quaternion base pose.
-    p0 = jnp.array([0.5, -0.5, 0.5, 0.5, 0.0, 0.0, 0.0])
+    base_pose = jnp.array([0.5, -0.5, 0.5, 0.5, 0.0, 0.0, 0.0])
 
     segment_lengths = 1e-1 * jnp.ones((num_segments,))
     material_damping_coefficient = 362.0
@@ -93,7 +93,7 @@ def main(
     # Initialize robot
     robot = PCS(
         params=body_params,
-        base_pose=p0,
+        base_pose=base_pose,
         actuators=ThreadlikeActuator.tendons(active_tendon_routing),
     )
     num_dofs = robot.num_active_strains
