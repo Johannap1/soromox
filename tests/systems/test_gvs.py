@@ -1952,6 +1952,30 @@ def test_execution_runtime_maps_follow_serial_active_coordinate_prefixes() -> No
                     assert global_column == -1
 
 
+def test_heterogeneous_quadrature_padding_repeats_terminal_node() -> None:
+    robot = build_varied_basis_gvs(num_segments=3)
+
+    for segment, num_points in enumerate(
+        onp.asarray(robot.num_integration_points, dtype=int)
+    ):
+        padded_points = robot.integration_points[segment, num_points - 1 :]
+        padded_widths = robot.cell_widths[segment, num_points - 1 :]
+
+        assert_allclose(
+            padded_points,
+            jnp.full_like(padded_points, padded_points[0]),
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert_allclose(
+            padded_widths,
+            jnp.zeros_like(padded_widths),
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert bool(jnp.all(jnp.diff(robot.integration_points[segment]) >= 0.0))
+
+
 def test_cached_dynamics_operands_reconstruct_dense_model_data() -> None:
     robots = (
         build_varied_basis_gvs(num_segments=3),

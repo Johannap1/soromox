@@ -3093,7 +3093,10 @@ class PlanarPCS(SoftRobot):
             start = self.L_cum[start_segment_index]
             end = self.L_cum[end_segment_index + 1]
             s_clamped = jnp.clip(s, start, end)
-            pose = self.forward_kinematics(q, s_clamped)
+            # This hook is vectorized by renderer-side actuator adapters. Use
+            # the protected JAX primitive so nested vmaps do not re-enter the
+            # device-selected scalar execution adapter.
+            pose = self._absolute_forward_kinematics(q, s_clamped)
             normal = jnp.asarray([-jnp.sin(pose[0]), jnp.cos(pose[0])])
             offset = routing.offset(path_params, s_clamped)[1]
             return pose[1:] + offset * normal

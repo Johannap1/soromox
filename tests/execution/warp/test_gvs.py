@@ -61,7 +61,7 @@ def _all_basis_family_model() -> GVS:
                 strain_selector=[False, True, False, False, False, False],
                 basis_order=[0, 6, 0, 0, 0, 0],
             ),
-            num_gauss_points=5,
+            num_gauss_points=5 + index % 3,
         )
         for index, basis_type in enumerate(basis_types)
     )
@@ -217,7 +217,7 @@ def test_gvs_warp_kinematics_supports_every_basis_family_and_high_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    """Match all runtime basis evaluators with basis order greater than five."""
+    """Match high-order basis evaluators with heterogeneous quadrature counts."""
 
     pytest.importorskip("warp")
     monkeypatch.setenv(

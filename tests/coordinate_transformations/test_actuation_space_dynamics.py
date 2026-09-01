@@ -837,9 +837,18 @@ class TestActuationSpaceDynamicsSystemIndependent:
 
         M_y, Cyd, G_y = asd.dynamics_terms(q, qd)
 
-        assert_allclose(M_y, asd.inertia_matrix(q), rtol=1e-9, atol=1e-12)
-        assert_allclose(Cyd, asd.coriolis_force(q, qd), rtol=1e-9, atol=1e-12)
-        assert_allclose(G_y, asd.gravitational_force(q), rtol=1e-9, atol=1e-12)
+        # Only GPU PCS uses the fused Warp reduction whose accumulation order
+        # differs from the individual JAX methods. Keep CPU/JAX and pendulum
+        # comparisons at the original stricter tolerance.
+        uses_gpu_warp = (
+            isinstance(robot, PCS)
+            and robot.backend in ("auto", "warp")
+            and jax.default_backend() == "gpu"
+        )
+        rtol = 1e-7 if uses_gpu_warp else 1e-9
+        assert_allclose(M_y, asd.inertia_matrix(q), rtol=rtol, atol=1e-12)
+        assert_allclose(Cyd, asd.coriolis_force(q, qd), rtol=rtol, atol=1e-12)
+        assert_allclose(G_y, asd.gravitational_force(q), rtol=rtol, atol=1e-12)
 
     def test_h_unactuated_shape(self, robot):
         """Test that H_unactuated has correct shape."""

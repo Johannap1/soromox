@@ -766,10 +766,14 @@ class GVS(SoftRobot):
         Ms = rho * vmap(jnp.diag)(Ms_diag)  # Shape: (np, 6, 6)
 
         # Pad the arrays to the maximum number of integration points and DOFs
+        # Repeat the normalized terminal node so heterogeneous quadrature rows
+        # remain nondecreasing and add only zero-width cells. Zero padding would
+        # turn ``[..., 1]`` into ``[..., 1, 0, ...]`` and create a spurious
+        # negative-width cell for runtime sample lookup.
         integration_points_full = jnp.pad(
             integration_points,
             (0, max_num_integration_points - num_integration_points_i),
-            mode="constant",
+            mode="edge",
         )
         integration_weights_full = jnp.pad(
             integration_weights,
@@ -5976,7 +5980,10 @@ class GVS(SoftRobot):
             start = self.segment_end_positions[start_segment_index]
             end = self.segment_end_positions[end_segment_index + 1]
             s_clamped = jnp.clip(s, start, end)
-            pose = self.forward_kinematics(q, s_clamped)
+            # This hook is vectorized by renderer-side actuator adapters. Use
+            # the protected JAX primitive so nested vmaps do not re-enter the
+            # device-selected scalar execution adapter.
+            pose = self._absolute_forward_kinematics(q, s_clamped)
             point = pose @ jnp.append(routing.offset(path_params, s_clamped), 1.0)
             return point[:-1]
 
