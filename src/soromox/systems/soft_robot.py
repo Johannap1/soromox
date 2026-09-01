@@ -973,14 +973,16 @@ class SoftRobot(DynamicalSystem):
             f"{type(self).__name__} must implement _forward_kinematics."
         )
 
-    def _add_model_jvp_tangent(
+    def _add_model_jvp_contribution(
         self,
         output_tangent: Array,
         model_tangent: Any,
         output_from_model: Callable[[Self], Array],
     ) -> Array:
-        """Add a model-only derivative to an established output tangent."""
-        if model_tangent is None or not jax.tree.leaves(model_tangent):
+        """Add the model-only JVP contribution to an output tangent."""
+        if model_tangent is None or not any(
+            eqx.is_inexact_array(leaf) for leaf in jax.tree.leaves(model_tangent)
+        ):
             return output_tangent
         _, model_output_tangent = eqx.filter_jvp(
             output_from_model,
@@ -1028,7 +1030,13 @@ class SoftRobot(DynamicalSystem):
         and did not show enough benchmark benefit to justify the maintenance
         cost. ``model_tangent`` is optional for direct internal calls. Equinox
         custom-JVP rules supply a model-shaped filtered tangent whose inactive
-        dynamic leaves are ``None``.
+        dynamic leaves are ``None``. The differentiated
+        ``_absolute_forward_kinematics`` hook is a protected primal path and
+        does not call the public custom-JVP wrapper recursively. Its
+        configuration derivative returns a tangent in the stored pose
+        representation; the analytical Jacobian instead returns an inertial
+        velocity, and the previous conversion path duplicated pose-specific
+        logic without a measured benefit.
         """
         forward_kinematics = self._absolute_forward_kinematics
         if qd is not None:
@@ -1051,7 +1059,7 @@ class SoftRobot(DynamicalSystem):
             pose, poses = self.forward_kinematics_and_arc_length_derivative(q, s)
             pose_tangent = poses * sd
 
-        pose_tangent = self._add_model_jvp_tangent(
+        pose_tangent = self._add_model_jvp_contribution(
             pose_tangent,
             model_tangent,
             lambda robot: robot._absolute_forward_kinematics(q, s),
@@ -1264,7 +1272,7 @@ class SoftRobot(DynamicalSystem):
                 (qd, sd),
             )
 
-        J_tangent = self._add_model_jvp_tangent(
+        J_tangent = self._add_model_jvp_contribution(
             J_tangent,
             model_tangent,
             lambda robot: robot._jacobian(q, s),
@@ -2615,7 +2623,7 @@ class SoftRobot(DynamicalSystem):
 
         T = robot._kinetic_energy(q, qd)
         Td = robot._kinetic_energy_jvp_tangent(q, qd, q_tangent, qdd)
-        Td = robot._add_model_jvp_tangent(
+        Td = robot._add_model_jvp_contribution(
             Td,
             robot_tangent,
             lambda candidate: candidate._kinetic_energy(q, qd),
@@ -2730,7 +2738,7 @@ class SoftRobot(DynamicalSystem):
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot.gravitational_force(q) @ qd
-        Ud = robot._add_model_jvp_tangent(
+        Ud = robot._add_model_jvp_contribution(
             Ud,
             robot_tangent,
             lambda candidate: candidate._gravitational_energy(q),
@@ -2785,7 +2793,7 @@ class SoftRobot(DynamicalSystem):
             Ueld = jnp.zeros_like(U_el)
         else:
             Ueld = robot.elastic_force(q) @ qd
-        Ueld = robot._add_model_jvp_tangent(
+        Ueld = robot._add_model_jvp_contribution(
             Ueld,
             robot_tangent,
             lambda candidate: candidate._elastic_energy(q),
@@ -2840,7 +2848,7 @@ class SoftRobot(DynamicalSystem):
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot._potential_energy_gradient(q) @ qd
-        Ud = robot._add_model_jvp_tangent(
+        Ud = robot._add_model_jvp_contribution(
             Ud,
             robot_tangent,
             lambda candidate: candidate._potential_energy(q),
@@ -2889,7 +2897,7 @@ class SoftRobot(DynamicalSystem):
 
         E = robot._total_energy(q, qd)
         Ed = robot._total_energy_jvp_tangent(q, qd, q_tangent, qdd)
-        Ed = robot._add_model_jvp_tangent(
+        Ed = robot._add_model_jvp_contribution(
             Ed,
             robot_tangent,
             lambda candidate: candidate._total_energy(q, qd),

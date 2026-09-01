@@ -311,10 +311,6 @@ def make_kinematics_evaluators(
     ) -> tuple[KinematicsResult, KinematicsResult]:
         model, q, s = primals
         model_tangent, qd, sd = tangents
-        if operation == "pose":
-            return model._forward_kinematics_jvp(
-                q, s, qd, sd, model_tangent=model_tangent
-            )
         if operation == "jacobian":
             return eqx.filter_jvp(
                 lambda model_, q_, s_: model_._absolute_inertial_jacobian(q_, s_),
@@ -324,6 +320,8 @@ def make_kinematics_evaluators(
         pose, pose_tangent = model._forward_kinematics_jvp(
             q, s, qd, sd, model_tangent=model_tangent
         )
+        if operation == "pose":
+            return pose, pose_tangent
         jacobian, jacobian_tangent = eqx.filter_jvp(
             lambda model_, q_, s_: model_._absolute_inertial_jacobian(q_, s_),
             primals,

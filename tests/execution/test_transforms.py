@@ -132,7 +132,9 @@ class _KinematicsTransformProbe(eqx.Module):
             (q, s),
             (qd, sd),
         )
-        if model_tangent is not None and jax.tree.leaves(model_tangent):
+        if model_tangent is not None and any(
+            eqx.is_inexact_array(leaf) for leaf in jax.tree.leaves(model_tangent)
+        ):
             _, model_pose_tangent = eqx.filter_jvp(
                 lambda candidate: candidate._absolute_forward_kinematics(q, s),
                 (self,),

@@ -241,6 +241,22 @@ def test_public_forward_kinematics_custom_jvp_preserves_model_tangent() -> None:
     assert jnp.any(actual != 0.0)
 
 
+def test_model_jvp_contribution_skips_inactive_tangent_tree() -> None:
+    robot = _ModelTangentDefaultRobot()
+    output_tangent = jnp.array([0.2, -0.4], dtype=jnp.float64)
+
+    def unexpected_model_evaluation(_robot: _ModelTangentDefaultRobot) -> Array:
+        raise AssertionError("inactive model tangents must not evaluate the model JVP")
+
+    actual = robot._add_model_jvp_contribution(
+        output_tangent,
+        {"none": None, "integer_zero": 0},
+        unexpected_model_evaluation,
+    )
+
+    assert_allclose(actual, output_tangent, rtol=0.0, atol=0.0)
+
+
 @pytest.mark.parametrize(
     "operation",
     (
