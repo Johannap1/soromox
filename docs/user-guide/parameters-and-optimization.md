@@ -16,6 +16,7 @@ damping, and isotropic materials, see
 | Construct a robot from physical descriptions | `LinkSpec`, `JointSpec`, `GVSSegment` |
 | Replace runtime numeric values | `update_params`, `update_link_params`, `update_joint_params` |
 | Replace several nested components together | nested `.replace(...)` followed by `with_params(...)` |
+| Change or optimize a fixed mounting pose | `with_fixed_base_pose(...)` |
 | Identify isotropic material properties | caller-owned `IsotropicMaterialParams` and `with_isotropic_material(...)` |
 | Fit anisotropic or coupled mechanics | optimize `params.link.stiffness` and `params.link.damping` directly |
 | Change basis order, segment count, or padding | reconstruct with a new structure |
@@ -153,6 +154,22 @@ Top-level values use `update_params`:
 pcs = pcs.update_params(gravity=jnp.zeros(3))
 ```
 
+A fixed mounting pose is a dynamic model leaf rather than a field in the
+physical parameter PyTree. Update it independently with
+`with_fixed_base_pose(...)`:
+
+```python
+candidate_base_pose = pcs.fixed_base_pose.at[4].add(0.01)
+mounted_pcs = pcs.with_fixed_base_pose(candidate_base_pose)
+```
+
+This keeps one physical parameter PyTree reusable across different mountings
+and between fixed and floating models without making the fixed pose static or
+nondifferentiable.
+
+Floating systems instead carry their base pose in the runtime configuration
+and reject `with_fixed_base_pose(...)`.
+
 Updates may change numeric values but not static layout. Changing the number of
 links, GVS basis orders, active strain selectors, joint types, matrix padding,
 or quadrature padding requires reconstruction.
@@ -182,6 +199,34 @@ candidate_params = pcs.params.replace(
 )
 candidate = energy(candidate_params, q)
 ```
+
+Fixed mounting poses can likewise be supplied as dynamic optimization
+variables without reconstructing the model or recompiling for each value:
+
+```python
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+
+target_position = jnp.array([0.1, -0.05, 0.25])
+
+@eqx.filter_jit
+def mounted_loss_and_grad(base_pose, configuration):
+    def loss(pose):
+        candidate = pcs.with_fixed_base_pose(pose)
+        tip_pose = candidate.forward_kinematics(configuration, candidate.length)
+        return jnp.sum((tip_pose[:3, 3] - target_position) ** 2)
+
+    return jax.value_and_grad(loss)(base_pose)
+
+loss, base_pose_gradient = mounted_loss_and_grad(pcs.fixed_base_pose, q)
+```
+
+Repeated calls share one compiled executable while the pose retains the same
+shape and dtype. Use a constrained rotation parameterization or normalize the
+quaternion when optimizing a spatial mounting. To identify physical parameters
+and mounting jointly, pass both `params` and `base_pose` as dynamic arguments
+and chain `with_params(params).with_fixed_base_pose(base_pose)`.
 
 The two calls share one compiled executable when every parameter leaf keeps
 the same PyTree position, shape, and dtype. Numeric system, environment,

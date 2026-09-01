@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -13,6 +15,7 @@ from soromox.execution import (
     ExecutionBackend,
     evaluate_forward_dynamics,
     make_dynamics_evaluator,
+    make_kinematics_evaluators,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -96,6 +99,52 @@ class _TransformProbe(eqx.Module):
         return jnp.linalg.solve(inertia, rhs)
 
 
+class _KinematicsTransformProbe(eqx.Module):
+    """Differentiable model for kinematics custom-JVP tests."""
+
+    offset: Array
+    backend: ExecutionBackend = eqx.field(static=True, default="warp")
+    num_coordinates: int = eqx.field(static=True, default=3)
+    num_velocities: int = eqx.field(static=True, default=3)
+    floating_base: bool = eqx.field(static=True, default=False)
+    is_planar: bool = eqx.field(static=True, default=True)
+
+    def _absolute_forward_kinematics(self, q: Array, s: Array) -> Array:
+        """Return a pose that depends on state and a dynamic model leaf."""
+
+        return self.offset + jnp.array([s + q[0], q[1], q[2]])
+
+    def _forward_kinematics_jvp(
+        self,
+        q: Array,
+        s: Array,
+        qd: Array | None,
+        sd: Array | None,
+        *,
+        model_tangent: Any = None,
+    ) -> tuple[Array, Array]:
+        """Differentiate the probe's model and state inputs."""
+
+        qd = jnp.zeros_like(q) if qd is None else qd
+        sd = jnp.zeros_like(s) if sd is None else sd
+        pose, pose_tangent = jax.jvp(
+            lambda q_, s_: self._absolute_forward_kinematics(q_, s_),
+            (q, s),
+            (qd, sd),
+        )
+        if model_tangent is not None and any(
+            eqx.is_inexact_array(leaf) for leaf in jax.tree.leaves(model_tangent)
+        ):
+            _, model_pose_tangent = eqx.filter_jvp(
+                lambda candidate: candidate._absolute_forward_kinematics(q, s),
+                (self,),
+                (model_tangent,),
+            )
+            if model_pose_tangent is not None:
+                pose_tangent = pose_tangent + model_pose_tangent
+        return pose, pose_tangent
+
+
 def _assert_terms_close(actual: DynamicsTerms, expected: DynamicsTerms) -> None:
     """Compare the three dynamics outputs with strict FP64 tolerances."""
 
@@ -139,6 +188,50 @@ def test_dynamics_evaluator_uses_jax_for_forward_and_reverse_derivatives() -> No
         lambda q_: sum(jnp.sum(value) for value in evaluate(model, q_, qd))
     )(q)
     assert_allclose(actual_gradient, expected_gradient, rtol=1e-12, atol=1e-12)
+
+
+def test_kinematics_evaluator_preserves_model_tangent() -> None:
+    """Differentiate model leaves through the accelerated pose adapter."""
+
+    model = _KinematicsTransformProbe(offset=jnp.zeros(3, dtype=jnp.float64))
+    q = jnp.asarray([0.1, -0.2, 0.3], dtype=jnp.float64)
+    s = jnp.asarray(0.4, dtype=jnp.float64)
+
+    def execute_batch(
+        candidate: _KinematicsTransformProbe,
+        q_batch: Array,
+        s_batch: Array,
+        operation: str,
+    ) -> Array:
+        assert operation == "pose"
+        return jax.vmap(
+            lambda q_, s_: jax.vmap(
+                lambda s__: candidate._absolute_forward_kinematics(q_, s__)
+            )(s_)
+        )(q_batch, s_batch)
+
+    evaluate, _ = make_kinematics_evaluators(
+        execute_batch,
+        family_name="test",
+        operation="pose",
+    )
+
+    def pose_sum(offset: Array, *, accelerated: bool) -> Array:
+        candidate = eqx.tree_at(lambda current: current.offset, model, offset)
+        pose = (
+            evaluate(candidate, q, s)
+            if accelerated
+            else candidate._absolute_forward_kinematics(q, s)
+        )
+        return jnp.sum(pose)
+
+    actual = jax.grad(lambda offset: pose_sum(offset, accelerated=True))(model.offset)
+    expected = jax.grad(lambda offset: pose_sum(offset, accelerated=False))(
+        model.offset
+    )
+
+    assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    assert jnp.any(actual != 0.0)
 
 
 def test_forward_dynamics_boundary_routes_derivatives_to_jax() -> None:

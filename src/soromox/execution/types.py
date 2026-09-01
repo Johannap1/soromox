@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from jax import Array
 
@@ -239,8 +239,10 @@ class KinematicsModel(Protocol):
         s: Array,
         qd: Array | None,
         sd: Array | None,
+        *,
+        model_tangent: Any = None,
     ) -> tuple[Array, Array]:
-        """Return the established JAX/custom-JVP pose rule."""
+        """Return the total model, configuration, and abscissa pose JVP."""
 
         ...
 

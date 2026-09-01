@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -112,9 +114,12 @@ class _KinematicsProbe(eqx.Module):
         s: Array,
         qd: Array | None,
         sd: Array | None,
+        *,
+        model_tangent: Any = None,
     ) -> tuple[Array, Array]:
         """Differentiate the probe's scalar pose implementation."""
 
+        del model_tangent
         qd = jnp.zeros_like(q) if qd is None else qd
         sd = jnp.zeros_like(s) if sd is None else sd
         return jax.jvp(self._forward_kinematics, (q, s), (qd, sd))

@@ -187,8 +187,8 @@ def _evaluate_forward_kinematics_jvp(
     """Route pose derivatives through the model's established JAX rule."""
 
     model, q, s = primals
-    _model_tangent, qd, sd = tangents
-    return model._forward_kinematics_jvp(q, s, qd, sd)
+    model_tangent, qd, sd = tangents
+    return model._forward_kinematics_jvp(q, s, qd, sd, model_tangent=model_tangent)
 
 
 @jax.custom_batching.custom_vmap
@@ -310,16 +310,18 @@ def make_kinematics_evaluators(
         tangents: tuple[Any, Array | None, Array | None],
     ) -> tuple[KinematicsResult, KinematicsResult]:
         model, q, s = primals
-        _model_tangent, qd, sd = tangents
-        if operation == "pose":
-            return model._forward_kinematics_jvp(q, s, qd, sd)
+        model_tangent, qd, sd = tangents
         if operation == "jacobian":
             return eqx.filter_jvp(
                 lambda model_, q_, s_: model_._absolute_inertial_jacobian(q_, s_),
                 primals,
                 tangents,
             )
-        pose, pose_tangent = model._forward_kinematics_jvp(q, s, qd, sd)
+        pose, pose_tangent = model._forward_kinematics_jvp(
+            q, s, qd, sd, model_tangent=model_tangent
+        )
+        if operation == "pose":
+            return pose, pose_tangent
         jacobian, jacobian_tangent = eqx.filter_jvp(
             lambda model_, q_, s_: model_._absolute_inertial_jacobian(q_, s_),
             primals,

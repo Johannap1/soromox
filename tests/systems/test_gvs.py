@@ -211,6 +211,46 @@ def test_gvs_compiled_partial_base_pose_updates_match_eager_forces():
     assert not jnp.allclose(actual[0], actual[1])
 
 
+def test_gvs_compiled_fixed_base_pose_kinematics_gradients_do_not_retrace():
+    robot, _ = build_matched_gvs_pcs()
+    q = jnp.linspace(-0.02, 0.02, robot.num_internal_dofs)
+    target = jnp.array([0.07, -0.03, 0.24], dtype=jnp.float64)
+    sqrt_half = jnp.sqrt(jnp.asarray(0.5, dtype=jnp.float64))
+    base_poses = (
+        robot.fixed_base_pose,
+        jnp.array([0.0, sqrt_half, 0.0, sqrt_half, 0.01, -0.02, 0.03]),
+    )
+    trace_count = {"value": 0}
+
+    def tip_loss(base_pose, *, public: bool):
+        candidate = robot.with_fixed_base_pose(base_pose)
+        if public:
+            tip_pose = candidate.forward_kinematics(q, candidate.length)
+        else:
+            tip_pose = candidate._absolute_forward_kinematics(q, candidate.length)
+        return jnp.sum((tip_pose[:3, 3] - target) ** 2)
+
+    @eqx.filter_jit
+    def compiled_value_and_grad(base_pose):
+        trace_count["value"] += 1
+        return jax.value_and_grad(lambda pose: tip_loss(pose, public=True))(base_pose)
+
+    actual = tuple(compiled_value_and_grad(base_pose) for base_pose in base_poses)
+    expected = tuple(
+        jax.value_and_grad(lambda pose: tip_loss(pose, public=False))(base_pose)
+        for base_pose in base_poses
+    )
+
+    assert trace_count["value"] == 1
+    for (value, gradient), (expected_value, expected_gradient) in zip(
+        actual, expected, strict=True
+    ):
+        assert_allclose(value, expected_value, rtol=1e-10, atol=1e-12)
+        assert_allclose(gradient, expected_gradient, rtol=1e-9, atol=1e-11)
+        assert jnp.all(jnp.isfinite(gradient))
+        assert jnp.any(jnp.abs(gradient) > 1e-12)
+
+
 def test_gvs_closed_over_complete_params_validate_inside_compiled_evaluation():
     robot, _ = build_matched_gvs_pcs()
     q = jnp.linspace(-0.02, 0.02, robot.num_internal_dofs)
