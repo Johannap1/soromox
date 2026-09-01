@@ -100,15 +100,13 @@ and include benchmark baseline and measurement context for performance claims.
   that PCS dynamics terms alone were about 7% slower under Warp even though PCS
   forward dynamics was 16% faster. Individual terms/forward cases ranged from
   0.22–3.29×/0.89–2.80× for `PlanarPCS`, 0.33–2.47×/0.33–2.24× for `PCS`, and
-  0.35–5.53×/0.41–4.44× for `GVS`. These all-grid means are broader than the
-  earlier four-segment, batch-256 headline comparisons: at batch 256 across the
-  five new segment counts, the corresponding geometric means were
-  1.11×/1.93×, 1.25×/1.43×, and 2.70×/2.22×. The minima principally expose
-  fixed launch cost for one-segment terms and under-occupied persistent chain
-  kernels at 32 segments and batch 1; the maxima occurred at batch 1024. At 32
-  segments and batch 1024, the dense JAX GVS Jacobian case exhausted the RTX
-  5090's 32-GB memory while Warp completed it; Warp also improved terms/forward
-  time by 1.27×/1.20×.
+  0.35–5.53×/0.41–4.44× for `GVS`. At batch 256 across the five segment counts,
+  the corresponding geometric means were 1.11×/1.93×, 1.25×/1.43×, and
+  2.70×/2.22×. The minima principally expose fixed launch cost for one-segment
+  terms and under-occupied persistent chain kernels at 32 segments and batch 1;
+  the maxima occurred at batch 1024. At 32 segments and batch 1024, the dense
+  JAX GVS Jacobian case exhausted the RTX 5090's 32-GB memory while Warp
+  completed it; Warp also improved terms/forward time by 1.27×/1.20×.
   In the quadrature sweep, GPU Warp terms/forward geometric-mean speedups were
   1.93×/2.66× at three points and 1.87×/1.80× at nine points for `PlanarPCS`,
   and 1.46×/2.05× and 1.42×/1.78× for `PCS`. Small GPU workloads can still
