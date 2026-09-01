@@ -746,8 +746,8 @@ def write_gvs_sample_jacobian(
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
     angle_sq = wp.dot(omega, omega)
     coefficients = _left_coefficients(angle_sq)
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
     commutator_coefficient = wp.sqrt(wp.float64(3.0)) * ds * ds / wp.float64(12.0)
     x1 = x_base + magnus_points[0] * width
     x2 = x_base + magnus_points[1] * width
@@ -795,7 +795,13 @@ def write_gvs_sample_jacobian(
         while k < SPATIAL_DIM:
             source[k] = node_jacobian[node_item * SPATIAL_DIM + k, column] + tangent[k]
             k += 1
-        body = _adjoint_inverse_action(omega, translation, angle_sq, forward, source)
+        body = _adjoint_inverse_action(
+            omega,
+            translation,
+            angle_sq,
+            exponential_coefficients,
+            source,
+        )
         row = int(0)
         while row < SPATIAL_DIM:
             local_row = row if row < 3 else row - 3

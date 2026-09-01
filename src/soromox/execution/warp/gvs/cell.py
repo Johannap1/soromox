@@ -231,8 +231,8 @@ def cell_terms_kernel(
     coefficients = _left_coefficients(angle_sq)
     omega = wp.vec3d(magnus[0], magnus[1], magnus[2])
     linear = wp.vec3d(magnus[3], magnus[4], magnus[5])
-    forward = _forward_coefficients(angle_sq)
-    translation = _translation(omega, linear, forward)
+    exponential_coefficients = _forward_coefficients(angle_sq)
+    translation = _translation(omega, linear, exponential_coefficients)
 
     row = int(0)
     while row < SPATIAL_DIM:
@@ -242,7 +242,7 @@ def cell_terms_kernel(
                 omega,
                 translation,
                 angle_sq,
-                forward,
+                exponential_coefficients,
                 row,
                 column,
             )
@@ -270,7 +270,9 @@ def cell_terms_kernel(
         local_column += 1
 
     link = _left_action(magnus, magnus_dot, coefficients)
-    step = _adjoint_inverse_action(omega, translation, angle_sq, forward, link)
+    step = _adjoint_inverse_action(
+        omega, translation, angle_sq, exponential_coefficients, link
+    )
     magnus_basis_dot_qd = Vec6d()
     if order_zero[0] == 0:
         magnus_basis_dot_qd = (

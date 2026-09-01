@@ -919,8 +919,8 @@ class SoftRobot(DynamicalSystem):
             q_internal, s
         )
         relative_transforms = vmap(self._homogeneous_pose)(relative_poses)
-        jacobians_internal = (
-            relative_robot._jacobian_inertialframe_abscissa_batched(q_internal, s)
+        jacobians_internal = relative_robot._jacobian_inertialframe_abscissa_batched(
+            q_internal, s
         )
         return self._floating_jacobians_from_relative_inertial(
             q, relative_transforms, jacobians_internal
@@ -1652,17 +1652,17 @@ class SoftRobot(DynamicalSystem):
             jacobians_base = jnp.broadcast_to(
                 jnp.eye(6, dtype=jacobians_internal.dtype), (*leading_shape, 6, 6)
             )
-            rx, ry, rz = (
+            offset_x, offset_y, offset_z = (
                 world_offsets[..., 0],
                 world_offsets[..., 1],
                 world_offsets[..., 2],
             )
-            jacobians_base = jacobians_base.at[..., 3, 1].set(rz)
-            jacobians_base = jacobians_base.at[..., 3, 2].set(-ry)
-            jacobians_base = jacobians_base.at[..., 4, 0].set(-rz)
-            jacobians_base = jacobians_base.at[..., 4, 2].set(rx)
-            jacobians_base = jacobians_base.at[..., 5, 0].set(ry)
-            jacobians_base = jacobians_base.at[..., 5, 1].set(-rx)
+            jacobians_base = jacobians_base.at[..., 3, 1].set(offset_z)
+            jacobians_base = jacobians_base.at[..., 3, 2].set(-offset_y)
+            jacobians_base = jacobians_base.at[..., 4, 0].set(-offset_z)
+            jacobians_base = jacobians_base.at[..., 4, 2].set(offset_x)
+            jacobians_base = jacobians_base.at[..., 5, 0].set(offset_y)
+            jacobians_base = jacobians_base.at[..., 5, 1].set(-offset_x)
             jacobians_internal_world = jnp.concatenate(
                 [
                     jnp.einsum(

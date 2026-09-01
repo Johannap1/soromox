@@ -10,7 +10,14 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _rotation_components(theta: wp.float64) -> wp.vec2d:
-    """Return ``(cos(theta), sin(theta))`` for shared planar actions."""
+    """Return the cosine and sine shared by planar rotation actions.
+
+    Args:
+        theta: Right-handed planar rotation angle.
+
+    Returns:
+        Vector ``[cos(theta), sin(theta)]``.
+    """
     return wp.vec2d(wp.cos(theta), wp.sin(theta))
 
 
@@ -32,7 +39,15 @@ def _rotation_matrix(theta: wp.float64) -> wp.mat22d:
 
 @wp.func
 def _rotate_vector(theta: wp.float64, value: wp.vec2d) -> wp.vec2d:
-    """Rotate one planar vector by ``theta``."""
+    """Apply a planar active rotation to one vector.
+
+    Args:
+        theta: Right-handed planar rotation angle.
+        value: Two-dimensional vector to rotate.
+
+    Returns:
+        Rotated vector ``R(theta) @ value``.
+    """
     components = _rotation_components(theta)
     cosine = components[0]
     sine = components[1]
@@ -44,7 +59,15 @@ def _rotate_vector(theta: wp.float64, value: wp.vec2d) -> wp.vec2d:
 
 @wp.func
 def _rotate_vector_transpose(theta: wp.float64, value: wp.vec2d) -> wp.vec2d:
-    """Apply the transpose of a planar rotation to one vector."""
+    """Apply the transpose of a planar rotation to one vector.
+
+    Args:
+        theta: Right-handed planar rotation angle.
+        value: Two-dimensional vector to rotate.
+
+    Returns:
+        Rotated vector ``R(theta).T @ value``.
+    """
     components = _rotation_components(theta)
     cosine = components[0]
     sine = components[1]

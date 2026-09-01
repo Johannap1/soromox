@@ -64,7 +64,7 @@ def _forward_coefficients(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
 
 
 @wp.func
-def _forward_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
+def _forward_coefficient_x_derivatives(z: wp.float64, cutoff: wp.float64) -> wp.vec3d:
     """Differentiate planar exponential coefficients with respect to ``z**2``.
 
     Args:
@@ -112,7 +112,7 @@ def _constant_strain_operators(
     xi: wp.vec3d,
     xid: wp.vec3d,
     s: wp.float64,
-    global_eps: wp.float64,
+    adjoint_eps: wp.float64,
     tangent_eps: wp.float64,
 ) -> tuple[wp.mat33d, wp.mat33d, wp.vec3d, wp.vec3d]:
     """Evaluate constant-strain SE(2) recurrence operators.
@@ -121,7 +121,7 @@ def _constant_strain_operators(
         xi: Constant planar strain of the current segment.
         xid: Constant planar strain rate of the current segment.
         s: Segment-local integration coordinate.
-        global_eps: Small-angle tolerance for the exponential adjoint.
+        adjoint_eps: Small-angle tolerance for the exponential adjoint.
         tangent_eps: Small-angle tolerance for tangent derivatives.
 
     Returns:
@@ -129,40 +129,48 @@ def _constant_strain_operators(
         transported tangent time-derivative action on strain rate.
     """
     z = s * xi[0]
-    adjoint_cutoff = wp.max(wp.abs(s * global_eps), wp.float64(0.04964607461902946))
+    adjoint_cutoff = wp.max(wp.abs(s * adjoint_eps), wp.float64(0.04964607461902946))
     adjoint_coefficients = _forward_coefficients(z, adjoint_cutoff)
-    sinc_a = adjoint_coefficients[0]
-    cosc_a = adjoint_coefficients[1]
+    adjoint_sinc = adjoint_coefficients[0]
+    adjoint_cosc = adjoint_coefficients[1]
     cosine = wp.cos(z)
     sine = wp.sin(z)
-    q0 = s * (sinc_a * xi[2] + z * cosc_a * xi[1])
-    q1 = s * (-sinc_a * xi[1] + z * cosc_a * xi[2])
+    adjoint_translation = wp.vec2d(
+        s * (adjoint_sinc * xi[2] + z * adjoint_cosc * xi[1]),
+        s * (-adjoint_sinc * xi[1] + z * adjoint_cosc * xi[2]),
+    )
 
     adjoint_inverse = wp.mat33d()
     adjoint_inverse[0, 0] = wp.float64(1.0)
-    adjoint_inverse[1, 0] = -(cosine * q0 + sine * q1)
+    adjoint_inverse[1, 0] = -(
+        cosine * adjoint_translation[0] + sine * adjoint_translation[1]
+    )
     adjoint_inverse[1, 1] = cosine
     adjoint_inverse[1, 2] = sine
-    adjoint_inverse[2, 0] = sine * q0 - cosine * q1
+    adjoint_inverse[2, 0] = (
+        sine * adjoint_translation[0] - cosine * adjoint_translation[1]
+    )
     adjoint_inverse[2, 1] = -sine
     adjoint_inverse[2, 2] = cosine
 
     tangent_cutoff = wp.max(wp.abs(s * tangent_eps), wp.float64(0.07618835359095202))
     coefficients = _forward_coefficients(z, tangent_cutoff)
-    derivatives = _forward_derivatives(z, tangent_cutoff)
+    coefficient_x_derivatives = _forward_coefficient_x_derivatives(z, tangent_cutoff)
     sinc = coefficients[0]
     cosc = coefficients[1]
     tanc = coefficients[2]
     accumulated_x = s * xi[1]
     accumulated_y = s * xi[2]
-    lower0 = cosc * accumulated_y + z * tanc * accumulated_x
-    lower1 = -cosc * accumulated_x + z * tanc * accumulated_y
+    lower_left = wp.vec2d(
+        cosc * accumulated_y + z * tanc * accumulated_x,
+        -cosc * accumulated_x + z * tanc * accumulated_y,
+    )
     tangent = wp.mat33d()
     tangent[0, 0] = s
-    tangent[1, 0] = s * lower0
+    tangent[1, 0] = s * lower_left[0]
     tangent[1, 1] = s * sinc
     tangent[1, 2] = -s * z * cosc
-    tangent[2, 0] = s * lower1
+    tangent[2, 0] = s * lower_left[1]
     tangent[2, 1] = s * z * cosc
     tangent[2, 2] = s * sinc
 
@@ -170,28 +178,29 @@ def _constant_strain_operators(
     accumulated_dot_y = s * xid[2]
     z_dot = s * xid[0]
     x = z * z
-    sinc_dot = wp.float64(2.0) * z * derivatives[0] * z_dot
-    cosc_dot = wp.float64(2.0) * z * derivatives[1] * z_dot
-    z_cosc_dot = z_dot * (cosc + wp.float64(2.0) * x * derivatives[1])
+    sinc_x = coefficient_x_derivatives[0]
+    cosc_x = coefficient_x_derivatives[1]
+    tanc_x = coefficient_x_derivatives[2]
+    sinc_dot = wp.float64(2.0) * z * sinc_x * z_dot
+    cosc_dot = wp.float64(2.0) * z * cosc_x * z_dot
+    z_cosc_dot = z_dot * (cosc + wp.float64(2.0) * x * cosc_x)
     z_tanc = z * tanc
-    z_tanc_dot = z_dot * (tanc + wp.float64(2.0) * x * derivatives[2])
-    lower_dot0 = (
+    z_tanc_dot = z_dot * (tanc + wp.float64(2.0) * x * tanc_x)
+    lower_left_dot = wp.vec2d(
         cosc_dot * accumulated_y
         + cosc * accumulated_dot_y
         + z_tanc_dot * accumulated_x
-        + z_tanc * accumulated_dot_x
-    )
-    lower_dot1 = (
+        + z_tanc * accumulated_dot_x,
         -cosc_dot * accumulated_x
         - cosc * accumulated_dot_x
         + z_tanc_dot * accumulated_y
-        + z_tanc * accumulated_dot_y
+        + z_tanc * accumulated_dot_y,
     )
     tangent_dot = wp.mat33d()
-    tangent_dot[1, 0] = s * lower_dot0
+    tangent_dot[1, 0] = s * lower_left_dot[0]
     tangent_dot[1, 1] = s * sinc_dot
     tangent_dot[1, 2] = -s * z_cosc_dot
-    tangent_dot[2, 0] = s * lower_dot1
+    tangent_dot[2, 0] = s * lower_left_dot[1]
     tangent_dot[2, 1] = s * z_cosc_dot
     tangent_dot[2, 2] = s * sinc_dot
 
@@ -247,6 +256,6 @@ def planar_pose_step(
 __all__ = [
     "_constant_strain_operators",
     "_forward_coefficients",
-    "_forward_derivatives",
+    "_forward_coefficient_x_derivatives",
     "planar_pose_step",
 ]
