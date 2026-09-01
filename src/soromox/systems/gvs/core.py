@@ -766,11 +766,14 @@ class GVS(SoftRobot):
         Ms = rho * vmap(jnp.diag)(Ms_diag)  # Shape: (np, 6, 6)
 
         # Pad the arrays to the maximum number of integration points and DOFs
+        # Repeat the normalized terminal node so heterogeneous quadrature rows
+        # remain nondecreasing and add only zero-width cells. Zero padding would
+        # turn ``[..., 1]`` into ``[..., 1, 0, ...]`` and create a spurious
+        # negative-width cell for runtime sample lookup.
         integration_points_full = jnp.pad(
             integration_points,
             (0, max_num_integration_points - num_integration_points_i),
-            mode="constant",
-            constant_values=1.0,
+            mode="edge",
         )
         integration_weights_full = jnp.pad(
             integration_weights,
