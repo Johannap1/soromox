@@ -206,6 +206,7 @@ variables without reconstructing the model or recompiling for each value:
 ```python
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 
 target_position = jnp.array([0.1, -0.05, 0.25])
 
