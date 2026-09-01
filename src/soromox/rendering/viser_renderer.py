@@ -49,6 +49,7 @@ from soromox.rendering.base import BaseSoftRobotRenderer
 from soromox.rendering.camera_config import CameraConfig
 from soromox.rendering.color_config import RendererColorConfig, ensure_rgba
 from soromox.rendering.video_encoding import FFmpegVideoWriter, VideoEncodingConfig
+from soromox.systems.components import CrossSectionGeometry
 from soromox.systems.soft_robot import SoftRobot
 
 # =============================================================================
@@ -200,23 +201,32 @@ def _oriented_tube_segment_mesh(
     p1: np.ndarray,
     frame0: np.ndarray,
     frame1: np.ndarray,
-    radius: float,
+    radius0: float,
+    radius1: float,
     sections: int,
     *,
     cap_end: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return a tube segment whose endpoint rings use the FK material frames."""
     angles = np.linspace(0.0, 2.0 * np.pi, int(sections), endpoint=False)
-    local_offsets = np.stack(
+    local_offset0 = np.stack(
         [
             np.zeros_like(angles),
-            float(radius) * np.cos(angles),
-            float(radius) * np.sin(angles),
+            float(radius0) * np.cos(angles),
+            float(radius0) * np.sin(angles),
         ],
         axis=1,
     )
-    ring0 = np.asarray(p0) + local_offsets @ np.asarray(frame0).T
-    ring1 = np.asarray(p1) + local_offsets @ np.asarray(frame1).T
+    local_offset1 = np.stack(
+        [
+            np.zeros_like(angles),
+            float(radius1) * np.cos(angles),
+            float(radius1) * np.sin(angles),
+        ],
+        axis=1,
+    )
+    ring0 = np.asarray(p0) + local_offset0 @ np.asarray(frame0).T
+    ring1 = np.asarray(p1) + local_offset1 @ np.asarray(frame1).T
     vertex_groups = [ring0, ring1]
     if cap_end:
         vertex_groups.append(np.asarray(p1, dtype=np.float64).reshape(1, 3))
@@ -389,8 +399,8 @@ class ViserRenderer(BaseSoftRobotRenderer):
         self._backbone_cast_shadow = backbone_cast_shadow
         self._sphere_cast_shadow = sphere_cast_shadow
 
-        # Get robot radius for sizing
-        self._robot_radius = self._get_robot_radius()
+        # Get robot radii for sizing
+        self._robot_radii = self._get_robot_radii()
 
         # Server and scene state
         self._server: viser.ViserServer | None = None
@@ -408,14 +418,26 @@ class ViserRenderer(BaseSoftRobotRenderer):
         if auto_start:
             self.start()
 
-    def _get_robot_radius(self) -> float:
-        """Get representative robot radius for visualization."""
-        if hasattr(self.robot, "r"):
-            r = self.robot.r
-            if hasattr(r, "__iter__"):
-                return float(np.mean(np.asarray(r)))
-            return float(r)
-        return 0.02  # Default radius
+    @staticmethod
+    def _effective_radii(tags: Array, dims: Array) -> Array:
+        """Collapse batched cross-section dimensions into per-point rendering radii."""
+        circular = dims[:, 0]
+        rectangular = 0.5 * jnp.maximum(dims[:, 0], dims[:, 1])
+        elliptical = jnp.maximum(dims[:, 0], dims[:, 1])
+        return jnp.where(
+            tags == CrossSectionGeometry.RECTANGULAR,
+            rectangular,
+            jnp.where(tags == CrossSectionGeometry.ELLIPTICAL, elliptical, circular),
+        )
+
+    def _get_robot_radii(self) -> Array:
+        """Get per-point effective robot radii for tapered visualization."""
+        s_ps = jnp.linspace(0.0, self.L_max, self.num_points)
+        q_dummy = jnp.zeros(self.robot.num_dofs)
+        tags, dims = jax.vmap(self.robot.cross_section_geometry, in_axes=(None, 0))(
+            q_dummy, s_ps
+        )
+        return self._effective_radii(tags, dims)
 
     @property
     def is_3d(self) -> bool:
@@ -619,9 +641,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
                         (num_points, 4),
                     ).copy(),
                     batched_positions=np.asarray(curve, dtype=np.float32),
-                    batched_scales=np.full(
-                        num_points, self._robot_radius, dtype=np.float32
-                    ),
+                    batched_scales=np.asarray(self._robot_radii, dtype=np.float32),
                     batched_colors=colors,
                     batched_opacities=opacities,
                     wireframe=self._wireframe,
@@ -654,7 +674,8 @@ class ViserRenderer(BaseSoftRobotRenderer):
                             curve[pt_idx + 1],
                             robot_frames[pt_idx],
                             robot_frames[pt_idx + 1],
-                            self._robot_radius,
+                            self._robot_radii[pt_idx],
+                            self._robot_radii[pt_idx + 1],
                             self._cylinder_sections,
                             cap_end=pt_idx == num_points - 2,
                         )
@@ -720,7 +741,7 @@ class ViserRenderer(BaseSoftRobotRenderer):
             name=f"/robots/robot_{robot_idx}/base_plate",
             mesh=self._make_cylinder_trimesh(
                 length=self._base_plate_thickness,
-                radius=self._robot_radius * self._base_plate_radius_scale,
+                radius=self._robot_radii[0] * self._base_plate_radius_scale,
                 color=base_plate_color,
                 direction=None,  # Already Z-aligned
             ),
@@ -997,7 +1018,8 @@ class ViserRenderer(BaseSoftRobotRenderer):
                                 curve[seg_idx + 1],
                                 robot_frames[seg_idx],
                                 robot_frames[seg_idx + 1],
-                                self._robot_radius,
+                                self._robot_radii[seg_idx],
+                                self._robot_radii[seg_idx + 1],
                                 self._cylinder_sections,
                                 cap_end=seg_idx == num_points - 2,
                             )
