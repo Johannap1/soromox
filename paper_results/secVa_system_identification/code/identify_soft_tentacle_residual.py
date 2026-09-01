@@ -852,7 +852,7 @@ if __name__ == "__main__":
         start_segment_index=0,
         end_segment_index=(0, 0),
     )
-    p0 = jnp.array([jnp.sqrt(0.5), 0.0, jnp.sqrt(0.5), 0.0, 0.0, 0.0, 0.0])
+    base_pose = jnp.array([0.0, jnp.sqrt(0.5), 0.0, jnp.sqrt(0.5), 0.0, 0.0, 0.0])
 
     robot = GVS.from_segments(
         [
@@ -870,7 +870,7 @@ if __name__ == "__main__":
             ),
         ],
         gravity=jnp.asarray(g),
-        base_pose=p0,
+        base_pose=base_pose,
         actuators=ThreadlikeActuator.tendons(active_tendon_routing),
         scale_rotational_basis_by_length=True,
     )

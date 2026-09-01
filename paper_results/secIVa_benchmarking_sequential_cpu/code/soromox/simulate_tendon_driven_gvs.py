@@ -101,7 +101,7 @@ active_tendon_routing = ThreadlikeRouting.linear(
 # attention: 0DEG -> Y+, 180DEG -> Y-, 90DEG -> Z+, 270DEG -> Z-
 
 
-p0 = jnp.array([0.5, 0.5, -0.5, 0.5, 0.0, 0.0, 0.0])
+base_pose = jnp.array([0.5, -0.5, 0.5, 0.5, 0.0, 0.0, 0.0])
 
 # 2 link version
 segments = [
@@ -115,14 +115,14 @@ segments = [
 robot = GVS.from_segments(
     segments,
     gravity=jnp.asarray(g),
-    base_pose=p0,
+    base_pose=base_pose,
     actuators=ThreadlikeActuator.tendons(active_tendon_routing),
     # max_dof=6,
     scale_rotational_basis_by_length=True,
 )
 
 # debug: check g0
-# g0_test = lie.exp_SE3(p0)
+# g0_test = lie.exp_SE3(base_pose)
 # print("g0_test:\n", g0_test[:3,:3])
 
 ### MATRICES CHECKING AND PRINTING ###

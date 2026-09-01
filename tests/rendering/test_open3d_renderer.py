@@ -27,9 +27,10 @@ from soromox.systems.components import CrossSectionGeometry  # noqa: E402
 
 class _AnimatingSpatialRobot:
     is_planar = False
+    floating_base = False
     length = jnp.array(1.0)
     segment_length = jnp.array([1.0])
-    base_pose = jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+    fixed_base_pose = jnp.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
     base_transform = jnp.eye(4)
 
     def forward_kinematics_abscissa_batched(self, q, s_points):
