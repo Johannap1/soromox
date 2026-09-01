@@ -10,6 +10,7 @@ from numpy.testing import assert_allclose
 from system_param_builders import pendulum_params, planar_base_pose
 
 from soromox.actuation import ArticulatedTendonActuator
+from soromox.autodiff import custom_jvp_mode
 from soromox.systems import Pendulum
 from soromox.utils.tolerance import Tolerance
 
@@ -94,6 +95,47 @@ def test_grad_differentiates_through_typed_params():
 
     grad_value = jax.grad(energy_for_first_mass)(params.mass[0])
     assert jnp.isfinite(grad_value)
+
+
+def test_compiled_gravity_energy_gradients_do_not_retrace():
+    robot = make_pendulum(2)
+    params = robot.params
+    q = jnp.array([0.25, -0.15], dtype=jnp.float64)
+    updated_gravity = params.gravity.at[1].set(-9.7)
+    trace_count = {"value": 0}
+
+    @eqx.filter_jit
+    def compiled_value_and_grad(gravity):
+        trace_count["value"] += 1
+
+        def energy(current_gravity):
+            candidate = robot.with_params(params.replace(gravity=current_gravity))
+            return candidate.gravitational_energy(q)
+
+        return jax.value_and_grad(energy)(gravity)
+
+    def reference_value_and_grad(gravity):
+        def energy(current_gravity):
+            candidate = robot.with_params(params.replace(gravity=current_gravity))
+            return candidate._gravitational_energy(q)
+
+        return jax.value_and_grad(energy)(gravity)
+
+    with custom_jvp_mode(True):
+        baseline = compiled_value_and_grad(params.gravity)
+        updated = compiled_value_and_grad(updated_gravity)
+
+    expected_baseline = reference_value_and_grad(params.gravity)
+    expected_updated = reference_value_and_grad(updated_gravity)
+
+    assert trace_count["value"] == 1
+    assert not jnp.allclose(updated[0], baseline[0])
+    for actual, expected in zip(baseline, expected_baseline, strict=True):
+        assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    for actual, expected in zip(updated, expected_updated, strict=True):
+        assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    assert jnp.isfinite(baseline[1]).all()
+    assert jnp.any(baseline[1] != 0.0)
 
 
 def test_pendulum_update_rejects_all_fixed_size_shape_changes():

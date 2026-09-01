@@ -4,6 +4,7 @@ __all__ = [
 
 import copy
 from abc import abstractmethod
+from collections.abc import Callable
 from typing import Any, Self
 
 import equinox as eqx
@@ -972,6 +973,24 @@ class SoftRobot(DynamicalSystem):
             f"{type(self).__name__} must implement _forward_kinematics."
         )
 
+    def _add_model_jvp_tangent(
+        self,
+        output_tangent: Array,
+        model_tangent: Any,
+        output_from_model: Callable[[Self], Array],
+    ) -> Array:
+        """Add a model-only derivative to an established output tangent."""
+        if model_tangent is None or not jax.tree.leaves(model_tangent):
+            return output_tangent
+        _, model_output_tangent = eqx.filter_jvp(
+            output_from_model,
+            (self,),
+            (model_tangent,),
+        )
+        if model_output_tangent is None:
+            return output_tangent
+        return output_tangent + model_output_tangent
+
     @eqx.filter_custom_jvp
     @staticmethod
     def _forward_kinematics_custom_jvp(robot: "SoftRobot", q: Array, s: Array) -> Array:
@@ -1032,14 +1051,11 @@ class SoftRobot(DynamicalSystem):
             pose, poses = self.forward_kinematics_and_arc_length_derivative(q, s)
             pose_tangent = poses * sd
 
-        if model_tangent is not None and jax.tree.leaves(model_tangent):
-            _, model_pose_tangent = eqx.filter_jvp(
-                lambda robot: robot._absolute_forward_kinematics(q, s),
-                (self,),
-                (model_tangent,),
-            )
-            if model_pose_tangent is not None:
-                pose_tangent = pose_tangent + model_pose_tangent
+        pose_tangent = self._add_model_jvp_tangent(
+            pose_tangent,
+            model_tangent,
+            lambda robot: robot._absolute_forward_kinematics(q, s),
+        )
 
         return pose, pose_tangent
 
@@ -1212,12 +1228,18 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None, Array | None],
     ) -> tuple[Array, Array]:
         robot, q, s = primals
-        _, qd, sd = tangents
+        robot_tangent, qd, sd = tangents
 
-        return robot._jacobian_jvp(q, s, qd, sd)
+        return robot._jacobian_jvp(q, s, qd, sd, model_tangent=robot_tangent)
 
     def _jacobian_jvp(
-        self, q: Array, s: Array, qd: Array | None, sd: Array | None
+        self,
+        q: Array,
+        s: Array,
+        qd: Array | None,
+        sd: Array | None,
+        *,
+        model_tangent: Any = None,
     ) -> tuple[Array, Array]:
         """
         Evaluate the Jacobian custom-JVP tangent with specialized hooks.
@@ -1229,20 +1251,25 @@ class SoftRobot(DynamicalSystem):
         """
         if qd is None and sd is None:
             J = self._jacobian(q, s)
-            return J, jnp.zeros_like(J)
-
-        if qd is None:
+            J_tangent = jnp.zeros_like(J)
+        elif qd is None:
             J, Js = self.jacobian_and_arc_length_derivative(q, s)
-            return J, Js * sd
+            J_tangent = Js * sd
+        elif sd is None:
+            J, J_tangent = self.jacobian_and_time_derivative(q, qd, s)
+        else:
+            J, J_tangent = jvp(
+                lambda q_, s_: self._jacobian(q_, s_),
+                (q, s),
+                (qd, sd),
+            )
 
-        if sd is None:
-            return self.jacobian_and_time_derivative(q, qd, s)
-
-        return jvp(
-            lambda q_, s_: self._jacobian(q_, s_),
-            (q, s),
-            (qd, sd),
+        J_tangent = self._add_model_jvp_tangent(
+            J_tangent,
+            model_tangent,
+            lambda robot: robot._jacobian(q, s),
         )
+        return J, J_tangent
 
     def jacobian_tips(self, q: Array) -> Array:
         """
@@ -2584,10 +2611,15 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None, Array | None],
     ) -> tuple[Array, Array]:
         robot, q, qd = primals
-        _, q_tangent, qdd = tangents
+        robot_tangent, q_tangent, qdd = tangents
 
         T = robot._kinetic_energy(q, qd)
         Td = robot._kinetic_energy_jvp_tangent(q, qd, q_tangent, qdd)
+        Td = robot._add_model_jvp_tangent(
+            Td,
+            robot_tangent,
+            lambda candidate: candidate._kinetic_energy(q, qd),
+        )
         return T, Td
 
     def _kinetic_energy_jvp_tangent(
@@ -2691,13 +2723,18 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None],
     ) -> tuple[Array, Array]:
         robot, q = primals
-        _, qd = tangents
+        robot_tangent, qd = tangents
 
         U = robot._gravitational_energy(q)
         if qd is None:
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot.gravitational_force(q) @ qd
+        Ud = robot._add_model_jvp_tangent(
+            Ud,
+            robot_tangent,
+            lambda candidate: candidate._gravitational_energy(q),
+        )
         return U, Ud
 
     def elastic_energy(self, q: Array) -> Array:
@@ -2741,13 +2778,18 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None],
     ) -> tuple[Array, Array]:
         robot, q = primals
-        _, qd = tangents
+        robot_tangent, qd = tangents
 
         U_el = robot._elastic_energy(q)
         if qd is None:
             Ueld = jnp.zeros_like(U_el)
         else:
             Ueld = robot.elastic_force(q) @ qd
+        Ueld = robot._add_model_jvp_tangent(
+            Ueld,
+            robot_tangent,
+            lambda candidate: candidate._elastic_energy(q),
+        )
         return U_el, Ueld
 
     def potential_energy(self, q: Array) -> Array:
@@ -2791,13 +2833,18 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None],
     ) -> tuple[Array, Array]:
         robot, q = primals
-        _, qd = tangents
+        robot_tangent, qd = tangents
 
         U = robot._potential_energy(q)
         if qd is None:
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot._potential_energy_gradient(q) @ qd
+        Ud = robot._add_model_jvp_tangent(
+            Ud,
+            robot_tangent,
+            lambda candidate: candidate._potential_energy(q),
+        )
         return U, Ud
 
     def total_energy(self, q: Array, qd: Array) -> Array:
@@ -2838,10 +2885,15 @@ class SoftRobot(DynamicalSystem):
         tangents: tuple[Any, Array | None, Array | None],
     ) -> tuple[Array, Array]:
         robot, q, qd = primals
-        _, q_tangent, qdd = tangents
+        robot_tangent, q_tangent, qdd = tangents
 
         E = robot._total_energy(q, qd)
         Ed = robot._total_energy_jvp_tangent(q, qd, q_tangent, qdd)
+        Ed = robot._add_model_jvp_tangent(
+            Ed,
+            robot_tangent,
+            lambda candidate: candidate._total_energy(q, qd),
+        )
         return E, Ed
 
     def _total_energy_jvp_tangent(

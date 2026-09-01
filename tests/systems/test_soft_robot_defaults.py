@@ -1,5 +1,6 @@
 import equinox as eqx
 import jax
+import pytest
 from jax import Array
 from jax import numpy as jnp
 from numpy.testing import assert_allclose
@@ -143,9 +144,26 @@ class _ToggleSentinelDefaultRobot(_PlanarDefaultRobot):
 
 
 class _ModelTangentDefaultRobot(_PlanarDefaultRobot):
+    model_scale: Array
+
+    def __init__(self):
+        super().__init__()
+        self.model_scale = jnp.asarray(1.25, dtype=jnp.float64)
+
     def _forward_kinematics(self, q: Array, s: Array) -> Array:
-        pose = super()._forward_kinematics(q, s)
-        return pose.at[1:].add(self.L)
+        return self.model_scale * super()._forward_kinematics(q, s)
+
+    def inertia_matrix(self, q: Array) -> Array:
+        return self.model_scale * super().inertia_matrix(q)
+
+    def stiffness_matrix(self) -> Array:
+        return self.model_scale * super().stiffness_matrix()
+
+    def elastic_force(self, q: Array) -> Array:
+        return self.model_scale * super().elastic_force(q)
+
+    def _gravitational_energy(self, q: Array) -> Array:
+        return self.model_scale * super()._gravitational_energy(q)
 
 
 def test_custom_jvp_global_toggle_context_manager_restores_state() -> None:
@@ -206,8 +224,8 @@ def test_public_forward_kinematics_custom_jvp_preserves_model_tangent() -> None:
     q = jnp.array([0.2, -0.3], dtype=jnp.float64)
     s = jnp.array(0.8, dtype=jnp.float64)
 
-    def pose_sum(lengths: Array, *, public: bool) -> Array:
-        candidate = eqx.tree_at(lambda model: model.L, robot, lengths)
+    def pose_sum(model_scale: Array, *, public: bool) -> Array:
+        candidate = eqx.tree_at(lambda model: model.model_scale, robot, model_scale)
         pose = (
             candidate.forward_kinematics(q, s)
             if public
@@ -216,11 +234,67 @@ def test_public_forward_kinematics_custom_jvp_preserves_model_tangent() -> None:
         return jnp.sum(pose)
 
     with custom_jvp_mode(True):
-        actual = jax.grad(lambda lengths: pose_sum(lengths, public=True))(robot.L)
-    expected = jax.grad(lambda lengths: pose_sum(lengths, public=False))(robot.L)
+        actual = jax.grad(lambda scale: pose_sum(scale, public=True))(robot.model_scale)
+    expected = jax.grad(lambda scale: pose_sum(scale, public=False))(robot.model_scale)
 
     assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
     assert jnp.any(actual != 0.0)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "jacobian",
+        "kinetic_energy",
+        "gravitational_energy",
+        "elastic_energy",
+        "potential_energy",
+        "total_energy",
+    ),
+)
+def test_public_custom_jvps_preserve_model_tangents(operation: str) -> None:
+    robot = _ModelTangentDefaultRobot()
+    q = jnp.array([0.2, -0.3], dtype=jnp.float64)
+    qd = jnp.array([0.7, -0.4], dtype=jnp.float64)
+    s = jnp.array(0.8, dtype=jnp.float64)
+
+    public_outputs = {
+        "jacobian": lambda model: model.jacobian(q, s),
+        "kinetic_energy": lambda model: model.kinetic_energy(q, qd),
+        "gravitational_energy": lambda model: model.gravitational_energy(q),
+        "elastic_energy": lambda model: model.elastic_energy(q),
+        "potential_energy": lambda model: model.potential_energy(q),
+        "total_energy": lambda model: model.total_energy(q, qd),
+    }
+    protected_outputs = {
+        "jacobian": lambda model: model._jacobian(q, s),
+        "kinetic_energy": lambda model: model._kinetic_energy(q, qd),
+        "gravitational_energy": lambda model: model._gravitational_energy(q),
+        "elastic_energy": lambda model: model._elastic_energy(q),
+        "potential_energy": lambda model: model._potential_energy(q),
+        "total_energy": lambda model: model._total_energy(q, qd),
+    }
+
+    def output_sum(model_scale: Array, *, public: bool) -> Array:
+        candidate = eqx.tree_at(lambda model: model.model_scale, robot, model_scale)
+        output = (
+            public_outputs[operation](candidate)
+            if public
+            else protected_outputs[operation](candidate)
+        )
+        return jnp.sum(output)
+
+    with custom_jvp_mode(True):
+        actual = eqx.filter_jit(jax.grad(lambda scale: output_sum(scale, public=True)))(
+            robot.model_scale
+        )
+    expected = eqx.filter_jit(jax.grad(lambda scale: output_sum(scale, public=False)))(
+        robot.model_scale
+    )
+
+    assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    assert jnp.isfinite(actual)
+    assert actual != 0.0
 
 
 def test_custom_jvp_toggle_controls_public_gravity_energy_grad() -> None:
