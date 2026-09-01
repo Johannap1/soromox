@@ -973,7 +973,7 @@ class SoftRobot(DynamicalSystem):
             f"{type(self).__name__} must implement _forward_kinematics."
         )
 
-    def _add_model_jvp_contribution(
+    def _add_model_jvp_tangent(
         self,
         output_tangent: Array,
         model_tangent: Any,
@@ -1059,7 +1059,7 @@ class SoftRobot(DynamicalSystem):
             pose, poses = self.forward_kinematics_and_arc_length_derivative(q, s)
             pose_tangent = poses * sd
 
-        pose_tangent = self._add_model_jvp_contribution(
+        pose_tangent = self._add_model_jvp_tangent(
             pose_tangent,
             model_tangent,
             lambda robot: robot._absolute_forward_kinematics(q, s),
@@ -1272,7 +1272,7 @@ class SoftRobot(DynamicalSystem):
                 (qd, sd),
             )
 
-        J_tangent = self._add_model_jvp_contribution(
+        J_tangent = self._add_model_jvp_tangent(
             J_tangent,
             model_tangent,
             lambda robot: robot._jacobian(q, s),
@@ -2623,7 +2623,7 @@ class SoftRobot(DynamicalSystem):
 
         T = robot._kinetic_energy(q, qd)
         Td = robot._kinetic_energy_jvp_tangent(q, qd, q_tangent, qdd)
-        Td = robot._add_model_jvp_contribution(
+        Td = robot._add_model_jvp_tangent(
             Td,
             robot_tangent,
             lambda candidate: candidate._kinetic_energy(q, qd),
@@ -2738,7 +2738,7 @@ class SoftRobot(DynamicalSystem):
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot.gravitational_force(q) @ qd
-        Ud = robot._add_model_jvp_contribution(
+        Ud = robot._add_model_jvp_tangent(
             Ud,
             robot_tangent,
             lambda candidate: candidate._gravitational_energy(q),
@@ -2793,7 +2793,7 @@ class SoftRobot(DynamicalSystem):
             Ueld = jnp.zeros_like(U_el)
         else:
             Ueld = robot.elastic_force(q) @ qd
-        Ueld = robot._add_model_jvp_contribution(
+        Ueld = robot._add_model_jvp_tangent(
             Ueld,
             robot_tangent,
             lambda candidate: candidate._elastic_energy(q),
@@ -2848,7 +2848,7 @@ class SoftRobot(DynamicalSystem):
             Ud = jnp.zeros_like(U)
         else:
             Ud = robot._potential_energy_gradient(q) @ qd
-        Ud = robot._add_model_jvp_contribution(
+        Ud = robot._add_model_jvp_tangent(
             Ud,
             robot_tangent,
             lambda candidate: candidate._potential_energy(q),
@@ -2897,7 +2897,7 @@ class SoftRobot(DynamicalSystem):
 
         E = robot._total_energy(q, qd)
         Ed = robot._total_energy_jvp_tangent(q, qd, q_tangent, qdd)
-        Ed = robot._add_model_jvp_contribution(
+        Ed = robot._add_model_jvp_tangent(
             Ed,
             robot_tangent,
             lambda candidate: candidate._total_energy(q, qd),
