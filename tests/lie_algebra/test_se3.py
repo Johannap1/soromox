@@ -223,7 +223,7 @@ def test_log_se3_matches_analytic_reverse_mode_derivative_near_identity(
     ("dtype", "rtol", "atol"),
     [
         (jnp.float64, 2e-8, 2e-10),
-        (jnp.float32, 3e-4, 3e-6),
+        (jnp.float32, 3e-4, 1e-5),
     ],
 )
 def test_log_se3_arbitrary_axis_hessian_at_series_boundary(

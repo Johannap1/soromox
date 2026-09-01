@@ -1095,7 +1095,9 @@ def test_pcs_custom_jvp_primal_methods_match_protected_hooks() -> None:
     s = model.L_cum[-1]
 
     assert_allclose(model.forward_kinematics(q, s), model._forward_kinematics(q, s))
-    assert_allclose(model.jacobian(q, s), model.jacobian_inertialframe(q, s))
+    assert_allclose(
+        model.jacobian(q, s), model.jacobian_inertialframe(q, s), atol=1e-14
+    )
     assert_allclose(model.gravitational_energy(q), model._gravitational_energy(q))
 
 

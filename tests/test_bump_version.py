@@ -74,7 +74,7 @@ def test_changelog_template_matches_release_sections():
     changelog = Path(__file__).parents[1] / "docs/development/changelog.md"
     content = changelog.read_text()
     unreleased_body = content.split("## [Unreleased]\n\n", 1)[1].split(
-        "## [0.3.0]", 1
+        "\n## [", 1
     )[0]
 
     assert re.findall(r"^### (.+)$", unreleased_body, flags=re.MULTILINE) == list(

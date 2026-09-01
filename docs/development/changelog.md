@@ -13,101 +13,116 @@ and include benchmark baseline and measurement context for performance claims.
 
 ### Added
 
-- Added optional floating-base configurations and dynamics across all system
-  families, with runtime planar or quaternion base poses, unequal configuration
-  and velocity dimensions, world-frame base velocities and wrenches, JAX
-  support for every model, vectorized JAX floating-frame Jacobian composition,
-  and specialized Warp execution for `GVS`, `PCS`, and `PlanarPCS`; see
-  [Floating-base systems](../user-guide/floating-base-systems.md).
-- Added fused Warp forward-kinematics and inertial-Jacobian execution for
-  `GVS`, `PCS`, and `PlanarPCS`, including spatial, environment, and combined
-  batches through the explicit `*_abscissa_batched` methods and `jax.vmap`.
-  Allocation-free matrix-free launchers additionally evaluate
-  `J(q, s) @ qd` and `sum_s J(q, s).T @ wrench_s` directly, reuse caller-owned
-  boundary-pose state, and compose planar or spatial floating-base products
-  without materializing sample Jacobians. Shared Warp quaternion, `SO(2)`,
-  `SO(3)`, `SE(2)`, and `SE(3)` helpers centralize rotation actions, stable
-  constant-strain operators, and exponential transforms across these paths.
-- Added optional Warp dynamics backends for `GVS`, `PCS`, and `PlanarPCS`,
-  including automatic GPU selection, arbitrary positive PCS quadrature counts,
-  JAX-routed differentiation, typed `GVSBackendParams` and `PCSBackendParams`
-  launch configuration, and reusable Warp-native execution APIs under the
-  top-level `soromox.execution` namespace; see
-  [Execution Devices and Backends](../user-guide/execution-devices-and-backends.md)
-  and [PR #177](https://github.com/tud-phi/soromox/pull/177).
-- Added public allocation-free, CUDA-graph-capturable Warp kernels, operand
-  bundles, output-shape contracts, and fused direct-effort launchers for
-  built-in linear threadlike actuation in `PlanarPCS`, `PCS`, and `GVS`.
-  Eligible `forward_dynamics` calls combine dynamics and threadlike actuation
-  in one Warp invocation for all three systems.
-
 ### Changed
-
-- Made effort laws declare their transmission-state dependencies so
-  `DirectEffort` skips unused actuator-coordinate and velocity evaluation, and
-  generalized-force assembly evaluates each actuator moment matrix only once.
-- Made the system-method and parallel-rollout benchmarks device-selectable and
-  reproducible by recording source, software, precision, accelerator, and CPU
-  affinity metadata. The system-method benchmark adds optional steady-state
-  warmup and reports median synchronized execution samples; the parallel-rollout
-  generator defaults explicitly to GPU, refuses silent CPU fallback when no
-  compatible GPU is available, and supports opt-in CPU measurements.
 
 ### Performance
 
-- Added fused Warp kinematics kernels and measured 324 matched warmed cases per
-  device across two- and eight-segment `PlanarPCS`, `PCS`, and `GVS` models,
-  1/16/256 environments, and 1/8/64 abscissae. On an RTX 5090, Warp improved
-  the geometric mean over JAX by 2.79×; the eight-segment, 256-environment,
-  64-abscissa PCS and GVS Jacobians improved 4.73× (1.596 to 0.337 ms) and
-  12.67× (7.706 to 0.608 ms). On an Intel Core Ultra 9 285K, the overall
-  geometric mean was 1.00× and large PCS cases ranged from 0.57–0.95×,
-  supporting the existing JAX-on-CPU `auto` policy.
-  Measurements used FP64, JAX 0.11.0, Warp 1.16.0, separate first-call timing,
-  two warmups, and the median of nine GPU or seven CPU synchronized repeats.
-  An Nsight Systems trace of the large fused PCS case confirmed two Warp
-  launches per call: approximately 69 microseconds for the cooperative
-  recurrence and 233 microseconds for sample evaluation. Against materializing
-  and contracting dense Jacobians at 60 samples per environment, the new
-  matrix-free path improved CUDA JVP/VJP execution by 1.88–2.77×/1.59–1.89×
-  for four-segment, 48-DOF GVS; 1.77–4.01×/1.82–2.44× for eight-segment,
-  48-DOF PCS; and 3.45–3.80×/3.20–4.03× for eight-segment, 24-DOF PlanarPCS
-  across 1, 16, and 256 environments. Directional-specific workspace was
-  44×, 43×, and 21.5× smaller, respectively. On an Intel Core Ultra 9 285K,
-  GVS JVP/VJP improved 1.51–2.35×/1.19–1.38× and PCS improved
-  4.07–6.97×/3.06–5.03×. Directional measurements used Warp 1.16.0, five
-  warmups, and medians of seven runs with 20 synchronized iterations each;
-  see [PR #191](https://github.com/tud-phi/soromox/pull/191). Optimizing the
-  floating-frame adapter further improved isolated CUDA dense-Jacobian
-  composition by 5.96–54.7×, pose composition by 2.18–3.47×, JVP composition
-  by 1.86–3.25×, and VJP composition by 1.13–1.80× across 1–256 environments
-  and 64 abscissae. Direct JAX CPU composition improved 1.06–1.70× across
-  1–1024 abscissae, and the complete four-segment PCS pose-plus-Jacobian call
-  improved 1.16× at 64 abscissae. These FP64 measurements used the same JAX
-  and Warp versions, one pinned Intel Core Ultra 9 285K core for JAX, and an
-  RTX 5090 for Warp.
-- Accelerated batched FP64 continuum dynamics on an RTX 5090 with Warp. For
-  four-segment models at batch 256, order-1 GVS dynamics terms improved 3.02×
-  (2.224 to 0.735 ms) and forward dynamics 2.40× (2.482 to 1.034 ms), while
-  five-point PlanarPCS and PCS forward dynamics improved 2.21× and 1.66×.
-  Reusing each normalized floating-root rotation across velocity and gravity
-  products additionally reduced one-segment floating PCS and GVS dynamics-term
-  runtimes by 3.2–6.2% across batches 1 and 256.
-  Warp is not a CPU optimization: single-environment order-5/9-point GVS terms
-  were 2.46× slower (0.587 to 1.445 ms), so `backend="auto"` selects JAX on CPU;
-  see [PR #177](https://github.com/tud-phi/soromox/pull/177).
-
-- Accelerated JAX GVS dynamics-term assembly with compact strain bases,
-  velocity reuse, and four bounded active-DOF prefix buckets. Against the
-  previous full-width scan for a 16-segment, strain-order-5/9-Gauss-point model,
-  warmed runtime fell 36.4% on single-environment CPU (12.65 to 8.04 ms) and
-  35.7% on 256-environment GPU (146.76 to 94.32 ms); see
-  [PR #174](https://github.com/tud-phi/soromox/pull/174).
-- Refreshed the RTX 5090 parallel-rollout results for 216 matched configurations
-  spanning 1–256 environments, with a 1.49× geometric-mean speedup over the
-  previous committed measurements, and synchronized the publication figures.
-
 ### Deprecated
+
+### Breaking changes
+
+### Fixed
+
+### Documentation
+
+### Contributors
+
+## [0.4.0] - 2026-09-01
+
+### Added
+
+- Added explicit JAX and Warp execution backends for `PlanarPCS`, `PCS`, and
+  `GVS`, with automatic backend selection, typed launch parameters, reusable
+  APIs under `soromox.execution`, and arbitrary positive PCS quadrature counts.
+  The Warp implementation provides fused forward-kinematics, full inertial
+  Jacobian, dynamics-term, and forward-dynamics paths; allocation-free,
+  CUDA-graph-capturable launchers; and direct-effort fusion for built-in linear
+  threadlike actuation.
+- Added native matrix-free Warp products for `J(q, s) @ qd` and
+  `sum_s J(q, s).T @ wrench_s`. These paths reuse caller-owned workspace and
+  floating-frame state instead of materializing a Jacobian at every spatial
+  sample.
+- Added fixed and floating-base configurations across all system families,
+  including planar and quaternion base poses, distinct configuration and
+  velocity dimensions, world-frame base velocities and wrenches, vectorized
+  JAX composition, and specialized Warp execution; see
+  [Floating-base systems](../user-guide/floating-base-systems.md).
+
+### Changed
+
+- Reworked the execution layer around shared quaternion, `SO(2)`, `SO(3)`,
+  `SE(2)`, and `SE(3)` primitives and explicit operand/output contracts, so the
+  same public model methods can dispatch to optimized JAX or Warp paths without
+  changing the model definition.
+- Reduced GVS dynamics assembly to compact strain bases and bounded active-DOF
+  prefixes, and reused intermediate velocity and floating-root rotation terms.
+- Made effort laws declare which transmission states they need. `DirectEffort`
+  now skips unused actuator-coordinate and velocity evaluation, and each
+  actuator moment matrix is assembled only once.
+- Made the system-method and parallel-rollout benchmarks device-selectable and
+  reproducible. Results now record source revision, software versions,
+  precision, accelerator, CPU affinity, warmup, and synchronized sample data;
+  GPU requests no longer fall back silently to CPU.
+
+### Performance
+
+- Fresh FP64 comparisons against v0.3.0 used Python 3.12.13, JAX 0.11.0, and
+  Warp 1.16.0. CPU runs were restricted to an otherwise-idle performance core
+  of an Intel Core Ultra 9 285K with all library thread counts set to one; GPU
+  runs used an otherwise-idle NVIDIA RTX 5090. The main grid covered
+  `PlanarPCS`, `PCS`, and order-1 `GVS`; 1, 2, 8, 16, and 32 segments; batches
+  1, 16, 64, 256, and 1024; five-point quadrature; and forward kinematics,
+  full inertial Jacobians, fused pose-plus-Jacobian evaluation, JVP, VJP,
+  dynamics terms, and forward dynamics. Kinematics cases evaluated 60 spatial
+  samples per system, whereas each dynamics case evaluated one batched state,
+  so their absolute times are not directly comparable. Results are medians of
+  seven synchronized samples after five warmups.
+- Relative to v0.3.0 across the 25 segment/batch combinations, JAX GVS
+  dynamics terms and forward dynamics improved by geometric means of 1.17× and
+  1.14× on CPU and 1.10× and 1.08× on GPU. At 32 segments and batch 1024,
+  terms/forward time fell 15.5%/14.1% on CPU and 21.2%/17.7% on GPU. GVS
+  kinematics, JVP, and VJP remained near parity, as did the corresponding
+  release-over-release `PlanarPCS` and `PCS` paths.
+- An eight-segment discretization sweep used batches 1, 256, and 1024; three-
+  and nine-point quadrature for `PlanarPCS` and `PCS`; and GVS strain-order/
+  quadrature pairs 0/5, 3/7, and 5/9. At batch 1024, order-5 GVS JAX dynamics
+  terms/forward dynamics improved 15.0%/14.1% on CPU and 29.8%/22.8% on GPU
+  relative to v0.3.0. `PlanarPCS` and `PCS` quadrature sweeps showed no
+  consistent release-over-release shift beyond run-to-run variation.
+- For the main grid, current Warp versus current JAX improved full inertial
+  GVS Jacobians by a 3.38× geometric mean on CPU and 10.88× across the 24
+  matched GPU cases; fused GVS pose-plus-Jacobian evaluation improved 3.37×
+  and 11.17×. GPU Warp also
+  improved full Jacobians by 1.35× for `PlanarPCS` and 2.53× for `PCS`. Across
+  all 25 matched GPU segment/batch cases, Warp/JAX geometric-mean speedups for
+  dynamics terms/forward dynamics were 1.00×/1.62× for `PlanarPCS`,
+  0.94×/1.16× for `PCS`, and 2.00×/1.77× for `GVS`; the value below one means
+  that PCS dynamics terms alone were about 7% slower under Warp even though PCS
+  forward dynamics was 16% faster. At 32 segments and batch 1024, the dense JAX
+  GVS Jacobian case exhausted the RTX 5090's 32-GB memory while Warp completed
+  it; Warp also improved terms/forward time by 1.27×/1.20×.
+  In the quadrature sweep, GPU Warp terms/forward geometric-mean speedups were
+  1.93×/2.66× at three points and 1.87×/1.80× at nine points for `PlanarPCS`,
+  and 1.46×/2.05× and 1.42×/1.78× for `PCS`. Small GPU workloads can still
+  favor JAX.
+- CPU Warp is primarily a dense-kinematics optimization: its full Jacobian
+  geometric means improved 1.46× for `PlanarPCS`, 1.50× for `PCS`, and 3.38×
+  for `GVS`, but JAX was 1.82×/1.78× faster overall for GVS dynamics terms /
+  forward dynamics. In the high-order sweep at batch 1024, Warp improved
+  order-0 terms/forward dynamics by 1.38×/1.34×, but was 1.46×/1.41× slower at
+  order 3 and 1.79×/1.70× slower at order 5. The CPU `auto` policy therefore
+  continues to select JAX. On GPU at the same batch, Warp's terms/forward
+  speedups tapered from 4.25×/3.68× at order 0 to 2.02×/1.64× at order 3 and
+  1.21×/1.14× at order 5; the smallest order-5 cases still favored JAX.
+- Native matrix-free Warp JVP/VJP was compared with dense Warp Jacobian
+  materialization at eight segments, 60 samples, and batches 1, 16, 64, 256,
+  and 1024. CPU JVP/VJP speedups ranged from 1.60–4.22×/1.31–5.47× for
+  `PlanarPCS`, 4.05–6.90×/3.02–5.18× for `PCS`, and
+  3.27–5.58×/1.59–1.98× for `GVS`; GPU ranges were
+  3.43–4.62×/3.22–4.67×, 1.77–7.22×/1.91–5.15×, and
+  2.08–7.89×/2.00–5.29×, respectively. Directional workspace was 21.5×,
+  43.0×, and 83.6× smaller than dense materialization. These measurements used
+  five warmups and the median of seven runs with 20 synchronized iterations.
 
 ### Breaking changes
 
@@ -154,6 +169,20 @@ and include benchmark baseline and measurement context for performance claims.
   interfaces.
 
 ### Contributors
+
+- Thanks to [@vdperfetta01](https://github.com/vdperfetta01) for sustained
+  review of the GVS optimization, execution-backend, floating-base, and API
+  changes in [PR #174](https://github.com/tud-phi/soromox/pull/174),
+  [#177](https://github.com/tud-phi/soromox/pull/177),
+  [#181](https://github.com/tud-phi/soromox/pull/181),
+  [#183](https://github.com/tud-phi/soromox/pull/183),
+  [#184](https://github.com/tud-phi/soromox/pull/184),
+  [#185](https://github.com/tud-phi/soromox/pull/185), and
+  [#186](https://github.com/tud-phi/soromox/pull/186), including identifying a
+  test failure before merge.
+- Thanks to [@mohammedtarnini](https://github.com/mohammedtarnini) and
+  [@Johannap1](https://github.com/Johannap1) for reviewing the GVS assembly
+  optimization in [PR #174](https://github.com/tud-phi/soromox/pull/174).
 
 ## [0.3.0] - 2026-08-25
 

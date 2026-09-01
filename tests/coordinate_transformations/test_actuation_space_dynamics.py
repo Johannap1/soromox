@@ -837,9 +837,11 @@ class TestActuationSpaceDynamicsSystemIndependent:
 
         M_y, Cyd, G_y = asd.dynamics_terms(q, qd)
 
-        assert_allclose(M_y, asd.inertia_matrix(q), rtol=1e-9, atol=1e-12)
-        assert_allclose(Cyd, asd.coriolis_force(q, qd), rtol=1e-9, atol=1e-12)
-        assert_allclose(G_y, asd.gravitational_force(q), rtol=1e-9, atol=1e-12)
+        # Fused Warp reductions need not reproduce the unfused accumulation
+        # order bit-for-bit on GPU.
+        assert_allclose(M_y, asd.inertia_matrix(q), rtol=1e-7, atol=1e-12)
+        assert_allclose(Cyd, asd.coriolis_force(q, qd), rtol=1e-7, atol=1e-12)
+        assert_allclose(G_y, asd.gravitational_force(q), rtol=1e-7, atol=1e-12)
 
     def test_h_unactuated_shape(self, robot):
         """Test that H_unactuated has correct shape."""
