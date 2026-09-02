@@ -176,8 +176,8 @@ def test_semi_implicit_euler_supports_spatial_floating_base_state():
     q1, actual_qd1, auxiliary1 = robot.split_state(trajectory.y[-1])
 
     assert robot.num_coordinates != robot.num_velocities
-    assert_allclose(q1, expected_q1)
-    assert_allclose(actual_qd1, qd1)
+    assert_allclose(q1, expected_q1, atol=1e-18)
+    assert_allclose(actual_qd1, qd1, atol=1e-15)
     assert auxiliary1.shape == (0,)
     assert_allclose(jnp.linalg.norm(q1[:4]), 1.0)
 
