@@ -242,6 +242,23 @@ def _measure_wall_time(
     return avg_time, last_output
 
 
+def _rollout_state_diagnostics(
+    state_outputs: Sequence[Array],
+) -> tuple[bool, float]:
+    """Reduce rollout stability metrics on-device before one host transfer."""
+
+    rollout_finite_device = jnp.all(
+        jnp.stack([jnp.all(jnp.isfinite(value)) for value in state_outputs])
+    )
+    max_abs_state_device = jnp.max(
+        jnp.stack([jnp.max(jnp.abs(value)) for value in state_outputs])
+    )
+    rollout_finite, max_abs_state = jax.device_get(
+        (rollout_finite_device, max_abs_state_device)
+    )
+    return bool(rollout_finite), float(max_abs_state)
+
+
 def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
     if not results:
         return
@@ -620,12 +637,8 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                         repeats=args.repeats,
                     )
                     ts_last, *_ = outputs
-                    state_outputs = outputs[1:]
-                    rollout_finite = bool(
-                        all(jnp.all(jnp.isfinite(value)) for value in state_outputs)
-                    )
-                    max_abs_state = float(
-                        max(jnp.max(jnp.abs(value)) for value in state_outputs)
+                    rollout_finite, max_abs_state = _rollout_state_diagnostics(
+                        outputs[1:]
                     )
                     sim_time = float(jnp.mean(ts_last) - runtime.t0)
                     total_sim_time = sim_time * batch

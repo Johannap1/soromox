@@ -112,7 +112,12 @@ class SemiImplicitEuler(AbstractSolver):
         del solver_state, made_jump
         control = terms.contr(t0, t1)
         increment = terms.vf_prod(t0, y0, args, control)
-        y1 = jax.tree.map(lambda initial, delta: initial + delta, y0, increment)
+        y1 = jax.tree.map(
+            lambda initial, delta: None if initial is None else initial + delta,
+            y0,
+            increment,
+            is_leaf=lambda value: value is None,
+        )
 
         q0, qd0, auxiliary0 = self.system.split_state(y0.y)
         _, qd_increment, auxiliary_increment = self.system.split_state(increment.y)

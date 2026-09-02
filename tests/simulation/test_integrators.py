@@ -130,6 +130,21 @@ def test_semi_implicit_euler_rollout_is_jittable_and_vmappable():
     assert jnp.all(jnp.isfinite(trajectories))
 
 
+def test_semi_implicit_euler_preserves_absent_optional_rollout_states():
+    robot = _pendulum()
+
+    trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=jnp.array([0.1, 0.0])),
+        t1=1e-4,
+        solver_dt=1e-4,
+        save_ts=jnp.array([0.0, 1e-4]),
+        solver=SemiImplicitEuler(robot),
+    )
+
+    assert trajectory.control_state is None
+    assert trajectory.environment_state is None
+
+
 def test_semi_implicit_euler_supports_spatial_floating_base_state():
     robot = _floating_spatial_pcs()
     q0 = robot.pack_configuration(

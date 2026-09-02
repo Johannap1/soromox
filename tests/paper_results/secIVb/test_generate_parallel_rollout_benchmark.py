@@ -122,6 +122,28 @@ def test_semi_implicit_euler_applies_kick_before_drift():
     assert benchmark.jnp.allclose(trajectory.y[-1], expected)
 
 
+def test_rollout_state_diagnostics_use_one_host_transfer(monkeypatch):
+    device_get_calls = []
+    original_device_get = benchmark.jax.device_get
+
+    def record_device_get(value):
+        device_get_calls.append(value)
+        return original_device_get(value)
+
+    monkeypatch.setattr(benchmark.jax, "device_get", record_device_get)
+
+    rollout_finite, max_abs_state = benchmark._rollout_state_diagnostics(
+        (
+            benchmark.jnp.array([[1.0, -2.0]]),
+            benchmark.jnp.array([[benchmark.jnp.inf, 3.0]]),
+        )
+    )
+
+    assert rollout_finite is False
+    assert max_abs_state == float("inf")
+    assert len(device_get_calls) == 1
+
+
 def test_csv_records_environment_metadata(tmp_path):
     path = tmp_path / "results.csv"
     benchmark._write_csv([{}], path)
