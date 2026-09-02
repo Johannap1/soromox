@@ -469,7 +469,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--batch-sizes",
         nargs="+",
         type=int,
-        default=[1, 2, 4, 8, 16, 32, 64, 128, 256],
+        default=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
         help="Parallel environment counts to benchmark",
     )
     parser.add_argument(
