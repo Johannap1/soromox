@@ -155,16 +155,19 @@ def test_semi_implicit_euler_supports_spatial_floating_base_state():
         jnp.zeros((robot.num_internal_dofs,)),
         base_velocity=jnp.array([0.01, -0.02, 0.005, 0.03, -0.01, 0.02]),
     )
-    y0 = robot.pack_state(q0, qd0)
+    initial_y = robot.pack_state(q0, qd0)
     dt = 1e-5
 
-    derivative = robot.forward_dynamics(jnp.asarray(0.0), y0)
+    solver_y0 = robot.project_state(initial_y)
+    solver_q0, solver_qd0, _ = robot.split_state(solver_y0)
+    dynamics_y0 = robot.project_state(solver_y0)
+    derivative = robot.forward_dynamics(jnp.asarray(0.0), dynamics_y0)
     _, qdd0, _ = robot.split_state(derivative)
-    qd1 = qd0 + dt * qdd0
-    expected_q1 = robot.retract_configuration(q0, dt * qd1)
+    qd1 = solver_qd0 + dt * qdd0
+    expected_q1 = robot.retract_configuration(solver_q0, dt * qd1)
 
     trajectory = robot.rollout_to(
-        initial_state=SystemState(t=0.0, y=y0),
+        initial_state=SystemState(t=0.0, y=initial_y),
         t1=dt,
         solver_dt=dt,
         save_ts=jnp.array([0.0, dt]),
@@ -173,7 +176,7 @@ def test_semi_implicit_euler_supports_spatial_floating_base_state():
     q1, actual_qd1, auxiliary1 = robot.split_state(trajectory.y[-1])
 
     assert robot.num_coordinates != robot.num_velocities
-    assert_allclose(q1, expected_q1, atol=1e-18)
+    assert_allclose(q1, expected_q1)
     assert_allclose(actual_qd1, qd1)
     assert auxiliary1.shape == (0,)
     assert_allclose(jnp.linalg.norm(q1[:4]), 1.0)
