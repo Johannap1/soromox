@@ -30,6 +30,7 @@ def test_output_paths_default_to_case_data_directory():
     assert args.csv == benchmark.DATA_DIR / "benchmark_results.csv"
     assert args.device == "gpu"
     assert args.backend == "auto"
+    assert args.solver == "tsit5"
 
 
 def test_csv_output_path_can_be_overridden(tmp_path):
@@ -77,6 +78,50 @@ def test_invalid_backend_is_rejected():
         benchmark.parse_args(["--backend", "cuda"])
 
 
+@pytest.mark.parametrize("solver", benchmark.SOLVER_NAMES)
+def test_solver_option_is_parsed(solver):
+    args = benchmark.parse_args(["--solver", solver])
+
+    assert args.solver == solver
+    if solver != "semi-implicit-euler":
+        assert benchmark._make_solver(solver) is not None
+
+
+def test_invalid_solver_is_rejected():
+    with pytest.raises(SystemExit):
+        benchmark.parse_args(["--solver", "verlet"])
+
+
+def test_semi_implicit_euler_applies_kick_before_drift():
+    config = benchmark.get_system_registry()["articulated_soft_robot"]
+    system = config.factory(1)
+    ctx = config.build_context(system)
+    dt = 1e-4
+    initial_y = benchmark.jnp.concatenate([ctx["q"], ctx["qd"]])
+    initial_state = benchmark.SystemState(t=0.0, y=initial_y)
+
+    derivative = system.forward_dynamics(
+        benchmark.jnp.asarray(0.0),
+        initial_y,
+        (ctx["u"], ctx["tau_ext"]),
+    )
+    _, qdd0 = benchmark.jnp.split(derivative, 2)
+    qd1 = ctx["qd"] + dt * qdd0
+    expected = benchmark.jnp.concatenate([ctx["q"] + dt * qd1, qd1])
+
+    trajectory = system.rollout_to(
+        initial_state=initial_state,
+        u=ctx["u"],
+        tau_ext=ctx["tau_ext"],
+        t1=dt,
+        solver_dt=dt,
+        save_ts=benchmark.jnp.array([0.0, dt]),
+        solver=benchmark.SemiImplicitEuler(system),
+    )
+
+    assert benchmark.jnp.allclose(trajectory.y[-1], expected)
+
+
 def test_csv_records_environment_metadata(tmp_path):
     path = tmp_path / "results.csv"
     benchmark._write_csv([{}], path)
@@ -90,3 +135,6 @@ def test_csv_records_environment_metadata(tmp_path):
     assert "resolved_backend" in header
     assert "backend_applies" in header
     assert "warp_version" in header
+    assert "solver" in header
+    assert "rollout_finite" in header
+    assert "max_abs_state" in header

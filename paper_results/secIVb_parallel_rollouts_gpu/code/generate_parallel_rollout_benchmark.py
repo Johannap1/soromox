@@ -46,9 +46,11 @@ _EARLY_DEVICE_CHOICE = (
 
 import jax
 import jax.numpy as jnp
+from diffrax import Bosh3, Dopri5, Euler, Heun, Tsit5
 
 jax.config.update("jax_enable_x64", True)
 
+from soromox.simulation import SemiImplicitEuler  # noqa: E402
 from soromox.systems import DynamicalSystem, SystemState  # noqa: E402
 from tools.benchmarks._benchmark_common import (  # noqa: E402
     add_backend_arg,
@@ -76,6 +78,36 @@ DEFAULT_CSV_PATH = DATA_DIR / "benchmark_results.csv"
 DEFAULT_SYSTEMS = ["articulated_soft_robot", "planar_pcs", "pcs", "gvs"]
 DEFAULT_SEGMENT_COUNTS = [1, 2, 4, 8, 16, 32]
 DEFAULT_GVS_BASIS_ORDERS = [0, 1, 2, 3, 4, 5]
+DEFAULT_SOLVER = "tsit5"
+SOLVER_NAMES = (
+    "euler",
+    "semi-implicit-euler",
+    "heun",
+    "bosh3",
+    "tsit5",
+    "dopri5",
+)
+
+
+def _make_solver(name: str, system: DynamicalSystem | None = None):
+    """Construct one of the fixed-step solvers supported by this benchmark."""
+
+    if name == "semi-implicit-euler":
+        if system is None:
+            raise ValueError("semi-implicit-euler requires a Soromox system.")
+        return SemiImplicitEuler(system)
+
+    factories = {
+        "euler": Euler,
+        "heun": Heun,
+        "bosh3": Bosh3,
+        "tsit5": Tsit5,
+        "dopri5": Dopri5,
+    }
+    try:
+        return factories[name]()
+    except KeyError as exc:  # pragma: no cover - argparse validates CLI input
+        raise ValueError(f"Unknown solver {name!r}.") from exc
 
 
 @dataclass
@@ -83,6 +115,7 @@ class RuntimeConfig:
     duration: float
     solver_dt: float
     save_dt: float
+    solver: str = DEFAULT_SOLVER
     t0: float = 0.0
 
 
@@ -160,6 +193,7 @@ def _build_batched_solver(
     system: DynamicalSystem, runtime: RuntimeConfig
 ) -> Callable[..., tuple[Array, Array, Array]]:
     t1 = runtime.t0 + runtime.duration
+    solver = _make_solver(runtime.solver, system)
 
     def single_env(
         q0: Array, qd0: Array, u: Array, tau_ext: Array
@@ -172,6 +206,7 @@ def _build_batched_solver(
             t1=t1,
             solver_dt=runtime.solver_dt,
             save_dt=runtime.save_dt,
+            solver=solver,
         )
         qs, qds = jnp.split(trajectory.y, 2, axis=1)
         return trajectory.t[-1], qs[-1], qds[-1]
@@ -222,6 +257,7 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "dof",
         "batch_size",
         "duration_s",
+        "solver",
         "solver_dt",
         "save_dt",
         "wall_time_s",
@@ -234,6 +270,8 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "noise_scale",
         "warmup_runs",
         "timing_repeats",
+        "rollout_finite",
+        "max_abs_state",
         "backend",
         "resolved_backend",
         "backend_applies",
@@ -381,6 +419,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     add_gauss_point_args(parser)
     add_integration_args(parser)
     parser.add_argument(
+        "--solver",
+        choices=SOLVER_NAMES,
+        default=DEFAULT_SOLVER,
+        help=(
+            "Fixed-step numerical integrator used for every rollout "
+            f"(default: {DEFAULT_SOLVER})."
+        ),
+    )
+    parser.add_argument(
         "--gvs-scaling",
         "--gvs-variant",
         choices=("segments", "basis-order"),
@@ -424,7 +471,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--noise-scale",
         type=float,
         default=1e-3,
-        help="Standard deviation of per-environment perturbations applied to q/qdot",
+        help="Standard deviation of per-environment perturbations applied to q/qd",
     )
     parser.add_argument(
         "--seed",
@@ -505,6 +552,7 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
         duration=args.duration,
         solver_dt=args.solver_dt,
         save_dt=args.save_dt,
+        solver=args.solver,
     )
     registry = dict(get_system_registry())
     if args.gvs_scaling == "basis-order":
@@ -572,6 +620,13 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                         repeats=args.repeats,
                     )
                     ts_last, *_ = outputs
+                    state_outputs = outputs[1:]
+                    rollout_finite = bool(
+                        all(jnp.all(jnp.isfinite(value)) for value in state_outputs)
+                    )
+                    max_abs_state = float(
+                        max(jnp.max(jnp.abs(value)) for value in state_outputs)
+                    )
                     sim_time = float(jnp.mean(ts_last) - runtime.t0)
                     total_sim_time = sim_time * batch
                     per_env_speed = (
@@ -582,11 +637,12 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                     )
                     per_env_wall = wall_time / batch
 
+                    stability_note = "" if rollout_finite else " | NON-FINITE STATE"
                     print(
                         f"     batch={batch:>4d} | wall={wall_time:.4f}s | "
                         f"per-env sim/wall={per_env_speed:.2f}x | "
                         f"total sim/wall={total_speed:.2f}x | "
-                        f"per-env wall={per_env_wall:.5f}s"
+                        f"per-env wall={per_env_wall:.5f}s{stability_note}"
                     )
 
                     results.append(
@@ -603,6 +659,7 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                             "dof": dof,
                             "batch_size": batch,
                             "duration_s": args.duration,
+                            "solver": args.solver,
                             "solver_dt": args.solver_dt,
                             "save_dt": args.save_dt,
                             "wall_time_s": wall_time,
@@ -615,6 +672,8 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                             "noise_scale": args.noise_scale,
                             "warmup_runs": args.warmup_runs,
                             "timing_repeats": args.repeats,
+                            "rollout_finite": rollout_finite,
+                            "max_abs_state": max_abs_state,
                             "backend": args.backend,
                             "resolved_backend": resolved_backend,
                             "backend_applies": config.supports_backend,
