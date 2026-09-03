@@ -6,7 +6,7 @@ from diffrax import AbstractSolver, Euler, Tsit5
 from numpy.testing import assert_allclose
 from system_param_builders import pcs_params, pendulum_params
 
-from soromox.simulation import SemiImplicitEuler
+from soromox.simulation import IMEXEuler, SemiImplicitEuler
 from soromox.systems import (
     PCS,
     PCSStructure,
@@ -244,3 +244,157 @@ def test_tsit5_supports_spatial_floating_base_state():
     assert auxiliary.shape[-1] == robot.num_auxiliary_states
     assert jnp.all(jnp.isfinite(trajectory.y))
     assert_allclose(jnp.linalg.norm(q[..., :4], axis=-1), 1.0)
+
+
+def test_imex_euler_is_a_deterministic_diffrax_solver():
+    solver = IMEXEuler(_pendulum())
+
+    assert isinstance(solver, AbstractSolver)
+    assert not isinstance(solver, Euler)
+
+
+def test_imex_euler_matches_hand_derived_step():
+    robot = _pendulum()
+    q0 = jnp.array([0.2])
+    qd0 = jnp.array([0.3])
+    u = jnp.zeros((robot.num_actuators,))
+    tau_ext = jnp.zeros_like(q0)
+    y0 = jnp.concatenate([q0, qd0])
+    dt = 1e-4
+
+    M, Cqd, G = robot.dynamics_terms(q0, qd0)
+    K = robot.stiffness_matrix()
+    D = robot.damping_matrix(q0)
+    tau_u = robot.actuation_force(q0, u, qd=qd0)
+    elastic_nonlinear = robot.elastic_force(q0) - K @ q0
+    rhs = tau_u + tau_ext - Cqd - G - elastic_nonlinear
+    A = M + dt * D + dt**2 * K
+    b = M @ qd0 + dt * (rhs - K @ q0)
+    qd1 = jnp.linalg.solve(A, b)
+    expected = jnp.concatenate([q0 + dt * qd1, qd1])
+
+    trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=y0),
+        u=u,
+        tau_ext=tau_ext,
+        t1=dt,
+        solver_dt=dt,
+        save_ts=jnp.array([0.0, dt]),
+        solver=IMEXEuler(robot),
+    )
+
+    assert_allclose(trajectory.y[-1], expected)
+
+
+def test_imex_euler_rollout_is_jittable_and_vmappable():
+    robot = _pendulum()
+    solver = IMEXEuler(robot)
+    q0s = jnp.array([[0.1], [0.2], [-0.15]])
+    qd0s = jnp.array([[0.0], [0.1], [-0.05]])
+
+    def rollout(q0, qd0):
+        trajectory = robot.rollout_to(
+            initial_state=SystemState(t=0.0, y=jnp.concatenate([q0, qd0])),
+            t1=0.002,
+            solver_dt=1e-4,
+            save_ts=jnp.array([0.0, 0.001, 0.002]),
+            solver=solver,
+        )
+        return trajectory.y
+
+    trajectories = jax.jit(jax.vmap(rollout))(q0s, qd0s)
+
+    assert trajectories.shape == (3, 3, 2)
+    assert jnp.all(jnp.isfinite(trajectories))
+
+
+def test_imex_euler_preserves_absent_optional_rollout_states():
+    robot = _pendulum()
+
+    trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=jnp.array([0.1, 0.0])),
+        t1=1e-4,
+        solver_dt=1e-4,
+        save_ts=jnp.array([0.0, 1e-4]),
+        solver=IMEXEuler(robot),
+    )
+
+    assert trajectory.control_state is None
+    assert trajectory.environment_state is None
+
+
+def test_imex_euler_supports_spatial_floating_base_state():
+    robot = _floating_spatial_pcs()
+    q0 = robot.pack_configuration(
+        jnp.zeros((robot.num_internal_dofs,)),
+        base_pose=jnp.array([0.1, -0.2, 0.3, 0.9, 0.2, -0.1, 0.4]),
+    )
+    qd0 = robot.pack_velocity(
+        jnp.zeros((robot.num_internal_dofs,)),
+        base_velocity=jnp.array([0.01, -0.02, 0.005, 0.03, -0.01, 0.02]),
+    )
+    initial_y = robot.pack_state(q0, qd0)
+    dt = 1e-7
+
+    u = jnp.zeros((robot.num_actuators,))
+    tau_ext = jnp.zeros_like(qd0)
+    _, q_internal = robot.split_configuration(q0)
+    q_embedded = jnp.concatenate(
+        [jnp.zeros((robot.num_base_velocities,)), q_internal]
+    )
+    M, Cqd, G = robot.dynamics_terms(q0, qd0)
+    K = robot.stiffness_matrix()
+    D = robot.damping_matrix(q0)
+    tau_u = robot.actuation_force(q0, u, qd=qd0)
+    elastic_nonlinear = robot.elastic_force(q0) - K @ q_embedded
+    rhs = tau_u + tau_ext - Cqd - G - elastic_nonlinear
+    A = M + dt * D + dt**2 * K
+    b = M @ qd0 + dt * (rhs - K @ q_embedded)
+    expected_qd1 = jnp.linalg.solve(A, b)
+    expected_q1 = robot.retract_configuration(q0, dt * expected_qd1)
+
+    trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=initial_y),
+        t1=dt,
+        solver_dt=dt,
+        save_ts=jnp.array([0.0, dt]),
+        solver=IMEXEuler(robot),
+    )
+    q1, actual_qd1, auxiliary1 = robot.split_state(trajectory.y[-1])
+
+    assert robot.num_coordinates != robot.num_velocities
+    assert_allclose(q1, expected_q1, atol=1e-18)
+    assert_allclose(actual_qd1, expected_qd1, atol=1e-15)
+    assert auxiliary1.shape == (0,)
+    assert_allclose(jnp.linalg.norm(q1[:4]), 1.0, atol=1e-6)
+
+
+def test_imex_euler_advances_system_auxiliary_state():
+    robot = _floating_hysteretic_planar_hsa()
+    q0 = robot.pack_configuration(
+        jnp.zeros((robot.num_internal_dofs,)),
+        base_pose=jnp.zeros((robot.num_base_coordinates,)),
+    )
+    qd0 = robot.pack_velocity(
+        1e-3 * jnp.ones((robot.num_internal_dofs,)),
+        base_velocity=jnp.zeros((robot.num_base_velocities,)),
+    )
+    auxiliary0 = 0.1 * jnp.ones((robot.num_auxiliary_states,))
+    y0 = robot.pack_state(q0, qd0, auxiliary0)
+    dt = 1e-7
+
+    derivative = robot.forward_dynamics(jnp.asarray(0.0), y0)
+    _, _, auxiliary_derivative0 = robot.split_state(derivative)
+    expected_auxiliary1 = auxiliary0 + dt * auxiliary_derivative0
+
+    trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=y0),
+        t1=dt,
+        solver_dt=dt,
+        save_ts=jnp.array([0.0, dt]),
+        solver=IMEXEuler(robot),
+    )
+    _, _, auxiliary1 = robot.split_state(trajectory.y[-1])
+
+    assert robot.num_auxiliary_states == 1
+    assert_allclose(auxiliary1, expected_auxiliary1)
