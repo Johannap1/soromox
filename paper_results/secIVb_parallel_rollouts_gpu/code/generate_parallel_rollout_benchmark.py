@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
+import traceback
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -117,6 +121,18 @@ class RuntimeConfig:
     save_dt: float
     solver: str = DEFAULT_SOLVER
     t0: float = 0.0
+
+
+@dataclass(frozen=True)
+class BenchmarkCase:
+    """One process-isolated point in the requested benchmark sweep."""
+
+    system: str
+    size_label: str
+    size_value: int
+    gauss_points: int | None
+    batch_size: int
+    seed: int
 
 
 def _select_device(requested_device: str) -> jax.Device | None:
@@ -259,7 +275,9 @@ def _rollout_state_diagnostics(
     return bool(rollout_finite), float(max_abs_state)
 
 
-def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
+def _write_csv(
+    results: Sequence[Mapping[str, Any]], path: Path, *, announce: bool = True
+) -> None:
     if not results:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,11 +325,54 @@ def _write_csv(results: Sequence[Mapping[str, Any]], path: Path) -> None:
         "platform_version",
         "device_count",
     ]
-    with path.open("w", encoding="utf-8", newline="") as fp:
-        writer = csv.DictWriter(fp, fieldnames=headers, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"[+] Wrote CSV results to {path}")
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=headers, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(results)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    if announce:
+        print(f"[+] Wrote CSV results to {path}")
+
+
+def _write_failure_csv(failures: Sequence[Mapping[str, Any]], path: Path) -> None:
+    """Write the complete case-failure report, including an empty report."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    headers = [
+        "system",
+        "gvs_scaling",
+        "size_label",
+        "size_value",
+        "gauss_points",
+        "batch_size",
+        "device",
+        "backend",
+        "solver",
+        "failure_kind",
+        "error_type",
+        "error_message",
+        "worker_exit_code",
+    ]
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=headers, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(failures)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _write_json(payload: Mapping[str, Any], path: Path) -> None:
+    """Write a small worker outcome file consumed by the parent process."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _size_value(row: Mapping[str, Any]) -> int:
@@ -503,6 +564,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help=f"Path to write the result table as CSV (default: {DEFAULT_CSV_PATH})",
     )
     parser.add_argument(
+        "--failures-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Path to write the failed-case report. By default, '_failures' is "
+            "appended to the --csv filename."
+        ),
+    )
+    parser.add_argument(
         "--plot",
         type=Path,
         help="Optional path for a quick diagnostic plot",
@@ -521,6 +591,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--log-y",
         action="store_true",
         help="Use a logarithmic scale for the speed ratio axis",
+    )
+    parser.add_argument(
+        "--_worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--_outcome-json",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
     try:
@@ -551,10 +632,19 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     args.segment_counts = sorted(dict.fromkeys(args.segment_counts))
     args.gvs_basis_orders = sorted(dict.fromkeys(args.gvs_basis_orders))
     args.gauss_points = normalize_gauss_point_values(args.gauss_points)
+    if args.failures_csv is None:
+        args.failures_csv = args.csv.with_name(f"{args.csv.stem}_failures.csv")
+    if args._worker and args._outcome_json is None:
+        parser.error("Internal benchmark workers require --_outcome-json.")
     return args
 
 
-def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
+def _run_benchmarks(
+    args: argparse.Namespace,
+    device: jax.Device,
+    *,
+    write_artifacts: bool = True,
+) -> list[dict[str, Any]]:
     """Run all requested benchmark cases on one explicitly selected device.
 
     Args:
@@ -562,7 +652,8 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
         device: JAX device selected from the requested platform.
 
     Returns:
-        Zero after writing the requested artifacts.
+        The successful benchmark rows. Artifacts are written when
+        ``write_artifacts`` is true.
     """
 
     runtime = RuntimeConfig(
@@ -695,10 +786,311 @@ def _run_benchmarks(args: argparse.Namespace, device: jax.Device) -> int:
                         }
                     )
 
-    _write_csv(results, args.csv)
+    if write_artifacts:
+        _write_csv(results, args.csv)
+        if args.plot or args.show_plot:
+            _plot_results(results, args.plot, args.show_plot, args.log_x, args.log_y)
+
+    return results
+
+
+def _build_benchmark_cases(args: argparse.Namespace) -> list[BenchmarkCase]:
+    """Expand CLI sweep arguments into independently executable cases."""
+
+    registry = dict(get_system_registry())
+    if args.gvs_scaling == "basis-order":
+        registry["gvs"] = get_gvs_basis_order_system_config()
+
+    cases: list[BenchmarkCase] = []
+    for system_name in args.systems:
+        config = registry[system_name]
+        size_values = (
+            args.gvs_basis_orders
+            if system_name == "gvs" and args.gvs_scaling == "basis-order"
+            else args.segment_counts
+        )
+        gauss_values = gauss_point_sweep_values(config, args.gauss_points)
+        if not gauss_values:
+            print(
+                f"\n[!] Skipping {system_name}: --gauss-points is not applicable "
+                "or all requested values are below the system minimum."
+            )
+            continue
+
+        for size in size_values:
+            for gauss_points in gauss_values:
+                for batch_size in args.batch_sizes:
+                    # Independent deterministic streams avoid coupling a case's
+                    # inputs to whether any preceding case succeeded.
+                    case_seed = (int(args.seed) + len(cases)) % (2**32)
+                    cases.append(
+                        BenchmarkCase(
+                            system=system_name,
+                            size_label=config.size_label,
+                            size_value=int(size),
+                            gauss_points=gauss_points,
+                            batch_size=int(batch_size),
+                            seed=case_seed,
+                        )
+                    )
+    return cases
+
+
+def _worker_command(
+    args: argparse.Namespace, case: BenchmarkCase, outcome_path: Path
+) -> list[str]:
+    """Build the fresh-interpreter command for one benchmark case."""
+
+    gvs_basis_case = case.system == "gvs" and args.gvs_scaling == "basis-order"
+    segment_count = 1 if gvs_basis_case else case.size_value
+    basis_order = case.size_value if gvs_basis_case else args.gvs_basis_orders[0]
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--device",
+        args.device,
+        "--backend",
+        args.backend,
+        "--systems",
+        case.system,
+        "--segment-counts",
+        str(segment_count),
+        "--gvs-scaling",
+        args.gvs_scaling,
+        "--gvs-basis-orders",
+        str(basis_order),
+        "--batch-sizes",
+        str(case.batch_size),
+        "--duration",
+        repr(args.duration),
+        "--solver",
+        args.solver,
+        "--solver-dt",
+        repr(args.solver_dt),
+        "--save-dt",
+        repr(args.save_dt),
+        "--repeats",
+        str(args.repeats),
+        "--warmup-runs",
+        str(args.warmup_runs),
+        "--noise-scale",
+        repr(args.noise_scale),
+        "--seed",
+        str(case.seed),
+        "--_worker",
+        "--_outcome-json",
+        str(outcome_path),
+    ]
+    if case.gauss_points is not None:
+        command.extend(["--gauss-points", str(case.gauss_points)])
+    return command
+
+
+def _is_out_of_memory_failure(error_type: str, error_message: str) -> bool:
+    """Recognize common JAX, XLA, CUDA, ROCm, and Python OOM failures."""
+
+    if error_type == "MemoryError":
+        return True
+    error_text = f"{error_type}: {error_message}".lower()
+    markers = (
+        "out of memory",
+        "resource_exhausted",
+        "cuda_error_out_of_memory",
+        "cudaerroroutofmemory",
+        "hiperroroutofmemory",
+        "failed to allocate",
+    )
+    return any(marker in error_text for marker in markers)
+
+
+def _failure_row(
+    args: argparse.Namespace,
+    case: BenchmarkCase,
+    outcome: Mapping[str, Any],
+    worker_exit_code: int,
+) -> dict[str, Any]:
+    """Combine a worker's error details with its benchmark coordinates."""
+
+    error_type = str(outcome.get("error_type", "WorkerProcessError"))
+    error_message = str(
+        outcome.get(
+            "error_message",
+            "Worker exited without producing a valid outcome.",
+        )
+    )
+    if error_type == "DeviceUnavailableError":
+        failure_kind = "device_unavailable"
+    elif _is_out_of_memory_failure(error_type, error_message):
+        failure_kind = "out_of_memory"
+    else:
+        failure_kind = "worker_error"
+    return {
+        "system": case.system,
+        "gvs_scaling": args.gvs_scaling if case.system == "gvs" else "",
+        "size_label": case.size_label,
+        "size_value": case.size_value,
+        "gauss_points": case.gauss_points,
+        "batch_size": case.batch_size,
+        "device": args.device,
+        "backend": args.backend,
+        "solver": args.solver,
+        "failure_kind": failure_kind,
+        "error_type": error_type,
+        "error_message": error_message,
+        "worker_exit_code": worker_exit_code,
+    }
+
+
+def _print_failure_report(failures: Sequence[Mapping[str, Any]]) -> None:
+    """Print a compact end-of-run summary of every failed case."""
+
+    if not failures:
+        print("\n[+] All benchmark cases completed; no failed runs.")
+        return
+
+    print(f"\n=== Failed benchmark cases ({len(failures)}) ===")
+    for failure in failures:
+        gauss_note = ""
+        if failure.get("gauss_points") is not None:
+            gauss_note = f", gauss_points={failure['gauss_points']}"
+        message = " ".join(str(failure["error_message"]).split())
+        print(
+            f"  [{str(failure['failure_kind']).upper()}] "
+            f"{failure['system']} {failure['size_label']}="
+            f"{failure['size_value']}{gauss_note}, "
+            f"batch={failure['batch_size']}: {failure['error_type']}: {message}"
+        )
+
+
+def _run_benchmark_worker(args: argparse.Namespace) -> int:
+    """Execute one case and serialize its result or caught exception."""
+
+    assert args._outcome_json is not None
+    try:
+        device = _select_device(args.device)
+        if device is None:
+            _write_json(
+                {
+                    "status": "failed",
+                    "error_type": "DeviceUnavailableError",
+                    "error_message": f"No compatible {args.device} device is visible.",
+                },
+                args._outcome_json,
+            )
+            return 2
+        if jax.default_backend() != args.device:
+            raise RuntimeError(
+                f"Requested {args.device!r}, but JAX selected "
+                f"{jax.default_backend()!r}."
+            )
+        with jax.default_device(device):
+            results = _run_benchmarks(args, device, write_artifacts=False)
+        if len(results) != 1:
+            raise RuntimeError(
+                f"An isolated worker produced {len(results)} rows instead of one."
+            )
+        _write_json({"status": "success", "results": results}, args._outcome_json)
+        return 0
+    except Exception as error:
+        traceback.print_exc()
+        _write_json(
+            {
+                "status": "failed",
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+                "traceback": traceback.format_exc(),
+            },
+            args._outcome_json,
+        )
+        return 1
+
+
+def _run_isolated_benchmarks(args: argparse.Namespace) -> int:
+    """Run every case in a disposable process and checkpoint successes."""
+
+    cases = _build_benchmark_cases(args)
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    device_unavailable = False
+
+    print(
+        f"\n=== Running {len(cases)} process-isolated benchmark cases ===",
+        flush=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="soromox-rollout-benchmark-") as temp_dir:
+        temp_path = Path(temp_dir)
+        for case_index, case in enumerate(cases, start=1):
+            gauss_note = (
+                ""
+                if case.gauss_points is None
+                else f", gauss_points={case.gauss_points}"
+            )
+            print(
+                f"\n[{case_index}/{len(cases)}] {case.system} "
+                f"{case.size_label}={case.size_value}{gauss_note}, "
+                f"batch={case.batch_size}",
+                flush=True,
+            )
+            outcome_path = temp_path / f"case-{case_index}.json"
+            try:
+                completed = subprocess.run(
+                    _worker_command(args, case, outcome_path),
+                    check=False,
+                )
+            except OSError as error:
+                outcome: Mapping[str, Any] = {
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                }
+                worker_exit_code = 1
+            else:
+                worker_exit_code = completed.returncode
+                try:
+                    outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    outcome = {
+                        "error_type": "WorkerProcessError",
+                        "error_message": (
+                            f"Worker exited with code {worker_exit_code} and did not "
+                            f"produce a readable outcome: {error}"
+                        ),
+                    }
+
+            worker_results = outcome.get("results")
+            if (
+                worker_exit_code == 0
+                and outcome.get("status") == "success"
+                and isinstance(worker_results, list)
+                and len(worker_results) == 1
+                and isinstance(worker_results[0], dict)
+            ):
+                results.append(worker_results[0])
+                # Checkpoint after every success so a later OOM cannot discard it.
+                _write_csv(results, args.csv, announce=False)
+                continue
+
+            failure = _failure_row(args, case, outcome, worker_exit_code)
+            failures.append(failure)
+            _write_failure_csv(failures, args.failures_csv)
+            if failure["failure_kind"] == "device_unavailable":
+                device_unavailable = True
+                break
+
+    _write_failure_csv(failures, args.failures_csv)
+    if results:
+        print(f"\n[+] Wrote {len(results)} successful rows to {args.csv}")
+    else:
+        print("\n[!] No benchmark cases completed successfully.")
+    print(f"[+] Wrote failed-case report to {args.failures_csv}")
+    _print_failure_report(failures)
+
     if args.plot or args.show_plot:
         _plot_results(results, args.plot, args.show_plot, args.log_x, args.log_y)
 
+    if device_unavailable:
+        return 2
+    if any(row["failure_kind"] == "worker_error" for row in failures):
+        return 1
     return 0
 
 
@@ -711,17 +1103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "The --device choice changed after JAX was imported. Pass it on the "
             "process command line so CPU selection can occur before initialization."
         )
-    device = _select_device(args.device)
-    if device is None:
-        return 2
-    if jax.default_backend() != args.device:
-        raise RuntimeError(
-            f"Requested {args.device!r}, but JAX selected "
-            f"{jax.default_backend()!r}. Run the generator in a fresh process "
-            "with the intended --device option."
-        )
-    with jax.default_device(device):
-        return _run_benchmarks(args, device)
+    if args._worker:
+        return _run_benchmark_worker(args)
+    return _run_isolated_benchmarks(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,5 +1,8 @@
+import csv
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +31,7 @@ def test_output_paths_default_to_case_data_directory():
     args = benchmark.parse_args([])
 
     assert args.csv == benchmark.DATA_DIR / "benchmark_results.csv"
+    assert args.failures_csv == benchmark.DATA_DIR / "benchmark_results_failures.csv"
     assert args.device == "gpu"
     assert args.backend == "auto"
     assert args.solver == "tsit5"
@@ -39,6 +43,15 @@ def test_csv_output_path_can_be_overridden(tmp_path):
     args = benchmark.parse_args(["--csv", str(csv_path)])
 
     assert args.csv == csv_path
+    assert args.failures_csv == tmp_path / "custom_failures.csv"
+
+
+def test_failures_csv_output_path_can_be_overridden(tmp_path):
+    failures_path = tmp_path / "failed-cases.csv"
+
+    args = benchmark.parse_args(["--failures-csv", str(failures_path)])
+
+    assert args.failures_csv == failures_path
 
 
 def test_npz_output_option_is_not_supported():
@@ -160,3 +173,96 @@ def test_csv_records_environment_metadata(tmp_path):
     assert "solver" in header
     assert "rollout_finite" in header
     assert "max_abs_state" in header
+
+
+@pytest.mark.parametrize(
+    ("error_type", "error_message"),
+    [
+        ("XlaRuntimeError", "RESOURCE_EXHAUSTED: Out of memory allocating buffer"),
+        ("RuntimeError", "CUDA_ERROR_OUT_OF_MEMORY"),
+        ("MemoryError", ""),
+    ],
+)
+def test_out_of_memory_failures_are_recognized(error_type, error_message):
+    assert benchmark._is_out_of_memory_failure(error_type, error_message)
+
+
+def test_basis_order_zero_worker_uses_a_valid_segment_count(tmp_path):
+    args = benchmark.parse_args(
+        [
+            "--systems",
+            "gvs",
+            "--gvs-scaling",
+            "basis-order",
+            "--gvs-basis-orders",
+            "0",
+        ]
+    )
+    case = benchmark._build_benchmark_cases(args)[0]
+
+    command = benchmark._worker_command(args, case, tmp_path / "outcome.json")
+
+    assert command[command.index("--segment-counts") + 1] == "1"
+    assert command[command.index("--gvs-basis-orders") + 1] == "0"
+
+
+def test_isolated_runner_checkpoints_and_continues_after_oom(tmp_path, monkeypatch):
+    csv_path = tmp_path / "results.csv"
+    args = benchmark.parse_args(
+        [
+            "--device",
+            "cpu",
+            "--systems",
+            "pendulum",
+            "--segment-counts",
+            "1",
+            "--batch-sizes",
+            "1",
+            "2",
+            "4",
+            "--csv",
+            str(csv_path),
+        ]
+    )
+    attempted_batches = []
+
+    def fake_worker(command, check):
+        assert check is False
+        batch = int(command[command.index("--batch-sizes") + 1])
+        outcome_path = Path(command[command.index("--_outcome-json") + 1])
+        attempted_batches.append(batch)
+
+        if batch == 2:
+            with csv_path.open(encoding="utf-8", newline="") as fp:
+                checkpointed = list(csv.DictReader(fp))
+            assert [int(row["batch_size"]) for row in checkpointed] == [1]
+            outcome = {
+                "status": "failed",
+                "error_type": "XlaRuntimeError",
+                "error_message": "RESOURCE_EXHAUSTED: Out of memory",
+            }
+            return_code = 1
+        else:
+            outcome = {
+                "status": "success",
+                "results": [{"system": "pendulum", "batch_size": batch}],
+            }
+            return_code = 0
+
+        outcome_path.write_text(json.dumps(outcome), encoding="utf-8")
+        return SimpleNamespace(returncode=return_code)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", fake_worker)
+
+    return_code = benchmark._run_isolated_benchmarks(args)
+
+    assert return_code == 0
+    assert attempted_batches == [1, 2, 4]
+    with csv_path.open(encoding="utf-8", newline="") as fp:
+        rows = list(csv.DictReader(fp))
+    assert [int(row["batch_size"]) for row in rows] == [1, 4]
+    with args.failures_csv.open(encoding="utf-8", newline="") as fp:
+        failures = list(csv.DictReader(fp))
+    assert len(failures) == 1
+    assert failures[0]["batch_size"] == "2"
+    assert failures[0]["failure_kind"] == "out_of_memory"

@@ -23,6 +23,14 @@ PlanarPCS. Run each backend in a separate process for a controlled comparison;
 JAX-only systems continue to use JAX. The CSV records the requested backend,
 the backend resolved for each system, and whether backend selection applies.
 
+Each `(system, size, Gauss-point setting, batch size)` case runs in a fresh
+process. Successful rows are checkpointed to the results CSV immediately, so
+an out-of-memory failure cannot discard earlier measurements. Failed cases are
+skipped and summarized after the remaining cases finish; the machine-readable
+report defaults to `data/benchmark_results_failures.csv`. Pass
+`--failures-csv PATH` to choose another location. Expected OOM-only failures do
+not make the generator exit unsuccessfully, while unexpected worker errors do.
+
 Use `--solver` to select `euler`, `semi-implicit-euler`, `heun`, `bosh3`,
 `tsit5`, or `dopri5`; the default remains `tsit5`. The selected solver applies
 to every requested system and model size. The CSV records the solver together
