@@ -39,10 +39,17 @@ from soromox.execution.dispatch import (
     dispatch_kinematics,
     dispatch_kinematics_abscissa_batched,
 )
+from soromox.execution.mechanics import (
+    GeneralizedForceTerms,
+    MechanicalDynamicsTerms,
+    MechanicalState,
+    MechanicalStateRate,
+)
 from soromox.execution.transforms import (
     evaluate_forward_dynamics,
     evaluate_forward_kinematics,
     evaluate_inertial_jacobian,
+    evaluate_mechanics_terms,
     make_actuation_evaluator,
     make_dynamics_actuation_evaluator,
     make_dynamics_evaluator,
@@ -86,6 +93,10 @@ __all__ = [
     "DynamicsTerms",
     "ExecutionBackend",
     "ForwardDynamicsModel",
+    "GeneralizedForceTerms",
+    "MechanicalDynamicsTerms",
+    "MechanicalState",
+    "MechanicalStateRate",
     "GVS_ACTUATION",
     "GVSBackendParams",
     "GVS_DYNAMICS",
@@ -115,6 +126,7 @@ __all__ = [
     "evaluate_forward_dynamics",
     "evaluate_forward_kinematics",
     "evaluate_inertial_jacobian",
+    "evaluate_mechanics_terms",
     "make_actuation_evaluator",
     "make_dynamics_actuation_evaluator",
     "make_dynamics_evaluator",

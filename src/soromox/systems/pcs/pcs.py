@@ -25,7 +25,9 @@ from soromox.execution import (
     dispatch_kinematics,
     dispatch_kinematics_abscissa_batched,
     evaluate_forward_dynamics,
+    evaluate_mechanics_terms,
 )
+from soromox.execution.mechanics import MechanicalDynamicsTerms, MechanicalState
 from soromox.systems.components import (
     ContinuumLinkParams,
     CrossSectionGeometry,
@@ -3868,3 +3870,26 @@ class PCS(SoftRobot):
         return evaluate_forward_dynamics(
             self, t, y, actuation_args, backend, PCS_DYNAMICS
         )
+
+    def mechanics_terms(
+        self,
+        state: MechanicalState,
+        u: Array,
+        tau_ext: Array,
+        *,
+        backend: ExecutionBackend | None = None,
+    ) -> MechanicalDynamicsTerms:
+        """Return the mechanical equation's terms, using the fused Warp path when eligible.
+
+        Args:
+            state: Configuration, velocity, and auxiliary state, with
+                ``(num_coordinates,)``/``(num_velocities,)`` shapes.
+            u: Actuation input with shape ``(num_actuators,)``.
+            tau_ext: External generalized force with shape ``(num_velocities,)``.
+            backend: Optional per-call execution-backend override. ``None``
+                uses :attr:`backend`.
+
+        Returns:
+            The mechanical equation's terms at ``state``.
+        """
+        return evaluate_mechanics_terms(self, state, u, tau_ext, backend, PCS_DYNAMICS)

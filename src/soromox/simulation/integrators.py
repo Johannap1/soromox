@@ -15,6 +15,7 @@ from diffrax import (
     LocalLinearInterpolation,
 )
 
+from soromox.execution.mechanics import MechanicalState
 from soromox.systems.soft_robot import SoftRobot
 
 
@@ -156,11 +157,15 @@ class IMEXEuler(AbstractSolver):
     ``(M + h*D + h**2*K) @ qd_{n+1} = M @ qd_n + h*(rhs_explicit - K @ q_n)``
     ``q_{n+1} = retract(q_n, h*qd_{n+1})``
 
-    Unlike ``SemiImplicitEuler``, this reads ``dynamics_terms``,
-    ``stiffness_matrix``, ``damping_matrix``, ``elastic_force``, and
-    ``actuation_force`` off ``system`` directly instead of going through
-    ``forward_dynamics``. It resolves ``args`` via
-    ``DynamicalSystem._resolve_actuation``, the same helper the open- and
+    Unlike ``SemiImplicitEuler``, this reads ``mechanics_terms`` (mass matrix
+    and force terms, without the inertia solve) plus ``stiffness_matrix`` and
+    ``damping_matrix`` off ``system`` directly instead of going through
+    ``forward_dynamics``, so it can keep the linear stiffness and damping
+    terms out of ``mechanics_terms``' explicit force sum. ``mechanics_terms``
+    uses the same fused-or-fallback Warp dispatch as ``forward_dynamics`` on
+    systems that support it (GVS, PCS, PlanarPCS), so this solver is not
+    slower than ``SemiImplicitEuler`` on those systems. It resolves ``args``
+    via ``DynamicalSystem._resolve_actuation``, the same helper the open- and
     closed-loop rollout wrappers use, so both rollout modes are supported.
     For a floating base, the implicit stiffness term
     only acts on the internal coordinates (zero-padded to ``num_velocities``),
@@ -224,13 +229,20 @@ class IMEXEuler(AbstractSolver):
             ]
         )
 
-        M, Cqd, G = self.system.dynamics_terms(q0, qd0)
+        state = MechanicalState(configuration=q0, velocity=qd0, auxiliary=auxiliary0)
+        terms = self.system.mechanics_terms(state, u, tau_ext)
+        M = terms.mass_matrix
         K = self.system.stiffness_matrix()
         D = self.system.damping_matrix(q0)
-        tau_u = self.system.actuation_force(q0, u, qd=qd0)
-        elastic_nonlinear = self.system.elastic_force(q0) - K @ q_embedded
+        elastic_nonlinear = terms.forces.elastic - K @ q_embedded
 
-        rhs_explicit = tau_u + tau_ext - Cqd - G - elastic_nonlinear
+        rhs_explicit = (
+            terms.forces.actuation
+            + tau_ext
+            - terms.forces.convective
+            - terms.forces.gravity
+            - elastic_nonlinear
+        )
         a = M + dt * D + dt**2 * K
         b = M @ qd0 + dt * (rhs_explicit - K @ q_embedded)
         qd1 = jnp.linalg.solve(a, b)

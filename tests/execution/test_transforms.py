@@ -13,7 +13,9 @@ from numpy.testing import assert_allclose
 from soromox.execution import (
     DynamicsTerms,
     ExecutionBackend,
+    MechanicalState,
     evaluate_forward_dynamics,
+    evaluate_mechanics_terms,
     make_dynamics_evaluator,
     make_kinematics_evaluators,
 )
@@ -152,6 +154,15 @@ def _assert_terms_close(actual: DynamicsTerms, expected: DynamicsTerms) -> None:
         assert_allclose(actual_term, expected_term, rtol=1e-12, atol=1e-12)
 
 
+def _assert_mechanics_terms_close(actual: Any, expected: Any) -> None:
+    """Compare two MechanicalDynamicsTerms pytrees with strict FP64 tolerances."""
+
+    actual_leaves = jax.tree_util.tree_leaves(actual)
+    expected_leaves = jax.tree_util.tree_leaves(expected)
+    for actual_leaf, expected_leaf in zip(actual_leaves, expected_leaves, strict=True):
+        assert_allclose(actual_leaf, expected_leaf, rtol=1e-12, atol=1e-12)
+
+
 def test_dynamics_evaluator_uses_jax_for_forward_and_reverse_derivatives() -> None:
     """Treat custom JVP as routing, not as a new analytical derivative."""
 
@@ -270,4 +281,49 @@ def test_forward_dynamics_boundary_routes_derivatives_to_jax() -> None:
     actual_gradient = jax.grad(
         lambda y_: jnp.sum(evaluate_forward_dynamics(model, time, y_, None, None))
     )(y)
+    assert_allclose(actual_gradient, expected_gradient, rtol=1e-12, atol=1e-12)
+
+
+def test_mechanics_terms_boundary_routes_derivatives_to_jax() -> None:
+    """Differentiate the mechanics terms without staging their Warp primal."""
+
+    model = _TransformProbe(scale=jnp.asarray(2.0, dtype=jnp.float64))
+    q = jnp.linspace(-0.3, 0.4, model.num_velocities, dtype=jnp.float64)
+    qd = jnp.linspace(0.2, -0.1, model.num_velocities, dtype=jnp.float64)
+    u = jnp.zeros((model.num_actuators,), dtype=jnp.float64)
+    tau_ext = jnp.linspace(-0.1, 0.1, model.num_velocities, dtype=jnp.float64)
+    auxiliary = jnp.zeros((model.num_auxiliary_states,), dtype=jnp.float64)
+    tangent = jnp.linspace(0.5, -0.2, q.size, dtype=jnp.float64)
+
+    def _state(q_: Array) -> MechanicalState:
+        return MechanicalState(configuration=q_, velocity=qd, auxiliary=auxiliary)
+
+    primal = evaluate_mechanics_terms(model, _state(q), u, tau_ext, None)
+    assert_allclose(
+        primal.mass_matrix, jnp.eye(model.num_velocities), rtol=0.0, atol=0.0
+    )
+    assert_allclose(
+        primal.forces.convective, 10.0 * model.scale * jnp.sin(q), rtol=0.0, atol=0.0
+    )
+    assert_allclose(primal.forces.actuation, 2.0 * jnp.ones_like(q), rtol=0.0, atol=0.0)
+
+    expected_jvp = jax.jvp(
+        lambda q_: evaluate_mechanics_terms(model, _state(q_), u, tau_ext, "jax"),
+        (q,),
+        (tangent,),
+    )
+    actual_jvp = jax.jvp(
+        lambda q_: evaluate_mechanics_terms(model, _state(q_), u, tau_ext, None),
+        (q,),
+        (tangent,),
+    )
+    _assert_mechanics_terms_close(actual_jvp[0], expected_jvp[0])
+    _assert_mechanics_terms_close(actual_jvp[1], expected_jvp[1])
+
+    def _reduce(q_: Array, backend: ExecutionBackend | None) -> Array:
+        terms = evaluate_mechanics_terms(model, _state(q_), u, tau_ext, backend)
+        return jnp.sum(terms.mass_matrix) + jnp.sum(terms.forces.net_force)
+
+    expected_gradient = jax.grad(lambda q_: _reduce(q_, "jax"))(q)
+    actual_gradient = jax.grad(lambda q_: _reduce(q_, None))(q)
     assert_allclose(actual_gradient, expected_gradient, rtol=1e-12, atol=1e-12)

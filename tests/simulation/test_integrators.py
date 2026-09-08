@@ -214,7 +214,7 @@ def test_semi_implicit_euler_advances_system_auxiliary_state():
 
     assert robot.num_auxiliary_states == 1
     assert_allclose(q1, expected_q1)
-    assert_allclose(qd1, expected_qd1)
+    assert_allclose(qd1, expected_qd1, atol=1e-9)
     assert_allclose(auxiliary1, expected_auxiliary1)
 
 

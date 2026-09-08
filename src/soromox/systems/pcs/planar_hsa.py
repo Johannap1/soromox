@@ -10,6 +10,8 @@ from jax import numpy as jnp
 from soromox.execution import (
     DEFAULT_PLANAR_PCS_BLOCK_DIM,
     ExecutionBackend,
+    MechanicalDynamicsTerms,
+    MechanicalState,
     PCSBackendParams,
 )
 from soromox.systems.components import CrossSectionGeometry
@@ -2338,3 +2340,15 @@ class PlanarHSA(PlanarPCS):
         if not self.consider_hysteresis:
             return jnp.concatenate((qdot, qdd))
         return jnp.concatenate((qdot, qdd, zd))
+
+    def mechanics_terms(
+        self, state: MechanicalState, u: Array, tau_ext: Array
+    ) -> MechanicalDynamicsTerms:
+        """Return the mechanical equation's terms.
+
+        Overrides the inherited :class:`PlanarPCS` implementation: PlanarHSA's
+        ``actuation_force`` does not accept a ``backend`` override (hysteresis
+        coupling is JAX-only), so this bypasses the fused-Warp dispatch and
+        uses the generic :class:`SoftRobot` default instead.
+        """
+        return SoftRobot.mechanics_terms(self, state, u, tau_ext)

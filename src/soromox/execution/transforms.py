@@ -10,6 +10,12 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
+from soromox.execution.mechanics import (
+    GeneralizedForceTerms,
+    MechanicalDynamicsTerms,
+    MechanicalState,
+    MechanicalStateRate,
+)
 from soromox.execution.types import (
     AbscissaBatchedKinematicsEvaluator,
     ActuationForceEvaluator,
@@ -675,6 +681,183 @@ def _evaluate_forward_dynamics_jvp(
     )
 
 
+@eqx.filter_custom_jvp
+def evaluate_mechanics_terms(
+    model: ForwardDynamicsModel,
+    state: MechanicalState,
+    u: Array,
+    tau_ext: Array,
+    backend: ExecutionBackend | None,
+    capabilities: DynamicsCapabilities | None = None,
+) -> MechanicalDynamicsTerms:
+    """Evaluate the mechanical equation's terms with transform-aware routing.
+
+    Terms-only counterpart of :func:`evaluate_forward_dynamics`: stops short of
+    the inertia solve so callers that need the individual terms (e.g. an
+    implicit-explicit solver's implicit/explicit split) can use them directly,
+    while still sharing the same fused-or-fallback Warp dispatch and the same
+    custom JVP that keeps derivatives on the JAX assembly.
+
+    Args:
+        model: System implementing the forward-dynamics execution contract.
+        state: Configuration, velocity, and auxiliary state for one
+            environment.
+        u: Actuation input for one environment.
+        tau_ext: External generalized force for one environment.
+        backend: Optional per-call backend override. ``None`` uses the model's
+            configured backend.
+        capabilities: Optional family capabilities enabling a benchmark-gated
+            fused dynamics-and-threadlike-actuation primal path.
+
+    Returns:
+        The mechanical equation's terms at ``state``.
+    """
+
+    return _assemble_mechanics_terms(
+        model,
+        state,
+        u,
+        tau_ext,
+        backend=backend,
+        capabilities=capabilities,
+    )
+
+
+@evaluate_mechanics_terms.def_jvp
+def _evaluate_mechanics_terms_jvp(
+    primals: tuple[Any, ...],
+    tangents: tuple[Any, ...],
+) -> tuple[MechanicalDynamicsTerms, MechanicalDynamicsTerms]:
+    """Differentiate mechanics terms using the model's JAX term assembly.
+
+    Args:
+        primals: Model, state, actuation, external force, and backend supplied
+            to :func:`evaluate_mechanics_terms`.
+        tangents: Tangents corresponding to ``primals`` as filtered by Equinox.
+
+    Returns:
+        A pair containing the JAX-backed primal terms and their directional
+        derivative.
+    """
+
+    if len(primals) == 5:
+        model, state, u, tau_ext, _backend = primals
+        (
+            model_tangent,
+            state_tangent,
+            u_tangent,
+            tau_ext_tangent,
+            _backend_tangent,
+        ) = tangents
+        capabilities = None
+        capabilities_tangent = None
+    else:
+        model, state, u, tau_ext, _backend, capabilities = primals
+        (
+            model_tangent,
+            state_tangent,
+            u_tangent,
+            tau_ext_tangent,
+            _backend_tangent,
+            capabilities_tangent,
+        ) = tangents
+    return eqx.filter_jvp(
+        lambda model_, state_, u_, tau_ext_, capabilities_: (
+            _assemble_mechanics_terms(
+                model_,
+                state_,
+                u_,
+                tau_ext_,
+                backend="jax",
+                capabilities=capabilities_,
+            )
+        ),
+        (model, state, u, tau_ext, capabilities),
+        (
+            model_tangent,
+            state_tangent,
+            u_tangent,
+            tau_ext_tangent,
+            capabilities_tangent,
+        ),
+    )
+
+
+@eqx.filter_jit
+def _assemble_mechanics_terms(
+    model: ForwardDynamicsModel,
+    state: MechanicalState,
+    u: Array,
+    tau_ext: Array,
+    *,
+    backend: ExecutionBackend | None,
+    capabilities: DynamicsCapabilities | None,
+) -> MechanicalDynamicsTerms:
+    """Assemble the mechanical equation's terms for one state.
+
+    Shared by :func:`evaluate_mechanics_terms` and (via
+    :func:`_assemble_forward_dynamics`) :func:`evaluate_forward_dynamics`, so
+    the fused-or-fallback Warp dispatch lives in exactly one place. Passive
+    forces and damping remain JAX operations; actuation follows the same
+    backend request but independently falls back to JAX unless its fused
+    high-level Warp path is enabled.
+
+    Args:
+        model: System implementing the forward-dynamics execution contract.
+        state: Configuration, velocity, and auxiliary state for one
+            environment.
+        u: Actuation input for one environment.
+        tau_ext: External generalized force for one environment.
+        backend: Backend used to assemble dynamics terms. ``None`` uses the
+            model's configured backend.
+        capabilities: Optional family support for fused primal execution.
+
+    Returns:
+        The mechanical equation's terms at ``state``.
+    """
+
+    q, qd = state.configuration, state.velocity
+    elastic = model.elastic_force(q)
+    fused = None
+    if capabilities is not None:
+        from soromox.execution.dispatch import (
+            dispatch_fused_dynamics_actuation_force,
+        )
+
+        fused = dispatch_fused_dynamics_actuation_force(
+            model,
+            q,
+            qd,
+            u,
+            backend=backend,
+            capabilities=capabilities,
+        )
+    if fused is None:
+        inertia, coriolis_qd, gravity = model.dynamics_terms(q, qd, backend=backend)
+        requested = model.backend if backend is None else backend
+        actuation_backend: ExecutionBackend | None = (
+            "auto" if requested == "warp" else backend
+        )
+        actuation = model.actuation_force(q, u, qd=qd, backend=actuation_backend)
+    else:
+        inertia, coriolis_qd, gravity, actuation = fused
+
+    forces = GeneralizedForceTerms(
+        actuation=actuation,
+        external=tau_ext,
+        convective=coriolis_qd,
+        gravity=gravity,
+        elastic=elastic,
+        dissipative=model.damping_matrix(q) @ qd,
+    )
+    return MechanicalDynamicsTerms(
+        mass_matrix=inertia,
+        configuration_rate=model.configuration_derivative(q, qd),
+        forces=forces,
+        auxiliary_rate=jnp.zeros_like(state.auxiliary),
+    )
+
+
 @eqx.filter_jit
 def _assemble_forward_dynamics(
     model: ForwardDynamicsModel,
@@ -688,10 +871,7 @@ def _assemble_forward_dynamics(
     """Assemble generalized forces and solve one forward-dynamics request.
 
     This shared implementation keeps the public system methods small and makes
-    the force convention identical for GVS, PCS, and PlanarPCS. Passive forces,
-    damping, and the inertia solve remain JAX operations. Actuation follows the
-    same backend request but independently falls back to JAX unless its fused
-    high-level Warp path is enabled.
+    the force convention identical for GVS, PCS, and PlanarPCS.
 
     Args:
         model: System implementing the forward-dynamics execution contract.
@@ -728,44 +908,18 @@ def _assemble_forward_dynamics(
     if tau_ext is None:
         tau_ext = jnp.zeros((model.num_velocities,), dtype=y.dtype)
 
-    elastic = model.elastic_force(q)
-    fused = None
-    if capabilities is not None:
-        from soromox.execution.dispatch import (
-            dispatch_fused_dynamics_actuation_force,
-        )
-
-        fused = dispatch_fused_dynamics_actuation_force(
-            model,
-            q,
-            qd,
-            u,
-            backend=backend,
-            capabilities=capabilities,
-        )
-    if fused is None:
-        inertia, coriolis_qd, gravity = model.dynamics_terms(q, qd, backend=backend)
-        requested = model.backend if backend is None else backend
-        actuation_backend: ExecutionBackend | None = (
-            "auto" if requested == "warp" else backend
-        )
-        actuation = model.actuation_force(q, u, qd=qd, backend=actuation_backend)
-    else:
-        inertia, coriolis_qd, gravity, actuation = fused
-    rhs = (
-        actuation
-        + tau_ext
-        - coriolis_qd
-        - gravity
-        - elastic
-        - model.damping_matrix(q) @ qd
+    state = MechanicalState(configuration=q, velocity=qd, auxiliary=auxiliary_state)
+    terms = _assemble_mechanics_terms(
+        model, state, u, tau_ext, backend=backend, capabilities=capabilities
     )
-    qdd = model._solve_inertia(inertia, rhs)
-    qdot = model.configuration_derivative(q, qd)
-    if model.num_auxiliary_states == 0:
-        return jnp.concatenate([qdot, qdd])
-    auxiliary_dot = jnp.zeros_like(auxiliary_state)
-    return jnp.concatenate([qdot, qdd, auxiliary_dot])
+    rate = MechanicalStateRate(
+        configuration_rate=terms.configuration_rate,
+        acceleration=model._solve_inertia(terms.mass_matrix, terms.forces.net_force),
+        auxiliary_rate=terms.auxiliary_rate,
+    )
+    return jnp.concatenate(
+        [rate.configuration_rate, rate.acceleration, rate.auxiliary_rate]
+    )
 
 
 __all__ = [
@@ -775,6 +929,7 @@ __all__ = [
     "DynamicsActuationBatchExecutor",
     "KinematicsBatchExecutor",
     "evaluate_forward_dynamics",
+    "evaluate_mechanics_terms",
     "make_actuation_evaluator",
     "make_dynamics_evaluator",
     "make_dynamics_actuation_evaluator",

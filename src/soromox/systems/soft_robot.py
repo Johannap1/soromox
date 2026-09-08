@@ -21,6 +21,11 @@ from soromox.actuation.core import (
     PassiveElement,
 )
 from soromox.autodiff import custom_jvp_enabled
+from soromox.execution.mechanics import (
+    GeneralizedForceTerms,
+    MechanicalDynamicsTerms,
+    MechanicalState,
+)
 from soromox.systems.dynamical_system import DynamicalSystem
 from soromox.systems.params import (
     validate_planar_base_pose,
@@ -3008,6 +3013,42 @@ class SoftRobot(DynamicalSystem):
         Cqd = self.coriolis_matrix(q, qd) @ qd
         G = self.gravitational_force(q)
         return M, Cqd, G
+
+    def mechanics_terms(
+        self, state: MechanicalState, u: Array, tau_ext: Array
+    ) -> MechanicalDynamicsTerms:
+        """Return the mechanical equation's terms for one state.
+
+        The default implementation is intentionally unfused, built from
+        :meth:`dynamics_terms`, :meth:`elastic_force`, :meth:`damping_matrix`,
+        and :meth:`actuation_force`. Systems with a fused Warp path (GVS, PCS,
+        PlanarPCS) override this with a backend-routing implementation; other
+        systems use this default unchanged.
+
+        Args:
+            state: Configuration, velocity, and auxiliary state.
+            u: Actuation input of shape ``(num_actuators,)``.
+            tau_ext: External generalized force of shape ``(num_velocities,)``.
+
+        Returns:
+            The mechanical equation's terms at ``state``.
+        """
+        q, qd = state.configuration, state.velocity
+        M, Cqd, G = self.dynamics_terms(q, qd)
+        forces = GeneralizedForceTerms(
+            actuation=self.actuation_force(q, u, qd=qd),
+            external=tau_ext,
+            convective=Cqd,
+            gravity=G,
+            elastic=self.elastic_force(q),
+            dissipative=self.damping_matrix(q) @ qd,
+        )
+        return MechanicalDynamicsTerms(
+            mass_matrix=M,
+            configuration_rate=self.configuration_derivative(q, qd),
+            forces=forces,
+            auxiliary_rate=jnp.zeros_like(state.auxiliary),
+        )
 
     def _solve_inertia(self, inertia: Array, rhs: Array) -> Array:
         """
