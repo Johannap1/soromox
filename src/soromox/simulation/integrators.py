@@ -16,7 +16,6 @@ from diffrax import (
 )
 
 from soromox.systems.soft_robot import SoftRobot
-from soromox.systems.system_state import SystemState
 
 
 class SemiImplicitEuler(AbstractSolver):
@@ -160,8 +159,10 @@ class IMEXEuler(AbstractSolver):
     Unlike ``SemiImplicitEuler``, this reads ``dynamics_terms``,
     ``stiffness_matrix``, ``damping_matrix``, ``elastic_force``, and
     ``actuation_force`` off ``system`` directly instead of going through
-    ``forward_dynamics``, so it only supports open-loop rollouts and systems
-    with no auxiliary state. For a floating base, the implicit stiffness term
+    ``forward_dynamics``. It resolves ``args`` via
+    ``DynamicalSystem._resolve_actuation``, the same helper the open- and
+    closed-loop rollout wrappers use, so both rollout modes are supported.
+    For a floating base, the implicit stiffness term
     only acts on the internal coordinates (zero-padded to ``num_velocities``),
     which is exact as long as ``stiffness_matrix``/``damping_matrix`` have a
     zero base block -- true for every system checked so far, not guaranteed
@@ -199,9 +200,9 @@ class IMEXEuler(AbstractSolver):
     ) -> tuple[Any, None, dict[str, Any], None, RESULTS]:
         """Advance the state by one implicit-explicit Euler step.
 
-        Bypasses ``terms``: ``args`` already carries the open-loop actuation
-        tuple ``rollout_to`` builds, so the linear system is assembled
-        directly from ``self.system``'s dynamics-term helpers.
+        Bypasses ``terms``: ``args`` already carries the actuation tuple
+        ``rollout_to``/``rollout_closed_loop_to`` build, so the linear system
+        is assembled directly from ``self.system``'s dynamics-term helpers.
         """
         del terms, solver_state, made_jump
         dt = t1 - t0
@@ -209,34 +210,9 @@ class IMEXEuler(AbstractSolver):
         y = self.system.project_state(y0.y)
         q0, qd0, auxiliary0 = self.system.split_state(y)
 
-        u, base_tau_ext, environment_model, zero_environment_state_dot = args
-        track_environment_state = zero_environment_state_dot is not None
-        tau_environment = None
-        environment_state_dot = zero_environment_state_dot
-        if environment_model is not None:
-            system_state = SystemState(
-                t=t0,
-                y=y,
-                u=u,
-                control_state=None,
-                environment_state=y0.environment_state,
-            )
-            tau_environment, environment_state_dot = environment_model(system_state)
-            if environment_state_dot is not None and not track_environment_state:
-                raise ValueError(
-                    "Environment model returned an environment_state derivative but no initial environment_state was provided."
-                )
-            environment_state_dot = (
-                environment_state_dot
-                if environment_state_dot is not None
-                else zero_environment_state_dot
-            )
-        if tau_environment is None:
-            tau_ext = base_tau_ext
-        elif base_tau_ext is None:
-            tau_ext = tau_environment
-        else:
-            tau_ext = base_tau_ext + tau_environment
+        u, tau_ext, control_state_dot, environment_state_dot = (
+            self.system._resolve_actuation(t0, y, y0, args)
+        )
         if tau_ext is None:
             tau_ext = jnp.zeros_like(qd0)
 
@@ -275,8 +251,18 @@ class IMEXEuler(AbstractSolver):
                 lambda e, d: e + dt * d, y0.environment_state, environment_state_dot
             )
         )
+        control_state1 = (
+            y0.control_state
+            if control_state_dot is None
+            else jax.tree_util.tree_map(
+                lambda c, d: c + dt * d, y0.control_state, control_state_dot
+            )
+        )
         y1 = dataclasses.replace(
-            y0, y=primary_state1, environment_state=environment_state1
+            y0,
+            y=primary_state1,
+            environment_state=environment_state1,
+            control_state=control_state1,
         )
 
         dense_info = {"y0": y0, "y1": y1}

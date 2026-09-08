@@ -133,22 +133,79 @@ class DynamicalSystem(eqx.Module):
         """
         return y
 
-    def _open_loop_forward_dynamics(
-        self, t: Array, ode_state: _RolloutState, actuation_args
-    ) -> _RolloutState:
-        """Wrapper for forward_dynamics used in open-loop rollouts.
+    def _resolve_actuation(
+        self,
+        t: Array,
+        y: Array,
+        ode_state: _RolloutState,
+        actuation_args: tuple[
+            Array,
+            Array | None,
+            Callable[[SystemState], tuple[Array, Any | None]] | None,
+            Any | None,
+            Callable[[SystemState], tuple[Array | None, Any | None]] | None,
+            Any | None,
+        ],
+    ) -> tuple[Array, Array | None, Any | None, Any | None]:
+        """Resolve the effective actuation and external force for one evaluation.
 
-        This is defined as a class method rather than an inline closure to avoid
-        JAX/XLA compilation overhead associated with closures.
+        Shared by the open-loop and closed-loop rollout wrappers below, and by
+        solvers (such as ``IMEXEuler``) that read dynamics terms directly
+        instead of going through ``forward_dynamics``. ``controller`` is
+        ``None`` for open-loop rollouts, in which case ``u_total`` is just
+        ``base_u`` and ``control_state_dot`` stays ``None``.
+
+        Args:
+            t: Current time.
+            y: Projected state ``[q, v, auxiliary]``.
+            ode_state: Current rollout state, for ``control_state``/
+                ``environment_state``.
+            actuation_args: Tuple containing:
+                - base_u: Base actuation vector.
+                - base_tau_ext: External torques/forces.
+                - controller: Optional controller callable.
+                - zero_control_state_dot: Zero-structured control-state
+                  derivative, or ``None`` if control_state is not tracked.
+                - environment_model: Optional callable computing environment
+                  torques.
+                - zero_environment_state_dot: Zero-structured environment-state
+                  derivative, or ``None`` if environment_state is not tracked.
+
+        Returns:
+            Tuple ``(u_total, tau_ext_total, control_state_dot,
+            environment_state_dot)``.
         """
-        y = self.project_state(ode_state.y)
         (
-            base_u_val,
+            base_u,
             base_tau_ext,
+            controller,
+            zero_control_state_dot,
             environment_model,
             zero_environment_state_dot,
         ) = actuation_args
-        track_environment_state = zero_environment_state_dot is not None
+
+        if controller is None:
+            u_total = base_u
+            control_state_dot = None
+        else:
+            system_state = SystemState(
+                t=t,
+                y=y,
+                u=base_u,
+                control_state=ode_state.control_state,
+                environment_state=ode_state.environment_state,
+            )
+            u_control, control_state_dot = controller(system_state)
+            if control_state_dot is not None and zero_control_state_dot is None:
+                raise ValueError(
+                    "Controller returned a control_state derivative but no initial control_state was provided."
+                )
+            control_state_dot = (
+                control_state_dot
+                if control_state_dot is not None
+                else zero_control_state_dot
+            )
+            u_total = base_u + u_control
 
         tau_environment = None
         environment_state_dot = zero_environment_state_dot
@@ -156,12 +213,12 @@ class DynamicalSystem(eqx.Module):
             system_state = SystemState(
                 t=t,
                 y=y,
-                u=base_u_val,
-                control_state=None,
+                u=u_total,
+                control_state=ode_state.control_state,
                 environment_state=ode_state.environment_state,
             )
             tau_environment, environment_state_dot = environment_model(system_state)
-            if environment_state_dot is not None and not track_environment_state:
+            if environment_state_dot is not None and zero_environment_state_dot is None:
                 raise ValueError(
                     "Environment model returned an environment_state derivative but no initial environment_state was provided."
                 )
@@ -172,13 +229,22 @@ class DynamicalSystem(eqx.Module):
             )
 
         tau_ext_total = self._combine_external_torques(base_tau_ext, tau_environment)
-        yd = self.forward_dynamics(t, y, (base_u_val, tau_ext_total))
-        return _RolloutState(
-            y=yd,
-            environment_state=environment_state_dot
-            if track_environment_state
-            else None,
+        return u_total, tau_ext_total, control_state_dot, environment_state_dot
+
+    def _open_loop_forward_dynamics(
+        self, t: Array, ode_state: _RolloutState, actuation_args
+    ) -> _RolloutState:
+        """Wrapper for forward_dynamics used in open-loop rollouts.
+
+        This is defined as a class method rather than an inline closure to avoid
+        JAX/XLA compilation overhead associated with closures.
+        """
+        y = self.project_state(ode_state.y)
+        u_total, tau_ext_total, _, environment_state_dot = self._resolve_actuation(
+            t, y, ode_state, actuation_args
         )
+        yd = self.forward_dynamics(t, y, (u_total, tau_ext_total))
+        return _RolloutState(y=yd, environment_state=environment_state_dot)
 
     def _closed_loop_forward_dynamics(
         self,
@@ -202,76 +268,22 @@ class DynamicalSystem(eqx.Module):
             t: Current time.
             ode_state: Current rollout state.
             actuation_args: Tuple containing:
-                - base_u_val: Base actuation vector.
+                - base_u: Base actuation vector.
                 - base_tau_ext: External torques/forces.
                 - controller: Controller callable.
                 - zero_control_state_dot: Zero-structured control state derivative.
                 - environment_model: Optional callable computing environment torques.
                 - zero_environment_state_dot: Zero-structured environment state derivative.
         """
-        (
-            base_u_val,
-            base_tau_ext,
-            controller,
-            zero_control_state_dot,
-            environment_model,
-            zero_environment_state_dot,
-        ) = actuation_args
-        track_control_state = zero_control_state_dot is not None
-        track_environment_state = zero_environment_state_dot is not None
-
         y = self.project_state(ode_state.y)
-        system_state = SystemState(
-            t=t,
-            y=y,
-            u=base_u_val,
-            control_state=ode_state.control_state,
-            environment_state=ode_state.environment_state,
+        u_total, tau_ext_total, control_state_dot, environment_state_dot = (
+            self._resolve_actuation(t, y, ode_state, actuation_args)
         )
-        u_control, control_state_dot = controller(system_state)
-        if control_state_dot is not None and not track_control_state:
-            raise ValueError(
-                "Controller returned a control_state derivative but no initial control_state was provided."
-            )
-        u_total = base_u_val + u_control
-
-        tau_environment = None
-        environment_state_dot = zero_environment_state_dot
-        if environment_model is not None:
-            environment_system_state = SystemState(
-                t=t,
-                y=y,
-                u=u_total,
-                control_state=ode_state.control_state,
-                environment_state=ode_state.environment_state,
-            )
-            tau_environment, environment_state_dot = environment_model(
-                environment_system_state
-            )
-            if environment_state_dot is not None and not track_environment_state:
-                raise ValueError(
-                    "Environment model returned an environment_state derivative but no initial environment_state was provided."
-                )
-            environment_state_dot = (
-                environment_state_dot
-                if environment_state_dot is not None
-                else zero_environment_state_dot
-            )
-
-        tau_ext_total = self._combine_external_torques(base_tau_ext, tau_environment)
         yd = self.forward_dynamics(t, y, (u_total, tau_ext_total))
-        if track_control_state:
-            control_state_dot = (
-                control_state_dot
-                if control_state_dot is not None
-                else zero_control_state_dot
-            )
         return _RolloutState(
             y=yd,
-            control_state=control_state_dot if track_control_state else None,
-            environment_state=environment_state_dot
-            if track_environment_state
-            else None,
+            control_state=control_state_dot,
+            environment_state=environment_state_dot,
         )
 
     def rollout_to(
@@ -356,6 +368,8 @@ class DynamicalSystem(eqx.Module):
             args=(
                 base_u,
                 tau_ext,
+                None,
+                None,
                 environment_model,
                 zero_environment_state_dot,
             ),
@@ -736,6 +750,8 @@ class DynamicalSystem(eqx.Module):
                 args=(
                     u_total,
                     tau_ext,
+                    None,
+                    None,
                     environment_model,
                     zero_environment_state_dot,
                 ),

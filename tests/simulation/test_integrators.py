@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from diffrax import AbstractSolver, Euler, Tsit5
@@ -367,6 +368,89 @@ def test_imex_euler_supports_spatial_floating_base_state():
     assert_allclose(actual_qd1, expected_qd1, atol=1e-15)
     assert auxiliary1.shape == (0,)
     assert_allclose(jnp.linalg.norm(q1[:4]), 1.0, atol=1e-6)
+
+
+class _ZeroController(eqx.Module):
+    num_actuators: int
+
+    def __call__(self, state: SystemState):
+        return jnp.zeros((self.num_actuators,)), None
+
+
+class _IntegralController(eqx.Module):
+    kp: float
+    ki: float
+    target: jnp.ndarray
+
+    def __call__(self, state: SystemState):
+        q = state.y[: self.target.shape[0]]
+        error = self.target - q
+        u = self.kp * error + self.ki * state.control_state
+        control_state_dot = error
+        return u, control_state_dot
+
+
+def test_imex_euler_matches_hand_derived_closed_loop_step():
+    robot = _pendulum()
+    q0 = jnp.array([0.2])
+    qd0 = jnp.array([0.3])
+    control_state0 = jnp.array([0.05])
+    controller = _IntegralController(kp=1.5, ki=0.5, target=jnp.array([0.0]))
+    tau_ext = jnp.zeros_like(q0)
+    y0 = jnp.concatenate([q0, qd0])
+    dt = 1e-4
+
+    error = controller.target - q0
+    u = controller.kp * error + controller.ki * control_state0
+    expected_control_state1 = control_state0 + dt * error
+
+    M, Cqd, G = robot.dynamics_terms(q0, qd0)
+    K = robot.stiffness_matrix()
+    D = robot.damping_matrix(q0)
+    tau_u = robot.actuation_force(q0, u, qd=qd0)
+    elastic_nonlinear = robot.elastic_force(q0) - K @ q0
+    rhs = tau_u + tau_ext - Cqd - G - elastic_nonlinear
+    A = M + dt * D + dt**2 * K
+    b = M @ qd0 + dt * (rhs - K @ q0)
+    qd1 = jnp.linalg.solve(A, b)
+    expected = jnp.concatenate([q0 + dt * qd1, qd1])
+
+    trajectory = robot.rollout_closed_loop_to(
+        initial_state=SystemState(t=0.0, y=y0, control_state=control_state0),
+        controller=controller,
+        tau_ext=tau_ext,
+        t1=dt,
+        solver_dt=dt,
+        save_ts=jnp.array([0.0, dt]),
+        solver=IMEXEuler(robot),
+    )
+
+    assert_allclose(trajectory.y[-1], expected)
+    assert_allclose(trajectory.control_state[-1], expected_control_state1)
+
+
+def test_imex_euler_closed_loop_rollout_is_jittable_and_vmappable():
+    robot = _pendulum()
+    solver = IMEXEuler(robot)
+    controller = _ZeroController(num_actuators=robot.num_actuators)
+    q0s = jnp.array([[0.1], [0.2], [-0.15]])
+    qd0s = jnp.array([[0.0], [0.1], [-0.05]])
+
+    def rollout(q0, qd0):
+        trajectory = robot.rollout_closed_loop_to(
+            initial_state=SystemState(t=0.0, y=jnp.concatenate([q0, qd0])),
+            controller=controller,
+            t1=0.002,
+            solver_dt=1e-4,
+            save_ts=jnp.array([0.0, 0.001, 0.002]),
+            solver=solver,
+        )
+        return trajectory.y
+
+    trajectories = jax.jit(jax.vmap(rollout))(q0s, qd0s)
+
+    assert trajectories.shape == (3, 3, 2)
+    assert jnp.all(jnp.isfinite(trajectories))
 
 
 def test_imex_euler_advances_system_auxiliary_state():
