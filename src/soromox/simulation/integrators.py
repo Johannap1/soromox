@@ -285,4 +285,176 @@ class IMEXEuler(AbstractSolver):
         return terms.vf(t0, y0, args)
 
 
-__all__ = ["IMEXEuler", "SemiImplicitEuler"]
+class IMEXEulerImplicitContact(AbstractSolver):
+    """IMEX Euler with a single tip/y-direction contact force against a
+    movable point-mass body, both folded implicitly into their respective
+    linear systems instead of left on the explicit right-hand side / the
+    generic explicit `environment_state` update used elsewhere.
+
+    Deliberately narrow in scope: contact is evaluated only at the rod's
+    very tip, only along the global y-axis, with no friction, and only a
+    single contact point against a single point-mass body. The rod/body
+    coupling itself is staggered (Gauss-Seidel: the rod is solved first
+    using the body's start-of-step position, then the body is solved using
+    the rod's just-updated tip position), not a fully joint implicit solve
+    of both together.
+
+    The body is tracked via the standard ``environment_state`` field (a
+    ``(position, velocity)`` pair) so it is interoperable with
+    ``rollout_to``/``rollout_closed_loop_to`` -- but note this solver
+    implements its own implicit update for ``environment_state`` here,
+    not the generic explicit ``e + dt * d`` rule
+    ``DynamicalSystem._resolve_actuation`` callers use elsewhere. That
+    generic rule was verified empirically (not just by analogy to the
+    rod's own explicit-contact instability) to silently inject unphysical
+    momentum into a light body at the instant contact begins, without
+    ever producing a non-finite value -- a plain finiteness check would
+    not catch it.
+
+    Derivation for the rod's own contact term: linearizing the contact
+    force tau_contact(q) around q0, tau_contact(q_k+1) ~= tau_contact(q0)
+    + K_contact @ (q_k+1 - q0), with K_contact = d(tau_contact)/dq =
+    -stiffness * outer(g, g) while in contact (g = d(tip_y)/dq, dropping
+    the geometric/curvature term d(g)/dq -- the same simplification the
+    rod's own K already makes for its nonlinear elastic term).
+    Substituting q_k+1 = q0 + dt*qd_k+1 and moving the qd_k+1-dependent
+    piece to the left-hand side adds +dt**2 * stiffness * outer(g, g) to
+    the matrix being inverted. The body's own contact reaction is folded
+    in the same way, specialized to its single degree of freedom.
+
+    Fixed-base systems only, for now: K_contact = outer(g, g) is sized by
+    num_coordinates (g = d(tip_y)/dq), but the matrix it is added to (K, D,
+    M) is sized by num_velocities. For fixed-base systems these coincide,
+    but for floating-base systems they do not (the configuration carries a
+    redundant 4th quaternion component with no matching velocity
+    component), which raises a shape-mismatch error rather than silently
+    producing a wrong answer -- verified empirically while adding this
+    class's regression tests, not merely a hypothetical gap.
+
+    Attributes:
+        system: Soromox system supplying state and dynamics-term helpers.
+    """
+
+    system: SoftRobot
+    term_structure: ClassVar = AbstractTerm
+    interpolation_cls: ClassVar[Callable[..., LocalLinearInterpolation]] = (
+        LocalLinearInterpolation
+    )
+
+    def order(self, terms: AbstractTerm) -> int:
+        """Return the deterministic convergence order, which is one."""
+        del terms
+        return 1
+
+    def init(self, terms: AbstractTerm, t0: Any, t1: Any, y0: Any, args: Any) -> None:
+        """No persistent solver state is needed."""
+        del terms, t0, t1, y0, args
+        return None
+
+    def step(
+        self,
+        terms: AbstractTerm,
+        t0: Any,
+        t1: Any,
+        y0: Any,
+        args: Any,
+        solver_state: Any,
+        made_jump: Any,
+    ) -> tuple[Any, None, dict[str, Any], None, RESULTS]:
+        """Advance the rod and a movable contact body by one implicit-contact step.
+
+        Args:
+            terms: Unused; ``args`` already carries the actuation and
+                contact-body parameters directly.
+            t0: Start time of the step.
+            t1: End time of the step.
+            y0: Rollout state; ``y0.environment_state`` must be a
+                ``(position, velocity)`` pair for the contact body.
+            args: Tuple ``(u, body_mass, body_damping, stiffness)``. ``u``
+                is the actuation vector; ``body_mass``/``body_damping``/
+                ``stiffness`` describe the point-mass body tracked in
+                ``y0.environment_state``.
+            solver_state: Unused; this method has no persistent state.
+            made_jump: Unused; no special jump handling is required.
+        """
+        del terms, solver_state, made_jump
+        dt = t1 - t0
+        u, body_mass, body_damping, stiffness = args
+
+        y = self.system.project_state(y0.y)
+        q0, qd0, auxiliary0 = self.system.split_state(y)
+        body_y0, body_vy0 = y0.environment_state
+
+        _, q_internal = self.system.split_configuration(q0)
+        q_embedded = jnp.concatenate(
+            [
+                jnp.zeros((self.system.num_base_velocities,), dtype=q_internal.dtype),
+                q_internal,
+            ]
+        )
+
+        def tip_y(q_):
+            return self.system.forward_kinematics_tips(q_)[-1][1, 3]
+
+        y_tip, g = jax.value_and_grad(tip_y)(q0)
+        penetration = jnp.maximum(0.0, body_y0 - y_tip)
+        in_contact = penetration > 0.0
+        tau_contact = g * stiffness * penetration
+        K_contact = jnp.where(in_contact, stiffness, 0.0) * jnp.outer(g, g)
+
+        tau_ext = tau_contact
+
+        state = MechanicalState(configuration=q0, velocity=qd0, auxiliary=auxiliary0)
+        mechanics = self.system.mechanics_terms(state, u, tau_ext)
+        M = mechanics.mass_matrix
+        K = self.system.stiffness_matrix()
+        D = self.system.damping_matrix(q0)
+        elastic_nonlinear = mechanics.forces.elastic - K @ q_embedded
+
+        rhs_explicit = (
+            mechanics.forces.actuation
+            + tau_ext
+            - mechanics.forces.convective
+            - mechanics.forces.gravity
+            - elastic_nonlinear
+        )
+        a = M + dt * D + dt**2 * (K + K_contact)
+        b = M @ qd0 + dt * (rhs_explicit - K @ q_embedded)
+        qd1 = jnp.linalg.solve(a, b)
+
+        q1 = self.system.retract_configuration(q0, dt * qd1)
+        if self.system.num_auxiliary_states == 0:
+            auxiliary1 = auxiliary0
+        else:
+            derivative = self.system.forward_dynamics(t0, y, (u, tau_ext))
+            _, _, auxiliary_dot = self.system.split_state(derivative)
+            auxiliary1 = auxiliary0 + dt * auxiliary_dot
+        primary_state1 = self.system.pack_state(q1, qd1, auxiliary1)
+
+        # Body: implicit 1-DOF backward-Euler, staggered against the rod's
+        # just-updated tip position (Gauss-Seidel, not jointly implicit).
+        y_tip1 = tip_y(q1)
+        body_penetration = jnp.maximum(0.0, body_y0 - y_tip1)
+        body_in_contact = body_penetration > 0.0
+        f_y0 = stiffness * body_penetration
+        body_denom = body_mass + dt * body_damping + jnp.where(
+            body_in_contact, dt**2 * stiffness, 0.0
+        )
+        body_vy1 = (body_mass * body_vy0 - dt * f_y0) / body_denom
+        body_y1 = body_y0 + dt * body_vy1
+
+        y1 = dataclasses.replace(
+            y0,
+            y=primary_state1,
+            environment_state=(body_y1, body_vy1),
+        )
+
+        dense_info = {"y0": y0, "y1": y1}
+        return y1, None, dense_info, None, RESULTS.successful
+
+    def func(self, terms: AbstractTerm, t0: Any, y0: Any, args: Any) -> Any:
+        """Evaluate the underlying vector field."""
+        return terms.vf(t0, y0, args)
+
+
+__all__ = ["IMEXEuler", "IMEXEulerImplicitContact", "SemiImplicitEuler"]

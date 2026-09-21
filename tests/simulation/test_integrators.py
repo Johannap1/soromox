@@ -7,7 +7,7 @@ from diffrax import AbstractSolver, Euler, Tsit5
 from numpy.testing import assert_allclose
 from system_param_builders import pcs_params, pendulum_params
 
-from soromox.simulation import IMEXEuler, SemiImplicitEuler
+from soromox.simulation import IMEXEuler, IMEXEulerImplicitContact, SemiImplicitEuler
 from soromox.systems import (
     PCS,
     PCSStructure,
@@ -17,6 +17,7 @@ from soromox.systems import (
     PlanarHSAStructure,
     SystemState,
 )
+from soromox.systems.dynamical_system import _RolloutState
 
 
 def _pendulum() -> Pendulum:
@@ -30,6 +31,23 @@ def _pendulum() -> Pendulum:
             joint_stiffness=jnp.array([[2.0]]),
             joint_damping=jnp.array([[0.1]]),
         )
+    )
+
+
+def _fixed_spatial_pcs() -> PCS:
+    return PCS(
+        params=pcs_params(
+            length=jnp.array([0.1]),
+            radius=jnp.array([0.01]),
+            density=jnp.array([1000.0]),
+            young_modulus=jnp.array([1.0e5]),
+            shear_modulus=jnp.array([4.0e4]),
+            damping_matrix=jnp.eye(6),
+            gravity=jnp.array([0.0, 0.0, -9.81]),
+        ),
+        structure=PCSStructure(num_gauss_points=3),
+        floating_base=False,
+        backend="jax",
     )
 
 
@@ -451,6 +469,89 @@ def test_imex_euler_closed_loop_rollout_is_jittable_and_vmappable():
 
     assert trajectories.shape == (3, 3, 2)
     assert jnp.all(jnp.isfinite(trajectories))
+
+
+def test_imex_euler_implicit_contact_reduces_to_plain_imex_when_not_touching():
+    """With the contact body placed far away, K_contact and tau_contact are
+    both identically zero, so the rod update should exactly match plain
+    IMEXEuler's. Uses a fixed-base fixture: the current implementation
+    assumes num_coordinates == num_velocities, which floating-base systems
+    violate (their configuration carries a redundant quaternion component
+    with no matching velocity component) -- see the
+    IMEXEulerImplicitContact docstring."""
+    robot = _fixed_spatial_pcs()
+    q0 = jnp.zeros((robot.num_internal_dofs,))
+    qd0 = jnp.array([0.01, -0.02, 0.005, 0.03, -0.01, 0.02])[: robot.num_internal_dofs]
+    y0_state = jnp.concatenate([q0, qd0])
+    dt = 1e-4
+    u = jnp.zeros((robot.num_actuators,))
+
+    plain_trajectory = robot.rollout_to(
+        initial_state=SystemState(t=0.0, y=y0_state),
+        u=u,
+        t1=dt,
+        solver_dt=dt,
+        save_ts=jnp.array([0.0, dt]),
+        solver=IMEXEuler(robot),
+    )
+
+    solver = IMEXEulerImplicitContact(robot)
+    y0 = _RolloutState(y=y0_state, environment_state=(-1000.0, 0.0))
+    y1, *_ = solver.step(
+        terms=None,
+        t0=jnp.asarray(0.0),
+        t1=jnp.asarray(dt),
+        y0=y0,
+        args=(u, 1.0, 0.0, 2500.0),
+        solver_state=None,
+        made_jump=None,
+    )
+
+    # atol relaxed vs. other tests in this file: those compare against a
+    # hand-derived computation using the same operation order (so float32
+    # rounding cancels identically); this compares across two genuinely
+    # different code paths (rollout_to's Diffrax wrapper vs. calling
+    # .step() directly), which don't round identically even when
+    # mathematically equivalent.
+    assert_allclose(y1.y, plain_trajectory.y[-1], atol=1e-6)
+
+
+def test_imex_euler_implicit_contact_survives_large_dt_with_light_body():
+    """Deep, sustained contact against a light body at a dt/stiffness
+    combination -- should stay finite throughout, unlike plain explicit
+    treatment of the same contact term."""
+    robot = _fixed_spatial_pcs()
+    q0 = jnp.zeros((robot.num_internal_dofs,))
+    qd0 = jnp.zeros((robot.num_internal_dofs,))
+    y0_state = jnp.concatenate([q0, qd0])
+
+    initial_tip_y = robot.forward_kinematics_tips(q0)[-1][1, 3]
+    body_y0 = initial_tip_y + 0.01  # already overlapping at t=0
+
+    solver = IMEXEulerImplicitContact(robot)
+    dt = 1e-2
+    stiffness = 2500.0
+    body_mass = 0.05
+    body_damping = 0.5
+    u = jnp.zeros((robot.num_actuators,))
+
+    y0 = _RolloutState(y=y0_state, environment_state=(body_y0, 0.0))
+    for step in range(20):
+        t0 = step * dt
+        y1, *_ = solver.step(
+            terms=None,
+            t0=jnp.asarray(t0),
+            t1=jnp.asarray(t0 + dt),
+            y0=y0,
+            args=(u, body_mass, body_damping, stiffness),
+            solver_state=None,
+            made_jump=None,
+        )
+        assert jnp.all(jnp.isfinite(y1.y))
+        body_y1, body_vy1 = y1.environment_state
+        assert jnp.isfinite(body_y1)
+        assert jnp.isfinite(body_vy1)
+        y0 = y1
 
 
 def test_imex_euler_advances_system_auxiliary_state():
