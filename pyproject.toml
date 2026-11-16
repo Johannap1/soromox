@@ -17,7 +17,7 @@ name = "soromox"  # Required
 #
 # For a discussion on single-sourcing the version, see
 # https://packaging.python.org/guides/single-sourcing-package-version/
-version = "0.5.0"  # Required
+version = "0.6.0"  # Required
 
 # This is a one-line description or tagline of what your project does. This
 # corresponds to the "Summary" metadata field:
@@ -174,7 +174,6 @@ examples = [
     "viser",
 ]
 paper_results = [
-    "coomm @ git+https://github.com/mstoelzle/COOMM.git@0df454a44e70be941941be3c6b521b1cd891aef3",
     "cbfpy",
     "gymnasium",
     "ipython",
@@ -225,7 +224,6 @@ test = [
     "warp-lang>=1.16.0",
 ]
 all = [
-    "coomm @ git+https://github.com/mstoelzle/COOMM.git@0df454a44e70be941941be3c6b521b1cd891aef3",
     "bump2version",
     "cbfpy",
     "check-manifest",
@@ -271,13 +269,13 @@ all = [
 # maintainers, and where to support the project financially. The key is
 # what's used to render the link text on PyPI.
 [project.urls]  # Optional
-"Homepage" = "https://github.com/tud-phi/soromox"
-"Documentation" = "https://tud-phi.github.io/soromox"
-"Changelog" = "https://tud-phi.github.io/soromox/development/changelog/"
-"Bug Reports" = "https://github.com/tud-phi/soromox/issues"
+"Homepage" = "https://github.com/phi-lab-research/soromox"
+"Documentation" = "https://phi-lab-research.github.io/soromox"
+"Changelog" = "https://phi-lab-research.github.io/soromox/development/changelog/"
+"Bug Reports" = "https://github.com/phi-lab-research/soromox/issues"
 "Paper" = "https://doi.org/10.48550/arXiv.2608.06650"
-"Citation" = "https://tud-phi.github.io/soromox/citation/"
-"Source" = "https://github.com/tud-phi/soromox"
+"Citation" = "https://phi-lab-research.github.io/soromox/citation/"
+"Source" = "https://github.com/phi-lab-research/soromox"
 
 # The following would provide a command line executable called `sample`
 # which executes the function `main` from this package when invoked.
@@ -318,6 +316,12 @@ ignore = [
   "tools/**",
   "third_party/**",
   "uv.lock",
+]
+
+[dependency-groups]
+# Repository-only benchmark dependency; PyPI rejects direct URLs in Requires-Dist.
+paper-benchmarks = [
+    "coomm @ git+https://github.com/mstoelzle/COOMM.git@0df454a44e70be941941be3c6b521b1cd891aef3",
 ]
 
 [build-system]

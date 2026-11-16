@@ -16,10 +16,16 @@ from soromox.systems.components import (
     JointSpec,
     LinearProfile,
     LinkSpec,
-    StrandSection,
+    StrandCrossSection,
     shear_modulus_from_poisson_ratio,
 )
 from soromox.systems.components.inertia import spatial_inertia
+from soromox.systems.components.rod_constitutive_laws import (
+    RodConstitutiveLaw,
+    RodCrossSectionProperties,
+    TorsionRodModel,
+    TransverseShearRodModel,
+)
 from soromox.systems.dynamical_system import DynamicalSystem
 from soromox.systems.gvs.params import GVSParams
 from soromox.systems.gvs.structures import (
@@ -70,6 +76,10 @@ from .pcs import (
 from .pendulum import Pendulum
 
 __all__ = [
+    "RodConstitutiveLaw",
+    "RodCrossSectionProperties",
+    "TransverseShearRodModel",
+    "TorsionRodModel",
     "spatial_inertia",
     # base classes
     "DEFAULT_GRAVITY_MAGNITUDE",
@@ -78,7 +88,7 @@ __all__ = [
     "SoftRobot",
     "CrossSectionGeometry",
     "CrossSectionParams",
-    "StrandSection",
+    "StrandCrossSection",
     "ContinuumLinkParams",
     "JointParams",
     "IsotropicMaterialParams",
